@@ -41,9 +41,9 @@ npm.cmd run desktop:package
 npm.cmd run desktop:make
 ```
 
-Forge 会处理指定原生模块重建。独立程序通常位于 `out/RainfallStudio-win32-x64/RainfallStudio.exe`；请保留整个目录，不能只复制 EXE。安装器输出位于 `out/make`。本仓库没有上传已签名安装包，签名和跨设备安装/卸载仍需另行验收。
+Forge 会重建 Electron 原生模块。完整应用目录通常位于 `out/RainfallStudio-win32-x64`，必须整体保留；可独立下载并安装的 Squirrel Setup EXE 位于 `out/make/squirrel.windows/x64`。
 
-`package.json` 仍保留历史包版本 `0.2.0`；该数字不是本源码功能范围的版本证明。当前快照包含后续创作、收件箱及本地升级管理器代码，不冒称可复现原设备上已验收的二进制发布包。
+包版本从本次起为 `0.5.1`，作为预览版交付。版本只说明此源码及构建，不代表真实 AI 生成、平台发布或跨机器安装验收已经完成。安装包没有代码签名，使用前应核对本仓库 Release 的 SHA256。
 
 ## FFmpeg 与媒体功能
 

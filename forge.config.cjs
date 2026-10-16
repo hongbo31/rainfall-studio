@@ -12,6 +12,7 @@ module.exports = {
       /^\/verify-/,
       /\.sqlite(?:-|$)/,
       /\.env/,
+      /\.map$/,
     ],
   },
   rebuildConfig: { onlyModules: ["better-sqlite3"] },
