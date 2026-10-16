@@ -13,11 +13,15 @@ module.exports = {
         if (!resolved.startsWith(base + path.sep)) throw Error("UNSAFE_STAGING_PATH");
         await fs.rm(target, { recursive: true, force: true });
       }
-      for (const entry of await fs.readdir(dir)) {
+      const entries = async (folder) => fs.readdir(folder).catch(error => {
+        if (error.code === "ENOENT") return [];
+        throw error;
+      });
+      for (const entry of await entries(dir)) {
         if (entry !== "Release") await remove(path.join(dir, entry));
       }
       const release = path.join(dir, "Release");
-      for (const entry of await fs.readdir(release)) {
+      for (const entry of await entries(release)) {
         if (entry !== "better_sqlite3.node") await remove(path.join(release, entry));
       }
     }],
