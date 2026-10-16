@@ -4,7 +4,26 @@
 
 Electron 桌面壳与 React/TypeScript 前端分层；Core 使用 SQLite 和受管素材目录。支持创作参数与歌词版本、系列、音频 A/B 导入和真实本地播放、封面任务与图片排版、发布材料准备、CSV 统计导入及备份。没有音频时不会假播放。
 
-## 在另一台 Windows 设备运行
+## 直接下载安装包（Windows x64 预览版 0.5.1）
+
+无需为安装版安装 Git、Node.js 或 npm。登录有本私有仓库访问权限的 GitHub 账号后，打开 [0.5.1 Release](https://github.com/hongbo31/rainfall-studio/releases/tag/v0.5.1)，下载完整安装器 [RainfallStudio-0.5.1-Setup.exe](https://github.com/hongbo31/rainfall-studio/releases/download/v0.5.1/RainfallStudio-0.5.1-Setup.exe)。安装器内含 Electron 应用及运行依赖，不要下载应用目录中单独的 RainfallStudio.exe。
+
+- 安装器大小：178,689,024 字节（约 170.4 MiB）。
+- SHA256：`7a8a84f45b78f84f17b922bee18f0796bee00ba518559e97cd403064367e00c1`。
+- 构建源码：[7f3ef68716de280cf561ae89db2ef4da5541e6ad](https://github.com/hongbo31/rainfall-studio/commit/7f3ef68716de280cf561ae89db2ef4da5541e6ad)，与 `v0.5.1` 标签对应；main 后续可包含下载说明更新。
+
+1. 下载后运行 `Get-FileHash .\RainfallStudio-0.5.1-Setup.exe -Algorithm SHA256`，与上述值及 Release 的 `SHA256SUMS.txt` 核对。
+2. 这是**未签名预览包**，Windows 可能提示未知发布者或 SmartScreen。请先核实来源和校验和，不要关闭安全软件或修改系统安全策略。
+3. 双击 Setup 安装。Squirrel 使用当前 Windows 用户的 `%LOCALAPPDATA%\RainfallStudio` 安装应用；通过开始菜单中的 Rainfall Studio 启动。
+4. 首次真实本地库应为空。平台账号、API 和外部生成服务均需后续按支持情况另行配置；本包不会自动绑定真实账号或执行发布。
+
+**验证范围**：本机完成构建、Setup 内嵌包与 ASAR 一致性检查、许可与数据排除检查；从安装器解出的客户端完成启动、8 页导航、本地保存及一次重启持久化验证，现有桌面入口和原有数据库哈希不变。没有可用隔离 Windows Sandbox/VM，因此**尚未执行 Setup 的真实安装/卸载，也未在全新电脑验收**；这些结果不等于安装成功或所有 Windows 设备兼容性承诺。
+
+默认用户数据在 `%APPDATA%\RainfallStudio`，与程序目录分开。已有旧版用户须先退出客户端并导出备份：新版打开同一目录可能迁移 schema，不要让旧 EXE 打开已升级的库，也不要用本安装器覆盖现有受管理预览版。需要并存测试时，使用独立 `RAINFALL_DATA_ROOT` 并确保每次启动保持相同设置。卸载行为未实测，卸载前请保留独立备份。
+
+安装包不包含 FFmpeg；音频探测/导入和视频封装需要下文指定的本地工具。缺少时相关功能会受阻，不会自动安装。真实 AI 生成、平台上传、OAuth、在线统计和自动更新服务均未启用。
+
+## 从源码在另一台 Windows 设备运行
 
 目标环境是 Windows x64。构建目标为 Node 24；原环境验证使用 Node v24.14.0。需要 Git、Node/npm 和安装依赖所需的网络访问。私有仓库仅对已获权限的 GitHub 账号开放；使用你自己的正常 GitHub 登录，不要将 token 写入 URL 或仓库。
 
