@@ -24,6 +24,7 @@ module.exports = {
         authors: "Rainfall Studio",
         description: "本地音乐创作与发布准备工作台",
         noMsi: true,
+        additionalFiles: [{ src: "LICENSES.chromium.html", target: "lib\\net45" }],
         setupIcon: "assets/rainfall.ico",
       },
     },
