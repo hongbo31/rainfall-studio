@@ -1,0 +1,62 @@
+{
+  "name": "rainfall-studio",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "build": "node scripts.mjs",
+    "test": "node --test tests.mjs",
+    "desktop:build": "node scripts/build-desktop.mjs",
+    "desktop:dev": "npm run desktop:build && electron .",
+    "desktop:package": "npm run desktop:build && electron-forge package",
+    "desktop:make": "npm run desktop:build && electron-forge make",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "node scripts/run-tests.mjs",
+    "test:integration": "node scripts/run-tests.mjs",
+    "test:contract": "node scripts/run-tests.mjs",
+    "test:security": "node scripts/run-tests.mjs",
+    "test:e2e": "node scripts/e2e.mjs && node scripts/journey.mjs && node scripts/cover-task-test.mjs",
+    "test:packaged": "node scripts/e2e.mjs --packaged && node scripts/journey.mjs --packaged && node scripts/cover-task-test.mjs --packaged",
+    "verify:all": "npm test && npm run typecheck && npm run test:integration && npm run test:e2e"
+  },
+  "dependencies": {
+    "archiver": "8.0.0",
+    "better-sqlite3": "13.0.3",
+    "csv-parse": "7.0.3",
+    "electron-squirrel-startup": "1.0.1",
+    "luxon": "3.7.2",
+    "sharp": "0.35.5",
+    "yauzl": "3.4.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "8.0.1",
+    "@electron-forge/maker-squirrel": "8.0.1",
+    "@electron-forge/plugin-auto-unpack-natives": "8.0.1",
+    "@electron/rebuild": "4.2.1",
+    "@playwright/test": "1.64.1",
+    "@types/archiver": "8.0.0",
+    "@types/better-sqlite3": "9.6.0",
+    "@types/luxon": "3.7.6",
+    "@types/node": "26.6.5",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@types/yauzl": "3.4.0",
+    "electron": "44.7.2",
+    "esbuild": "0.28.2",
+    "prettier": "3.9.10",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "typescript": "7.0.2",
+    "undici": "8.12.1",
+    "vite": "8.3.4"
+  },
+  "main": "build/main.cjs",
+  "description": "本地音乐创作与发布准备工作台",
+  "author": "Rainfall Studio",
+  "config": {
+    "forge": "./forge.config.cjs"
+  },
+  "productName": "Rainfall Studio"
+}
