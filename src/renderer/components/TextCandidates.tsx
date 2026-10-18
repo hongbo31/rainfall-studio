@@ -214,6 +214,41 @@ export default function TextCandidates() {
           </p>
         </details>
       )}
+      {status.packageDelivery && (
+        <details>
+          <summary>歌词与封面包收件 · 本地通道</summary>
+          <p>
+            云端同步链路尚未验收。Google Drive
+            登录及同步目录映射完成后，才能验证自动送达。
+          </p>
+          <p>
+            包目录：<code>{status.packageDelivery.root}</code>
+          </p>
+          <p>
+            回执目录：<code>{status.packageDelivery.receiptsRoot}</code>
+          </p>
+          <p>
+            每个投递目录包含
+            text.json、封面、manifest.json、READY.json；必须通过哈希和图片解码校验，才会显示入库成功。收件不触发音乐生成、扣费或发布。
+          </p>
+          {!status.packageDelivery.states.length && <p>暂无封面包收件记录</p>}
+          {status.packageDelivery.states.map((s: any) => (
+            <p key={s.deliveryId}>
+              {s.deliveryId} ·{" "}
+              {s.state === "imported"
+                ? "已入库 · 待模型评估"
+                : s.state === "waiting"
+                  ? "等待文件完整同步 / 稍后重试"
+                  : "已拒收"}
+              {s.reason && ` · ${s.reason}`}
+              {s.nextAttemptAt && ` · 下次检查 ${s.nextAttemptAt}`}
+            </p>
+          ))}
+          {status.packageDelivery.lastError && (
+            <p role="alert">封面包收件：{status.packageDelivery.lastError}</p>
+          )}
+        </details>
+      )}
       {(error || status.lastError) && (
         <p role="alert">{error || `收件异常：${status.lastError}`}</p>
       )}
@@ -239,14 +274,17 @@ export default function TextCandidates() {
               {d?.title ?? c.externalItemId} · v{c.externalRevision} ·
               待模型评分
             </summary>
-            <details><summary>来源与接收记录</summary><p>
-              {c.externalItemId} · {c.isCurrent ? "当前版本" : "历史版本"} ·{" "}
-              {c.importedAt}
-            </p>
-            <p>
-              来源：本地通道 {c.source.channelId}；生产者声明{" "}
-              {c.source.producerClaim}（未单独认证）
-            </p></details>
+            <details>
+              <summary>来源与接收记录</summary>
+              <p>
+                {c.externalItemId} · {c.isCurrent ? "当前版本" : "历史版本"} ·{" "}
+                {c.importedAt}
+              </p>
+              <p>
+                来源：本地通道 {c.source.channelId}；生产者声明{" "}
+                {c.source.producerClaim}（未单独认证）
+              </p>
+            </details>
             <p>
               本地检查：
               {c.localCheck.status === "failed"
@@ -262,6 +300,12 @@ export default function TextCandidates() {
             <p>
               {d?.language} · {d?.style} · {d?.storyBeat}
             </p>
+            {c.cover && (
+              <p>
+                封面已接收 · v{c.cover.revision} · SHA256{" "}
+                <code>{c.cover.sha256.slice(0, 12)}</code>
+              </p>
+            )}
             <pre>{d?.sections.flatMap((s: any) => s.lines).join("\n")}</pre>
             <h3>音乐提示词</h3>
             <p>{d?.musicPrompts.yourmusic.positiveStyle}</p>
@@ -298,11 +342,14 @@ export default function TextCandidates() {
       {rows.musicInput && (
         <section className="panel" aria-label="已人工选入的音乐输入">
           <h3>{rows.musicInput.draft.title} · 已人工选入</h3>
-          <details><summary>来源与版本</summary><p>
-            来源：本地收件；外部版本{" "}
-            {rows.musicInput.inputSelection.externalRevision}
-            。来源模型声明尚未独立验证，尚未模型评分，生成仍受质量与预算限制。
-          </p></details>
+          <details>
+            <summary>来源与版本</summary>
+            <p>
+              来源：本地收件；外部版本{" "}
+              {rows.musicInput.inputSelection.externalRevision}
+              。来源模型声明尚未独立验证，尚未模型评分，生成仍受质量与预算限制。
+            </p>
+          </details>
           <pre>{rows.musicInput.pair.lyrics}</pre>
           <p>{rows.musicInput.pair.musicPrompt}</p>
           <MusicCandidates draft={rows.musicInput} />

@@ -1,0 +1,28 @@
+{
+  "deliveryVersion": 1,
+  "deliveryId": "dot-delivery-format-20261018",
+  "createdAt": "2026-10-18T18:08:00Z",
+  "targetWorkspaceRef": "rainfall-personal",
+  "text": {
+    "file": "text.json",
+    "sha256": "c763c0be204f872ad8374f61276cebc0b296ba160fb29c26a6402e164be01598"
+  },
+  "images": [
+    {
+      "externalItemId": "dot-original-001",
+      "revision": 1,
+      "role": "cover",
+      "file": "cover-180e82ba8417d628bf010cdb25bc9597b4f00d1504ee4401235e2f6e76f722ad.png",
+      "sha256": "180e82ba8417d628bf010cdb25bc9597b4f00d1504ee4401235e2f6e76f722ad",
+      "bytes": 237,
+      "mimeType": "image/png",
+      "width": 64,
+      "height": 64,
+      "provenance": {
+        "producer": "dot-format-fixture",
+        "model": null,
+        "generatedAt": "2026-10-18T18:08:00Z"
+      }
+    }
+  ]
+}

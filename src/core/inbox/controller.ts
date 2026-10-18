@@ -1,16 +1,28 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import { Repository } from "../database";
 import { InboxSetupSchema, type InboxChannel } from "../../shared/inbox";
 import { InboxService, inboxHash } from "./service";
 import { InboxReceiver } from "./receiver";
+import { DotDeliveryReceiver } from "./dot-delivery-receiver";
+import { DotDeliveryStore } from "./dot-delivery-store";
 // One configured channel per mode/workspace. Paths/identities never come from incoming JSON.
 export class InboxController {
   private receiver?: InboxReceiver;
+  private deliveryReceiver?: DotDeliveryReceiver;
   private stopped = false;
   constructor(
     readonly repo: Repository,
     readonly root: string,
   ) {}
+  private makeDeliveryReceiver(channel: InboxChannel) {
+    return new DotDeliveryReceiver({
+      store: new DotDeliveryStore(this.repo, channel),
+      deliveriesRoot: path.join(this.root, "deliveries"),
+      receiptsRoot: path.join(this.root, "delivery-receipts"),
+      mediaRoot: path.join(path.dirname(path.dirname(this.root)), "media"),
+    });
+  }
   status() {
     const saved = this.repo.maybe("settings", "inbox-channel");
     return {
@@ -23,6 +35,19 @@ export class InboxController {
       lastError: this.receiver?.lastError ?? null,
       modelEvaluation: "not_authorized",
       delivery: "local_receiver_only",
+      packageDelivery:
+        this.deliveryReceiver?.status() ??
+        (saved
+          ? this.makeDeliveryReceiver(saved.channel).status()
+          : {
+              root: path.join(this.root, "deliveries"),
+              receiptsRoot: path.join(this.root, "delivery-receipts"),
+              transport: "local-files-only",
+              cloudTransportVerified: false,
+              lastScanAt: null,
+              lastError: null,
+              states: [],
+            }),
     };
   }
   configure(raw: unknown) {
@@ -69,6 +94,8 @@ export class InboxController {
   disable() {
     this.receiver?.stop();
     this.receiver = undefined;
+    this.deliveryReceiver?.stop();
+    this.deliveryReceiver = undefined;
     const saved = this.repo.maybe("settings", "inbox-channel");
     if (saved)
       this.repo.save("settings", {
@@ -88,9 +115,15 @@ export class InboxController {
         this.root,
       );
     await this.receiver.scanOnce();
+    if (this.stopped || !this.repo.maybe("settings", "inbox-channel")?.enabled)
+      return;
+    if (!this.deliveryReceiver)
+      this.deliveryReceiver = this.makeDeliveryReceiver(saved.channel);
+    await this.deliveryReceiver.scanOnce();
   }
   stop() {
     this.stopped = true;
     this.receiver?.stop();
+    this.deliveryReceiver?.stop();
   }
 }
