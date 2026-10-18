@@ -7,14 +7,15 @@ const labels: Record<string, string> = {
   artistName: "艺人署名",
   lyricist: "词作者",
   composer: "曲作者",
-  ownLyrics: "拥有词版权",
-  ownComposition: "拥有曲版权",
+  ownLyrics: "我是作词人",
+  ownComposition: "我是作曲人",
   aiTool: "AI 工具",
   generatedOn: "生成日期",
   allowCover: "允许翻唱",
   genre: "曲风",
   language: "语言",
 };
+const inheritedAlbumNote = "沿用已有专辑，不修改原专辑资料。";
 const booleanFields = ["ownLyrics", "ownComposition", "allowCover"];
 export function publicationMetadataDefaults(
   work: any,
@@ -46,12 +47,14 @@ export function publicationMetadataDefaults(
         : typeof work[key] === "boolean"
           ? String(work[key])
           : "";
+  const albumMode = text("albumMode", Object.keys(saved).length ? "" : "existing");
   return {
+    albumMode,
     albumTitle: text(
       "albumTitle",
       text("album", config.album || work.title || ""),
     ),
-    albumDescription: text("albumDescription"),
+    albumDescription: text("albumDescription", albumMode === "existing" ? inheritedAlbumNote : ""),
     artistName: text("artistName", artist?.name ?? ""),
     lyricist: text("lyricist", config.lyricist ?? ""),
     composer: text("composer", config.composer ?? ""),
@@ -114,6 +117,10 @@ export async function savePublicationMetadata({
     version: "完整版",
     releaseMode: "审核通过即发布",
   };
+  if (metadata.albumMode) {
+    if (!["existing", "new"].includes(metadata.albumMode)) throw Error("请选择专辑方式");
+    payload.albumMode = metadata.albumMode;
+  }
   for (const key of Object.keys(labels))
     payload[key] = booleanFields.includes(key)
       ? metadata[key] === "true"
@@ -200,13 +207,24 @@ export default function PublicationMetadataForm({
               gap: 12,
             }}
           >
+            <label htmlFor={id + "-albumMode"} style={{ display: "grid", gap: 4 }}>
+              专辑方式
+              <select id={id + "-albumMode"} value={metadata.albumMode} onChange={(e) => {
+                const albumMode = e.target.value;
+                setMetadata({ ...metadata, albumMode, albumDescription: albumMode === "existing" ? (metadata.albumDescription || inheritedAlbumNote) : metadata.albumDescription === inheritedAlbumNote ? "" : metadata.albumDescription });
+              }}>
+                {!metadata.albumMode && <option value="">沿用原有设置</option>}
+                <option value="existing">选择已发行专辑</option>
+                <option value="new">新建专辑</option>
+              </select>
+            </label>
             {Object.entries(labels).map(([key, label]) => (
               <label
                 key={key}
                 htmlFor={`${id}-${key}`}
                 style={{ display: "grid", gap: 4 }}
               >
-                {label}
+                {key === "albumDescription" && metadata.albumMode === "existing" ? "本地专辑备注" : label}
                 {booleanFields.includes(key) ? (
                   <select
                     id={`${id}-${key}`}
@@ -251,6 +269,7 @@ export default function PublicationMetadataForm({
               </label>
             ))}
           </div>
+          {metadata.albumMode === "existing" && <p>选择已发行专辑将沿用原封面，不修改原专辑封面或资料。本地备注不会发送为专辑简介。</p>}
           <p>完整版 · 审核通过即发布</p>
           <button type="submit" disabled={disabled}>
             {busy ? "保存中…" : "保存资料"}

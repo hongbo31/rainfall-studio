@@ -91,3 +91,21 @@ test('first publication blocked on cloud connection resumes only after capabilit
  await x.broker.pump();assert.equal(x.task().state,'blocked');assert.equal(x.calls.filter(c=>c[0]==='prepare.run').length,0);
  connected=true;await x.broker.pump();assert.equal(x.task().state,'awaiting_confirmation');assert.equal(x.calls.filter(c=>c[0]==='prepare.run').length,1);await x.broker.pump();assert.equal(x.calls.filter(c=>c[0]==='prepare.run').length,1);
 });
+
+test('durable receipt barrier stops before preparation even with an older empty SQLite journal',async()=>{
+ const x=fixture({publicationBarrier:()=>({reason:'OFFICIAL_RECORD_ALREADY_EXISTS'})});await x.broker.pump();assert.equal(x.task().state,'blocked');assert.equal(x.task().reason,'OFFICIAL_RECORD_ALREADY_EXISTS');assert.equal(x.calls.some(c=>c[0].endsWith('prepareContext')||c[0].startsWith('prepare.')||c[0].endsWith('.claim')),false);
+});
+
+test('existing-album runtime transport remains write locked while exposing separate receipt reads',async()=>{
+ const {createTmeAiTransportProvider}=createRequire(import.meta.url)(out);let reads=0,writes=0;
+ const session={page:{},account:async()=>{throw Error('UNEXPECTED_ACCOUNT')}};
+ const t=createTmeAiTransportProvider({platform:'win32',cloudExistingAlbumSession:()=>session,readExternalReceipt:async()=>{reads++;return{state:'reviewing'}},native:{request:async()=>{writes++;throw Error('NATIVE_CALLED')}},nativeObserve:async()=>{writes++;throw Error('NATIVE_CALLED')}});
+ assert.equal(t.preparationCapability().available,false);assert.equal(t.preparationCapability().reason,'EXISTING_ALBUM_WRITE_INTEGRATION_UNVERIFIED');assert.equal(t.executor.capability().available,false);assert.equal(t.executor.capability().readOnlyReceiptAvailable,true);
+ await assert.rejects(t.prepare.request('step',{}),/EXISTING_ALBUM_WRITE_INTEGRATION_UNVERIFIED/);assert.deepEqual(await t.executor.readExternalReceipt({}),{state:'reviewing'});assert.equal(reads,1);assert.equal(writes,0);
+});
+
+test('external reviewing record reconciliation cannot prepare or submit',async()=>{
+ const calls=[],task={id:'task',workId:'work',reason:'OFFICIAL_RECORD_ALREADY_EXISTS',state:'reviewing',receipt:{remoteId:'18281901'}};
+ const b=createUnifiedPublishBroker({available:()=>true,generation:()=>1,rpc:async()=>({ok:true,value:[task]}),prepare:{ui:async()=>{throw Error('MUST_NOT_PREPARE')}},submission:{ui:async(action,input)=>{calls.push(action);assert.equal(action,'reconcile');assert.equal(input.id,'work')}}});
+ await b.reconcile('task');assert.deepEqual(calls,['reconcile']);
+});

@@ -10,12 +10,15 @@ const reasons: Record<string, string> = {
   PREPARATION_REQUIRED: "尚未完成本首歌曲官网材料准备",
   PREPARATION_SCOPE_CHANGED: "准备材料已变化，请重新核对",
   NATIVE_AI_SUBMIT_CONTRACT_UNVERIFIED: "官网提交控件待验证",
+  EXTERNAL_RECEIPT_ACCOUNT_BINDING_REQUIRED: "回执尚未绑定已核实的官方账号",
+  EXISTING_ALBUM_WRITE_INTEGRATION_UNVERIFIED: "已有专辑写入流程待独立验收，当前保持锁定",
   OFFICIAL_RECEIPT_CONTRACT_UNVERIFIED: "官方回执读取待验证",
   SUBMISSION_REVIEW_STALE: "条款预检已过期，请重新检查",
   TERMS_CHANGED: "官网条款已变化，请重新检查",
   AI_INTAKE_TAB_REQUIRED: "请在官网打开本首歌曲 AI 投稿页面",
   WORKSPACE_CHANGED: "工作区已切换，请重新检查",
   SUBMISSION_ALREADY_DISPATCHED: "已有提交操作，请核对原记录",
+  OFFICIAL_RECORD_ALREADY_EXISTS: "已有官网投稿记录，只读核对，不会再次上传或提交",
   SUBMISSION_MATERIALS_CHANGED: "本首歌曲材料已变化",
 };
 const states: Record<string, string> = {
@@ -87,7 +90,7 @@ export function TmeAiSubmissionPanel(p: Props) {
       {p.error && <p role="alert">{p.error}</p>}
       {p.result && (
         <div aria-live="polite">
-          <p>{p.result.ready ? "材料与当前条款已核对" : "待处理 · 尚未提交"}</p>
+          <p>{job?.externalReceipt ? "已有官网投稿记录 · 仅支持只读核对" : p.result.ready ? "材料与当前条款已核对" : "待处理 · 尚未提交"}</p>
           {[
             ...new Set<string>([
               ...(p.result.reasons ?? []),
@@ -119,7 +122,7 @@ export function TmeAiSubmissionPanel(p: Props) {
             </details>
           )}
           {job.receipt && (
-            <p>来源：腾讯官方审核记录 · {job.receipt.observedAt}</p>
+            <><p>来源：腾讯官方审核记录 · {job.receipt.observedAt}</p>{job.receipt.platformStatusText&&<p>后台状态：{job.receipt.platformStatusText}</p>}</>
           )}
         </>
       )}
@@ -149,9 +152,9 @@ export function TmeAiSubmissionPanel(p: Props) {
         <button disabled={!canSubmit} onClick={p.onSubmit}>
           确认授权并提交审核
         </button>
-        {job?.state === "reconcile_required" && p.onReconcile && (
+        {(job?.state === "reconcile_required" || job?.externalReceipt) && p.onReconcile && (
           <button
-            disabled={p.busy || !capability?.available}
+            disabled={p.busy || !(job?.externalReceipt ? capability?.readOnlyReceiptAvailable : capability?.available)}
             onClick={p.onReconcile}
           >
             只读核对官方回执

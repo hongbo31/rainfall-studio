@@ -68,13 +68,14 @@ test("defaults use stored facts while unknown rights, AI tool and date stay blan
   const v = defaults(work, data);
   assert.equal(v.artistName, "歌手甲");
   assert.equal(v.albumTitle, "测试专辑");
+  assert.equal(v.albumMode, "existing");
+  assert.equal(v.albumDescription, "沿用已有专辑，不修改原专辑资料。");
   for (const k of [
     "ownLyrics",
     "ownComposition",
     "allowCover",
     "aiTool",
     "generatedOn",
-    "albumDescription",
   ])
     assert.equal(v[k], "");
   assert.equal(
@@ -93,15 +94,36 @@ test("compact form exposes missing fields and exact work/account context", () =>
   assert.match(html, /测试账号/);
   assert.match(html, /account/);
   for (const label of [
-    "专辑介绍",
+    "本地专辑备注",
+    "词作者",
+    "曲作者",
     "AI 工具",
     "生成日期",
-    "拥有词版权",
-    "拥有曲版权",
+    "我是作词人",
+    "我是作曲人",
     "允许翻唱",
   ])
     assert.ok(html.includes(label));
   assert.match(html, /<option value="" selected="">请选择/);
+  assert.match(html, /<option value="existing" selected="">选择已发行专辑/);
+  assert.ok(html.includes("本地备注不会发送为专辑简介。"));
+});
+test("saved legacy and explicit new-album metadata retain their original description behavior", () => {
+  const legacy = defaults({ ...work, publicationMetadata: full }, data);
+  assert.equal(legacy.albumMode, "");
+  assert.equal(legacy.albumDescription, full.albumDescription);
+  const fresh = defaults({ ...work, publicationMetadata: { ...full, albumMode: "new" } }, data);
+  assert.equal(fresh.albumMode, "new");
+  const html = render({ work: { ...work, publicationMetadata: { ...full, albumMode: "new" } }, data, job });
+  assert.match(html, /专辑介绍/);
+  assert.doesNotMatch(html, /本地专辑备注|本地备注不会发送为专辑简介/);
+});
+test("existing-album save retains explicit mode and local-only description", async () => {
+  const metadata = { ...full, ...defaults(work, data), ownLyrics: "false", ownComposition: "true", allowCover: "false", aiTool: full.aiTool, generatedOn: full.generatedOn };
+  let saved;
+  await save({ work, job, metadata, expectedRevision: 3, call: async (_method, input) => { saved = input.metadata; }, refresh: async () => {} });
+  assert.equal(saved.albumMode, "existing");
+  assert.equal(saved.albumDescription, "沿用已有专辑，不修改原专辑资料。");
 });
 test("save validates facts, binds revision and converts explicit booleans before refreshing", async () => {
   const calls = [];

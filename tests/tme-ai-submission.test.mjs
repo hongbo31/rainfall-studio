@@ -118,6 +118,7 @@ function brokerFixture(t){
   else if(action==='publicJob')value=x.service.publicById(input.id);
   else if(action==='context')value=x.service.context(input.id);
   else if(action==='receiptContext')value=x.service.receiptContext(input.id);
+  else if(action==='externalContext')value=null;
   else if(action==='listPublic')value=x.service.listPublic(input.workId);
   else value=x.service[action](input);
   if(action==='claim')afterClaim?.(input);

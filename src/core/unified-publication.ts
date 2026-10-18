@@ -2,6 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {hash,type Repository,type Row} from './database';
 import type {SimplePublicationRequest} from '../shared/platform-config';
+import {externalTmeReceipt,externalTmePublicJob} from './external-tme-receipt';
 const prefix='unified-publication:v1:';
 const states=z.enum(['needs_configuration','needs_materials','queued','preparing','awaiting_authorization','awaiting_confirmation','blocked','reconcile_required','reviewing','published','rejected']);
 const terminal=new Set(['reviewing','published','rejected']);
@@ -22,7 +23,7 @@ export class UnifiedPublicationService{
  private sourceSha(r:SimplePublicationRequest){return (r.materialSnapshot.audio?.boundAssetId?this.repo.maybe('assets',r.materialSnapshot.audio.boundAssetId)?.sha256:null)??r.materialSnapshot.audio?.sha256??null}
  private priorSubmit(audioSha:string|null){return !!audioSha&&this.repo.all('operations').some(o=>o.kind==='tme_ai_submission'&&o.phase==='submit'&&o.receiptScope?.sourceAudioSha===audioSha)}
  private source(task:Row){return this.repo.all('settings').filter(r=>r.id.startsWith('tme-ai-submission:')).map(r=>r.value).find(r=>r.id===task.submissionJobId)}
- list(){return this.raw().map(task=>{const submission=this.source(task);if(!submission)return task;
+ list(){return this.raw().map(task=>{const external=task.targets?.some((t:string)=>['qqmusic','kugou'].includes(t))?externalTmeReceipt(this.repo,task.workId,task.audioSha):null;if(external)return{...task,state:external.workId===task.workId?external.state:'blocked',summary:external.workId===task.workId?summaries[external.state]:'录音已有官网投稿',reason:'OFFICIAL_RECORD_ALREADY_EXISTS',receipt:externalTmePublicJob(external).receipt};const submission=this.source(task);if(!submission)return task;
   // The Core submission service alone establishes official receipt validity.
   if(terminal.has(submission.state)&&submission.submissionByClient===true&&submission.receipt)return{...task,state:submission.state,summary:summaries[submission.state],receipt:submission.receipt,updatedAt:submission.updatedAt};
   if(submission.state==='reconcile_required'||submission.state==='dispatching')return{...task,state:'reconcile_required',summary:summaries.reconcile_required,reason:submission.reason??'SUBMISSION_IN_PROGRESS'};
@@ -33,6 +34,7 @@ export class UnifiedPublicationService{
   for(const r of requests){const provider=['qqmusic','kugou'].includes(r.target)?'tme':r.target;const key=hash([provider,r.accountId,this.sourceSha(r)??r.workId]);groups.set(key,[...(groups.get(key)??[]),r]);}
   return [...groups].map(([familyKey,items])=>{
    const r=items[0],targets=[...new Set(items.map(r=>r.target))].sort(),fingerprint=publicationMaterialHash(r.materialSnapshot);
+   const external=targets.some(t=>['qqmusic','kugou'].includes(t))?externalTmeReceipt(this.repo,r.workId,this.sourceSha(r)):null;
    const materialFingerprints=Object.fromEntries(items.map(item=>[item.target,publicationMaterialHash(item.materialSnapshot)]));
    const conflictingMaterials=new Set(items.map(item=>publicationEffectiveMaterialHash(item.materialSnapshot))).size>1;
    const old=this.raw().find(t=>t.familyKey===familyKey);
@@ -41,14 +43,15 @@ export class UnifiedPublicationService{
    const protectedWork=['把晚安留在门口','留一盏灯'].includes(r.title.normalize('NFKC').trim());
    const nonAi=r.materialSnapshot.ai==='none';
    const priorSubmit=this.priorSubmit(this.sourceSha(r));
-   let state:string=protectedWork?'blocked':priorSubmit?'reconcile_required':conflictingMaterials||items.some(r=>r.state==='needs_configuration')?'needs_configuration':items.some(r=>r.state==='needs_materials')?'needs_materials':nonAi?'blocked':targets.every(t=>['qqmusic','kugou'].includes(t))?'queued':'blocked';
-   const reason=protectedWork?'PROTECTED_PUBLISHED_WORK':priorSubmit?'SUBMISSION_ALREADY_DISPATCHED':conflictingMaterials?'TME_TARGET_MATERIALS_CONFLICT':nonAi&&state==='blocked'?'AI_PREPARATION_NOT_APPLICABLE':state==='blocked'?'PLATFORM_EXECUTOR_UNAVAILABLE':null;
+   let state:string=external?(external.workId===r.workId?external.state:'blocked'):protectedWork?'blocked':priorSubmit?'reconcile_required':conflictingMaterials||items.some(r=>r.state==='needs_configuration')?'needs_configuration':items.some(r=>r.state==='needs_materials')?'needs_materials':nonAi?'blocked':targets.every(t=>['qqmusic','kugou'].includes(t))?'queued':'blocked';
+   const reason=external?'OFFICIAL_RECORD_ALREADY_EXISTS':protectedWork?'PROTECTED_PUBLISHED_WORK':priorSubmit?'SUBMISSION_ALREADY_DISPATCHED':conflictingMaterials?'TME_TARGET_MATERIALS_CONFLICT':nonAi&&state==='blocked'?'AI_PREPARATION_NOT_APPLICABLE':state==='blocked'?'PLATFORM_EXECUTOR_UNAVAILABLE':null;
    const task={id:old?.id??randomUUID(),revision:(old?.revision??0)+1,familyKey,workId:r.workId,title:r.title,targets,accountId:r.accountId,materialFingerprint:fingerprint,materialFingerprints,materialSnapshot:r.materialSnapshot,audioSha:this.sourceSha(r),state,summary:summaries[state],reason,createdAt:old?.createdAt??this.stamp(),updatedAt:this.stamp()};
    return this.put(task);
   });
  })}
  claim(raw:unknown){const i=z.strictObject({id:z.uuid(),expectedRevision:z.number().int().positive()}).parse(raw);return this.repo.transaction(()=>{
   const task=this.get(i.id);if(task.revision!==i.expectedRevision)throw Error('REVISION_CONFLICT');
+  if(task.targets?.some((t:string)=>['qqmusic','kugou'].includes(t))&&externalTmeReceipt(this.repo,task.workId,task.audioSha))throw Error('OFFICIAL_RECORD_ALREADY_EXISTS');
   if(task.reason==='AI_PREPARATION_NOT_APPLICABLE')throw Error('AI_PREPARATION_NOT_APPLICABLE');
   if(task.reason==='PROTECTED_PUBLISHED_WORK')throw Error('PROTECTED_PUBLISHED_WORK');
   if(this.priorSubmit(task.audioSha)||task.dispatchedAt||['reconcile_required',...terminal].includes(task.state))throw Error('PUBLICATION_RECONCILIATION_REQUIRED');

@@ -35,7 +35,7 @@ function assertPcmWav(file:string){
 }
 export function verifyCurrentTmeAiScope(s:Studio,g:TmeAiPrepareGrant){
  const current=resolveTmeAiPrepareScope(s,{workId:g.workId});
- const material=(v:any)=>({workId:v.workId,sourceAudio:v.sourceAudio,upload:v.upload,cover:v.cover,lyricsHash:v.lyricsHash,metadata:v.metadata});
+ const material=(v:any)=>({workId:v.workId,sourceAudio:v.sourceAudio,upload:v.upload,cover:v.cover,lyricsHash:v.lyricsHash,metadata:v.metadata,...(v.existingAlbum?{existingAlbum:v.existingAlbum}:{})});
  if(hash(material(current))!==hash(material(g)))throw Error('PREPARATION_GRANT_STALE');
 }
 export function verifyTmeAiPrepareAssets(s:Studio,g:TmeAiPrepareGrant){

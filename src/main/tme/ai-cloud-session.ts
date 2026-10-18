@@ -6,6 +6,8 @@ import {TmeAiPrepareBindingSchema,tmeAiSubjectHash} from '../../shared/tme-ai-pr
 import {TME_AI_BROWSER_PREPARE_CONTRACT,createTmeAiBrowserPreparePort,type TmeAiBrowserPrepareContract} from './ai-prepare-browser';
 import {TME_AI_BROWSER_SUBMISSION_CONTRACT,createTmeAiBrowserSubmissionExecutor,type TmeAiBrowserSubmissionContract} from './ai-submission-browser';
 import {readOfficialProfileIdentity,TME_READONLY_IDENTITY_EVIDENCE_HASH} from './browser-identity';
+import {readFreshOfficialAccount} from './official-browser-read';
+import {createExternalTmeReceiptReader} from './external-receipt-read';
 const ORIGIN='https://y.tencentmusic.com';
 const ConnectSchema=z.strictObject({port:z.number().int().min(1024).max(65535).default(9222),allowConnection:z.literal(true)});
 /** Refuse discovery redirects or remote websocket endpoints. Never start or configure a browser. */
@@ -35,7 +37,7 @@ async function connectExisting(port:number):Promise<Browser>{
  socket.addEventListener('close',()=>transport.onclose?.());
  try{return await chromium.connectOverCDP(transport,{timeout:10000,noDefaults:true})}catch(e){socket.close();throw e}
 }
-type Options={connectCDP?:(port:number)=>Promise<Browser>;now?:()=>Date;available?:()=>boolean;prepareContract?:TmeAiBrowserPrepareContract;submissionContract?:TmeAiBrowserSubmissionContract};
+type Options={enableExistingAlbum?:boolean;connectCDP?:(port:number)=>Promise<Browser>;now?:()=>Date;available?:()=>boolean;prepareContract?:TmeAiBrowserPrepareContract;submissionContract?:TmeAiBrowserSubmissionContract};
 type PreparationSession=Parameters<typeof createTmeAiBrowserPreparePort>[0];
 type SubmissionSession=Parameters<typeof createTmeAiBrowserSubmissionExecutor>[0];
 /** Main-only owner of an explicitly connected existing CDP session; no cookies or renderer contracts. */
@@ -43,7 +45,7 @@ export class TmeAiCloudSessionManager{
  private readonly prepareContract:TmeAiBrowserPrepareContract;
  private readonly submissionContract:TmeAiBrowserSubmissionContract;
  private browser?:Browser;private page?:Page;private bindingValue?:ReturnType<typeof TmeAiPrepareBindingSchema.parse>;
- private preparation?:PreparationSession;private submission?:SubmissionSession;private fingerprint?:string;
+ private preparation?:PreparationSession;private submission?:SubmissionSession;private existingSession?:{page:Page;account:()=>Promise<any>;now?:()=>Date};private fingerprint?:string;
  private epoch=0;private connecting=false;
  constructor(private readonly options:Options={}){
   this.prepareContract=structuredClone(options.prepareContract??TME_AI_BROWSER_PREPARE_CONTRACT);
@@ -54,9 +56,11 @@ export class TmeAiCloudSessionManager{
   this.available();if(epoch!==this.epoch||this.page!==page||!this.browser?.isConnected()||page.isClosed())throw Error('CLOUD_BROWSER_SESSION_REQUIRED');
   const u=new URL(page.url());if(u.origin!==ORIGIN||u.username||u.password)throw Error('PAGE_ORIGIN_CHANGED');
  }
- private identityCalibrated(){const c=this.submissionContract;return c.verified&&c.source==='browser'&&c.origin===ORIGIN&&/^[a-f0-9]{64}$/.test(c.calibrationEvidenceHash)&&Object.values(c.identity).length===3&&['kugouId','qqDisplayName','artistName'].every(k=>!!c.identity[k as keyof typeof c.identity]?.trim())}
+ private identityCalibrated(){if(this.options.enableExistingAlbum)return true;const c=this.submissionContract;return c.verified&&c.source==='browser'&&c.origin===ORIGIN&&/^[a-f0-9]{64}$/.test(c.calibrationEvidenceHash)&&Object.values(c.identity).length===3&&['kugouId','qqDisplayName','artistName'].every(k=>!!c.identity[k as keyof typeof c.identity]?.trim())}
  private async account(page:Page,epoch:number){
-  this.assertCurrent(page,epoch);if(!this.identityCalibrated())throw Error('BROWSER_ACCOUNT_IDENTITY_UNVERIFIED');
+  this.assertCurrent(page,epoch);
+  if(this.options.enableExistingAlbum){const identity=await readFreshOfficialAccount(page,{expectedSubjectHash:this.fingerprint});this.assertCurrent(page,epoch);const fingerprint=tmeAiSubjectHash(identity);if(this.fingerprint&&this.fingerprint!==fingerprint)throw Error('ACCOUNT_CHANGED');this.fingerprint=fingerprint;return{identity,binding:this.bindingValue!}}
+  if(!this.identityCalibrated())throw Error('BROWSER_ACCOUNT_IDENTITY_UNVERIFIED');
   const identity={kugouId:'',qqDisplayName:'',artistName:''};
   for(const key of Object.keys(identity) as (keyof typeof identity)[]){
    const locator=page.locator(this.submissionContract.identity[key]);
@@ -79,15 +83,16 @@ export class TmeAiCloudSessionManager{
    this.browser=browser;this.page=page;this.fingerprint=undefined;
    this.preparation={page,contract:this.prepareContract,account:()=>this.account(page,epoch),now:this.options.now};
    this.submission={page,contract:this.submissionContract,binding:()=>{this.assertCurrent(page,epoch);return this.bindingValue!},now:this.options.now};
+   if(this.options.enableExistingAlbum)this.existingSession={page,account:()=>this.account(page,epoch),now:this.options.now};
    browser.on('disconnected',()=>{if(this.browser===browser)this.clear()});
    this.connecting=false;return this.status();
   }catch(e){if(browser)await browser.close().catch(()=>{});throw e}finally{this.connecting=false}
  }
- private clear(){this.epoch++;this.browser=undefined;this.page=undefined;this.bindingValue=undefined;this.preparation=undefined;this.submission=undefined;this.fingerprint=undefined}
+ private clear(){this.epoch++;this.browser=undefined;this.page=undefined;this.bindingValue=undefined;this.preparation=undefined;this.submission=undefined;this.existingSession=undefined;this.fingerprint=undefined}
  async inspectAccount(input:unknown={}){
   z.strictObject({}).parse(input);this.available();const page=this.page,epoch=this.epoch;
   if(!page)throw Error('CLOUD_BROWSER_SESSION_REQUIRED');this.assertCurrent(page,epoch);
-  const identity=await readOfficialProfileIdentity(page);this.assertCurrent(page,epoch);
+  const identity=this.options.enableExistingAlbum?await readFreshOfficialAccount(page,{expectedSubjectHash:this.fingerprint}):await readOfficialProfileIdentity(page);this.assertCurrent(page,epoch);
   const subjectHash=tmeAiSubjectHash(identity);if(this.fingerprint&&this.fingerprint!==subjectHash)throw Error('ACCOUNT_CHANGED');
   this.fingerprint=subjectHash;
   return{artistName:identity.artistName,qqDisplayName:identity.qqDisplayName,maskedKugouId:'***'+identity.kugouId.slice(-4),subjectType:'official_visible_binding_fingerprint' as const,subjectHash,observedAt:(this.options.now?.()??new Date()).toISOString(),evidenceHash:TME_READONLY_IDENTITY_EVIDENCE_HASH,binding:this.bindingValue,readOnly:true as const};
@@ -96,8 +101,17 @@ export class TmeAiCloudSessionManager{
  async disconnect(){const browser=this.browser;this.clear();if(browser)await browser.close();return this.status()}
  status(){
   const connected=!!this.browser?.isConnected()&&!!this.page&&!this.page.isClosed();
-  return{connected,connecting:this.connecting,transport:'cloud-playwright' as const,binding:connected?this.bindingValue:undefined,identityCalibrated:this.identityCalibrated(),reasons:[...(!connected?['CLOUD_BROWSER_SESSION_REQUIRED']:[]),...(!this.identityCalibrated()?['BROWSER_ACCOUNT_IDENTITY_UNVERIFIED']:[]),...(!this.prepareContract.verified?['BROWSER_AI_PREPARE_CONTRACT_UNVERIFIED']:[]),...(!this.submissionContract.verified?['BROWSER_AI_SUBMIT_CONTRACT_UNVERIFIED','OFFICIAL_RECEIPT_CONTRACT_UNVERIFIED']:[])]};
+  return{connected,connecting:this.connecting,transport:'cloud-playwright' as const,binding:connected?this.bindingValue:undefined,identityCalibrated:this.identityCalibrated(),readOnlyReceiptAvailable:connected&&this.options.enableExistingAlbum===true,existingAlbumWritesEnabled:false,reasons:[...(this.options.enableExistingAlbum?['EXISTING_ALBUM_WRITE_INTEGRATION_UNVERIFIED']:[]),...(!connected?['CLOUD_BROWSER_SESSION_REQUIRED']:[]),...(!this.identityCalibrated()?['BROWSER_ACCOUNT_IDENTITY_UNVERIFIED']:[]),...(!this.prepareContract.verified?['BROWSER_AI_PREPARE_CONTRACT_UNVERIFIED']:[]),...(!this.submissionContract.verified?['BROWSER_AI_SUBMIT_CONTRACT_UNVERIFIED','OFFICIAL_RECEIPT_CONTRACT_UNVERIFIED']:[])]};
  }
  preparationSession(){return this.preparation}
+ async fillIntakeFields(_input:unknown){
+  // One-time calibration is not an alternate runtime write entry.
+  throw Error('EXISTING_ALBUM_WRITE_INTEGRATION_UNVERIFIED');
+ }
+ existingAlbumSession(){return this.existingSession}
+ async readExternalReceipt(context:unknown){
+  this.available();const page=this.page,epoch=this.epoch;if(!page||!this.options.enableExistingAlbum)throw Error('CLOUD_BROWSER_SESSION_REQUIRED');this.assertCurrent(page,epoch);
+  const result=await createExternalTmeReceiptReader({page})(context);this.assertCurrent(page,epoch);return result;
+ }
  submissionSession(){return this.submission}
 }

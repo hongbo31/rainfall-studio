@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {TmeAiSubmissionActions,type TmeAiSubmissionCapability} from '../../shared/tme-ai-submission';
-type Executor={capability:()=>TmeAiSubmissionCapability;accept:(context:any)=>Promise<any>;submit:(context:any)=>Promise<any>;readReceipt:(context:any)=>Promise<any>};
+type Executor={capability:()=>TmeAiSubmissionCapability;accept:(context:any)=>Promise<any>;submit:(context:any)=>Promise<any>;readReceipt:(context:any)=>Promise<any>;readExternalReceipt?:(context:any)=>Promise<any>};
 type Options={root:string;rpc:(method:string,input?:any)=>Promise<any>;available:()=>boolean;generation:()=>number;observe:(context:any)=>Promise<any>;executor?:Executor};
 /** The executor is Main-owned. No renderer flag, guessed selector or local receipt can enable it. */
 export function createTmeAiSubmissionBroker(o:Options){
@@ -16,9 +16,10 @@ export function createTmeAiSubmissionBroker(o:Options){
   const schema=(TmeAiSubmissionActions as Record<string,any>)[action];if(!schema)throw Error('ACTION_NOT_ALLOWED');const i=schema.parse(input);
   if(busy)throw Error('SUBMISSION_BUSY');busy=true;const generation=o.generation(),guard=()=>{if(!o.available()||o.generation()!==generation)throw Error('WORKSPACE_CHANGED')};
   try{
-   if(action==='status')return{capability:capability(),jobs:await rpc('listPublic',i)};
+   if(action==='status'){const material=await rpc('inspectWork',i);if(material.externalJob)return{workId:i.workId,ready:false,reasons:['OFFICIAL_RECORD_ALREADY_EXISTS'],capability:capability(),job:material.externalJob,jobs:[material.externalJob]};return{capability:capability(),jobs:await rpc('listPublic',i)}};
    if(action==='preflight'){
     const material=await rpc('inspectWork',i);guard();const contract=capability();
+    if(material.externalJob)return{...material,ready:false,capability:contract,job:material.externalJob};
     if(!material.readyForNative)return{...material,ready:false,capability:contract};
     try{
      const context=await rpc('preparedContext',{id:material.prepareJobId});guard();
@@ -29,6 +30,7 @@ export function createTmeAiSubmissionBroker(o:Options){
     }catch(e){return{workId:i.workId,title:material.title,ready:false,reasons:[code(e),...contract.reasons],capability:contract}}
    }
    if(action==='reconcile'){
+    const external=await rpc('externalContext',i);guard();if(external){if(!o.executor?.readExternalReceipt)throw Error('OFFICIAL_RECEIPT_CONTRACT_UNVERIFIED');const receipt=await o.executor.readExternalReceipt(external);guard();return rpc('externalObservation',receipt)}
     if(!o.executor)throw Error('OFFICIAL_RECEIPT_CONTRACT_UNVERIFIED');
     const context=await rpc('receiptContext',i);guard();const receipt=await o.executor.readReceipt(context);guard();
     await rpc('reconcile',{id:i.id,receipt});guard();return rpc('publicJob',i);

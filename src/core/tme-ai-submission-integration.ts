@@ -3,12 +3,14 @@ import type {Studio} from './studio';
 import {TmeAiSubmissionService} from './tme-ai-submission';
 import {verifyTmeAiPrepareAssets} from './tme-ai-prepare-integration';
 import {publicationPayload} from './publication-payload';
+import {ExternalTmeReceiptSchema,externalTmeReceipt,externalTmePublicJob,recordExternalTmeObservation} from './external-tme-receipt';
 const idSchema=z.strictObject({id:z.uuid()}),workSchema=z.strictObject({workId:z.uuid()});
 const cached=new WeakMap<Studio,{repo:Studio['repo'];service:TmeAiSubmissionService}>();
 /** Read-only material inspection: never creates a work, grant, browser window or submission. */
 export function inspectTmeAiSubmissionWork(s:Studio,workId:string){
  if(s.mode!=='production')throw Error('PRODUCTION_REQUIRED');
  const work=s.get('works',z.uuid().parse(workId)),payload=publicationPayload(s,{...work,assets:work.assets??{}}),reasons:string[]=[];
+ const existing=externalTmeReceipt(s.repo,work.id,payload.audio?.sha256);if(existing)return{workId:work.id,title:work.title,workRevision:work.revision,readyForNative:false,reasons:['OFFICIAL_RECORD_ALREADY_EXISTS'],prepareJobId:null,externalJob:externalTmePublicJob(existing)};
  if(!payload.audio)reasons.push('AUDIO_REQUIRED');
  if(!payload.cover)reasons.push('COVER_REQUIRED');
  if(!payload.lyrics.plainText.trim())reasons.push('LYRICS_REQUIRED');
@@ -37,6 +39,9 @@ export function tmeAiSubmissionService(s:Studio){
 export function executeTmeAiSubmission(s:Studio,action:string,input:unknown={}){
  if(s.mode!=='production')throw Error('PRODUCTION_REQUIRED');
  if(action==='inspectWork')return inspectTmeAiSubmissionWork(s,workSchema.parse(input).workId);
+ if(action==='externalRecords'){z.strictObject({}).parse(input);return s.repo.all('settings').filter(r=>r.id.startsWith('external-publication:tme:')).flatMap(r=>{const p=ExternalTmeReceiptSchema.safeParse(r.value);return p.success&&r.id==='external-publication:tme:'+p.data.workId?[p.data]:[]})}
+ if(action==='externalContext'){const id=idSchema.parse(input).id;return externalTmeReceipt(s.repo,id)}
+ if(action==='externalObservation')return recordExternalTmeObservation(s.repo,input);
  if(action==='preparedContext')return s.tmeAiPrepareService().context(idSchema.parse(input).id);
  if(!['review','authorize','claim','record','interrupt','reconcile','context','receiptContext','publicJob','listPublic'].includes(action))throw Error('METHOD_NOT_ALLOWED');
  const service=tmeAiSubmissionService(s);

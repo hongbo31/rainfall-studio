@@ -22,6 +22,9 @@ const states: Record<string, string> = {
   rejected: "官方已驳回",
 };
 const actionableReasons: Record<string, string> = {
+  EXISTING_ALBUM_WRITE_INTEGRATION_UNVERIFIED: "已有专辑写入流程待独立验收，当前保持锁定。",
+  OFFICIAL_RECORD_ALREADY_EXISTS: "已有官网投稿记录；可只读核对，不会再次上传或提审。",
+  SUBMISSION_DURABLE_BARRIER_UNREADABLE: "已有独立投稿保护记录待核对，禁止重复上传。",
   TME_TARGET_MATERIALS_CONFLICT: "QQ 与酷狗的投稿资料不同，请统一配置后重试。",
   WINDOWS_REQUIRED: "请在 Windows 客户端继续准备官网材料。",
   AI_PREPARATION_NOT_APPLICABLE: "此歌曲需走原创投稿，不能使用 AI 授权流程。",
@@ -104,7 +107,7 @@ export default function PublicationPipelineProgress({
                 job={job}
               />
             )}
-          {job.state === "reconcile_required" && onReconcile && (
+          {(job.state === "reconcile_required" || (job.reason === "OFFICIAL_RECORD_ALREADY_EXISTS" && job.receipt)) && onReconcile && (
             <button
               onClick={() =>
                 void onReconcile(job.id)
@@ -125,7 +128,7 @@ export default function PublicationPipelineProgress({
               配置账号
             </button>
           )}
-          {(job.state === "awaiting_authorization" || (!job.dispatchedAt && job.state === "blocked" && (job.targets ?? []).some((t:string) => ["qqmusic","kugou"].includes(t)) && !["PROTECTED_PUBLISHED_WORK","AI_PREPARATION_NOT_APPLICABLE"].includes(job.reason))) && (
+          {(job.state === "awaiting_authorization" || (!job.dispatchedAt && job.state === "blocked" && (job.targets ?? []).some((t:string) => ["qqmusic","kugou"].includes(t)) && !["PROTECTED_PUBLISHED_WORK","AI_PREPARATION_NOT_APPLICABLE","OFFICIAL_RECORD_ALREADY_EXISTS","SUBMISSION_DURABLE_BARRIER_UNREADABLE","EXISTING_ALBUM_WRITE_INTEGRATION_UNVERIFIED"].includes(job.reason))) && (
             <TmeAiPrepareWorkspace
               compact
               key={job.workId}

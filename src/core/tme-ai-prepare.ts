@@ -1,6 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {hash,type Repository,type Row} from './database';
+import {externalTmeReceipt} from './external-tme-receipt';
 import {TmeAiPrepareGrantSchema,TmeAiPrepareStartSchema,TmeAiPrepareClaimSchema,TmeAiPrepareRecordSchema,TmeAiPrepareIdentitySchema,TmeAiPrepareSnapshotSchema,tmeAiSubjectHash,tmeAiPrepareSteps,type TmeAiPrepareGrant,type TmeAiPrepareSnapshot} from '../shared/tme-ai-prepare';
 
 const prefix='tme-ai-prepare:';
@@ -35,6 +36,7 @@ export class TmeAiPrepareService {
  }
  private binding(actual:Row,expected:Row){if(hash(actual)!==hash(expected))throw Error('WINDOW_BINDING_CHANGED')}
  private assets(grant:Row){
+  if(externalTmeReceipt(this.repo,grant.input.workId,grant.input.sourceAudio.sha256))throw Error('OFFICIAL_RECORD_ALREADY_EXISTS');
   if(!this.options.verifyAssets)throw Error('ASSET_VERIFIER_REQUIRED');
   const result=this.options.verifyAssets(TmeAiPrepareGrantSchema.parse(grant.input));
   if(result===false)throw Error('ASSET_VERIFICATION_FAILED');
@@ -44,6 +46,7 @@ export class TmeAiPrepareService {
  registerGrant(raw:unknown){
   const input=TmeAiPrepareGrantSchema.parse(raw);
   return this.repo.transaction(()=>{
+   if(externalTmeReceipt(this.repo,input.workId,input.sourceAudio.sha256))throw Error('OFFICIAL_RECORD_ALREADY_EXISTS');
    this.identity(input.identity);
    if(input.upload.derivedFromSha256!==input.sourceAudio.sha256)throw Error('SOURCE_AUDIO_SCOPE');
    if(input.metadata.artistName!==input.identity.artistName)throw Error('ARTIST_IDENTITY_SCOPE');
@@ -88,11 +91,18 @@ export class TmeAiPrepareService {
    return {job:this.patch(job,{state:'dispatching',operationId:operation.id}),grant,operation};
   });
  }
+ private albumFacts(snapshot:TmeAiPrepareSnapshot,grant:Row){
+  return{...(grant.input.metadata.albumMode==='existing'?{existingAlbum:snapshot.verified.existingAlbum,coverInherited:true,coverReadOnly:true}:{}),...(snapshot.verified.receiptBaseline?{receiptBaseline:snapshot.verified.receiptBaseline}:{})};
+ }
  private verifyStep(step:string,s:TmeAiPrepareSnapshot,grant:Row){
   const a=grant.input,v=s.verified,index=tmeAiPrepareSteps.indexOf(step as any);
   if(index>=1&&(v.sourceAudioSha!==a.sourceAudio.sha256||v.uploadSha!==a.upload.sha256))throw Error('MATERIAL_AUDIO_PROOF_REQUIRED');
   if(index>=2&&(v.metadataHash!==hash(a.metadata)||v.lyricsHash!==a.lyricsHash))throw Error('MATERIAL_METADATA_PROOF_REQUIRED');
-  if(index>=3&&v.coverSha!==a.cover.sha256)throw Error('MATERIAL_COVER_PROOF_REQUIRED');
+  if(index>=3){
+   if(a.metadata.albumMode==='existing'){
+    if(!a.existingAlbum||a.existingAlbum.title!==a.metadata.albumTitle||v.existingAlbum?.title!==a.existingAlbum.title||v.existingAlbum?.coverInherited!==true||v.existingAlbum?.coverReadOnly!==true)throw Error('MATERIAL_EXISTING_ALBUM_PROOF_REQUIRED');
+   }else if(v.coverSha!==a.cover.sha256)throw Error('MATERIAL_COVER_PROOF_REQUIRED');
+  }
   if(index>=4&&v.albumSaved!==true)throw Error('MATERIAL_ALBUM_SAVE_PROOF_REQUIRED');
   if(index===5&&!(s.mode==='ai_authorization'&&s.modeText.trim()&&s.termsText?.trim()&&s.termsHash===hash(s.termsText)&&s.visibleSubmitButton))throw Error('TERMS_REVIEW_EVIDENCE_REQUIRED');
   if(index<5&&(s.mode==='unknown'||s.mode==='ai_authorization'))throw Error('PREPARE_PAGE_SCOPE');
@@ -115,7 +125,7 @@ export class TmeAiPrepareService {
    if(op.step==='advance_to_terms'&&!job.localAlbumSnapshot?.localVerified)throw Error('LOCAL_ALBUM_SNAPSHOT_REQUIRED');
    this.repo.save('operations',{...op,state:'complete',result:i.result,ackHash,completedAt:this.stamp()});
    const final=op.step==='advance_to_terms',s=i.result.snapshot;
-   return this.patch(job,{state:final?'awaiting_terms_review':'ready',stepIndex:job.stepIndex+1,step:final?null:tmeAiPrepareSteps[job.stepIndex+1],reason:null,...(op.step==='upload_audio'?{audioDisposition:i.result.status==='verified_existing'?'verified_existing':'client_uploaded'}:{}),...(op.step==='save_album'?{localAlbumSnapshot:{operationId:op.id,localVerified:true,externalSaveOutcome:'not_attempted',remoteAlbumSaveVerified:false,noRetry:true,snapshot:s,observedAt:s.observedAt,evidenceHash:s.evidenceHash}}:{}),...(final?{terms:{termsText:s.termsText,termsHash:s.termsHash,modeText:s.modeText,evidenceHash:s.evidenceHash,observedAt:s.observedAt,visibleSubmitButton:true}}:{}),remoteId:null,submissionByClient:false});
+   return this.patch(job,{state:final?'awaiting_terms_review':'ready',stepIndex:job.stepIndex+1,step:final?null:tmeAiPrepareSteps[job.stepIndex+1],reason:null,...(op.step==='upload_audio'?{audioDisposition:i.result.status==='verified_existing'?'verified_existing':'client_uploaded'}:{}),...(op.step==='save_album'?{localAlbumSnapshot:{operationId:op.id,localVerified:true,externalSaveOutcome:'not_attempted',remoteAlbumSaveVerified:false,noRetry:true,snapshot:s,...this.albumFacts(s,grant),observedAt:s.observedAt,evidenceHash:s.evidenceHash}}:{}),...(final?{terms:{termsText:s.termsText,termsHash:s.termsHash,...(s.termsDocumentSha256?{termsDocumentSha256:s.termsDocumentSha256}:{}),modeText:s.modeText,evidenceHash:s.evidenceHash,observedAt:s.observedAt,visibleSubmitButton:true}}:{}),remoteId:null,submissionByClient:false});
   });
  }
  block(raw:unknown){
@@ -224,7 +234,7 @@ export class TmeAiPrepareService {
    if(new Date(i.snapshot.observedAt).getTime()<new Date(op.completedAt??op.interruptedAt??op.createdAt).getTime())throw Error('ALBUM_RECONCILIATION_STALE');
    // Compatibility field albumSaved means only that local album materials were journaled.
    const snapshot={...i.snapshot,verified:{...i.snapshot.verified,albumSaved:true}};this.verifyStep('save_album',snapshot,grant);
-   const localAlbumSnapshot={operationId:op.id,reconciliationHash,localVerified:true,externalSaveOutcome:'unknown',remoteAlbumSaveVerified:false,noRetry:true,snapshot,coverState:i.coverState,cropAbsent:true,observedAt:snapshot.observedAt,evidenceHash:snapshot.evidenceHash};
+   const localAlbumSnapshot={operationId:op.id,reconciliationHash,localVerified:true,externalSaveOutcome:'unknown',remoteAlbumSaveVerified:false,noRetry:true,snapshot,...this.albumFacts(snapshot,grant),coverState:i.coverState,cropAbsent:true,observedAt:snapshot.observedAt,evidenceHash:snapshot.evidenceHash};
    this.repo.audit('tmeAiPrepare.reconcileLocalAlbumSnapshot',job.id,{operationId:op.id,reconciliationHash,externalAction:false,externalSaveOutcome:'unknown'});
    // Deliberately retain the original operation byte-for-byte as unknown.
    return this.patch(job,{state:'ready',step:'advance_to_terms',stepIndex:5,reason:null,localAlbumSnapshot,remoteId:null,submissionByClient:false});
@@ -245,14 +255,14 @@ export class TmeAiPrepareService {
    const s=i.snapshot,result={status:'verified_existing',snapshot:s},readOnlyTermsReconciliation={createdAt:this.stamp(),reconciliationHash,snapshot:s,original:op};
    this.repo.save('operations',{...op,state:'complete',result,ackHash:hash(result),completedAt:this.stamp(),readOnlyTermsReconciliation});
    this.repo.audit('tmeAiPrepare.reconcileExistingTermsPreview',job.id,{operationId:op.id,reconciliationHash,externalAction:false});
-   return this.patch(job,{state:'awaiting_terms_review',step:null,stepIndex:6,reason:null,terms:{termsText:s.termsText,termsHash:s.termsHash,modeText:s.modeText,evidenceHash:s.evidenceHash,observedAt:s.observedAt,visibleSubmitButton:true},remoteId:null,submissionByClient:false,formalSubmission:false});
+   return this.patch(job,{state:'awaiting_terms_review',step:null,stepIndex:6,reason:null,terms:{termsText:s.termsText,termsHash:s.termsHash,...(s.termsDocumentSha256?{termsDocumentSha256:s.termsDocumentSha256}:{}),modeText:s.modeText,evidenceHash:s.evidenceHash,observedAt:s.observedAt,visibleSubmitButton:true},remoteId:null,submissionByClient:false,formalSubmission:false});
   });
  }
  context(id:string){const job=this.get('job',IdSchema.parse({id}).id);return{job,grant:this.get('grant',job.grantId),operations:this.repo.all('operations').filter(o=>o.kind==='tme_ai_prepare'&&o.jobId===job.id)}}
  /** Inspection only. No retry, reconciliation acknowledgement or external mutation. */
  reconcile(raw:unknown){return this.context(IdSchema.parse(raw).id)}
  private publicGrant(grant:Row){const g=grant.input;return{id:grant.id,revision:grant.revision,suspended:!!grant.suspended,workId:g.workId,title:g.metadata.title,variant:g.sourceAudio.variant,identity:{subjectType:g.identity.subjectType,maskedKugouId:'***'+g.identity.kugouId.slice(-4),qqDisplayName:g.identity.qqDisplayName,artistName:g.identity.artistName},scope:'prepare_only'}}
- private publicJob(job:Row){return{id:job.id,grantId:job.grantId,workId:job.workId,revision:job.revision,state:job.state,step:job.step,reason:job.reason,audioDisposition:job.audioDisposition,remoteId:null,submissionByClient:false,remoteAlbumSaveVerified:false,localAlbumSnapshot:job.localAlbumSnapshot?{localVerified:job.localAlbumSnapshot.localVerified,externalSaveOutcome:job.localAlbumSnapshot.externalSaveOutcome,noRetry:true,observedAt:job.localAlbumSnapshot.observedAt}:null,terms:job.terms?{termsText:job.terms.termsText,termsHash:job.terms.termsHash,modeText:job.terms.modeText,observedAt:job.terms.observedAt,visibleSubmitButton:true}:null,createdAt:job.createdAt,updatedAt:job.updatedAt}}
+ private publicJob(job:Row){return{id:job.id,grantId:job.grantId,workId:job.workId,revision:job.revision,state:job.state,step:job.step,reason:job.reason,audioDisposition:job.audioDisposition,remoteId:null,submissionByClient:false,remoteAlbumSaveVerified:false,localAlbumSnapshot:job.localAlbumSnapshot?{localVerified:job.localAlbumSnapshot.localVerified,externalSaveOutcome:job.localAlbumSnapshot.externalSaveOutcome,noRetry:true,observedAt:job.localAlbumSnapshot.observedAt,...(job.localAlbumSnapshot.existingAlbum?{existingAlbum:job.localAlbumSnapshot.existingAlbum,coverInherited:true,coverReadOnly:true}:{})}:null,terms:job.terms?{termsText:job.terms.termsText,termsHash:job.terms.termsHash,...(job.terms.termsDocumentSha256?{termsDocumentSha256:job.terms.termsDocumentSha256}:{}),modeText:job.terms.modeText,observedAt:job.terms.observedAt,visibleSubmitButton:true}:null,createdAt:job.createdAt,updatedAt:job.updatedAt}}
  listPublic(){return{grants:this.rows('grant').map(g=>this.publicGrant(g)),jobs:this.rows('job').map(j=>this.publicJob(j))}}
  contextPublic(id:string){const {job,grant}=this.context(id);return{job:this.publicJob(job),grant:this.publicGrant(grant)}}
 }

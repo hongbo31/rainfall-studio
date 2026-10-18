@@ -38,7 +38,7 @@ export function resolveTmeAiPrepareScope(s:Studio,input:{workId:string;createDer
  const artistId=w.artistId??c.artistId,artist=artistId?s.repo.maybe('artists',artistId):undefined;
  const text=(key:string,fallback?:unknown)=>typeof f[key]==='string'&&f[key].trim()?f[key]:typeof w[key]==='string'&&w[key].trim()?w[key]:fallback;
  const bool=(key:string,alias?:string)=>typeof f[key]==='boolean'?f[key]:alias&&typeof f[alias]==='boolean'?f[alias]:typeof w[key]==='boolean'?w[key]:undefined;
- const raw={title:w.title,albumTitle:text('albumTitle',text('album',c.album||w.title)),albumDescription:text('albumDescription'),artistName:text('artistName',artist?.name),lyricist:text('lyricist',c.lyricist),composer:text('composer',c.composer),ownLyrics:bool('ownLyrics','ownLyricist'),ownComposition:bool('ownComposition','ownComposer'),aiTool:text('aiTool'),generatedOn:text('generatedOn'),allowCover:bool('allowCover'),genre:text('genre',w.config?.genre||c.genre),language:text('language',w.config?.language||c.language),version:text('version','完整版'),releaseMode:text('releaseMode','审核通过即发布')};
+ const raw={title:w.title,...(text('albumMode')?{albumMode:text('albumMode')}:{}),albumTitle:text('albumTitle',text('album',c.album||w.title)),albumDescription:text('albumDescription'),artistName:text('artistName',artist?.name),lyricist:text('lyricist',c.lyricist),composer:text('composer',c.composer),ownLyrics:bool('ownLyrics','ownLyricist'),ownComposition:bool('ownComposition','ownComposer'),aiTool:text('aiTool'),generatedOn:text('generatedOn'),allowCover:bool('allowCover'),genre:text('genre',w.config?.genre||c.genre),language:text('language',w.config?.language||c.language),version:text('version','完整版'),releaseMode:text('releaseMode','审核通过即发布')};
  const parsed=TmeAiPrepareMetadataSchema.safeParse(raw),missing=parsed.success?[]:parsed.error.issues.map(issue=>String(issue.path[0]));
  if(typeof raw.generatedOn==='string'&&raw.generatedOn>s.now().toISOString().slice(0,10))missing.push('generatedOn');
  if(missing.length)throw Object.assign(Error('TME_AI_METADATA_REQUIRED:'+ [...new Set(missing)].join(',')),{code:'TME_AI_METADATA_REQUIRED'});
@@ -66,5 +66,5 @@ export function resolveTmeAiPrepareScope(s:Studio,input:{workId:string;createDer
   }
   uploadPath=file;uploadHash=audio.sha256;
  }
- return{workId:w.id,...(accountId?{accountId}:{}),variant:'A' as const,prepareOnly:true,sourceAudio:{assetId:audio.id,sha256:audio.sha256,variant:'A' as const},upload:{path:uploadPath,sha256:uploadHash!,format:'pcm_wav' as const,derivedFromSha256:audio.sha256},cover:{assetId:cover.id,sha256:cover.sha256},lyricsHash:hash(lyrics),metadata};
+ return{workId:w.id,...(accountId?{accountId}:{}),variant:'A' as const,prepareOnly:true,sourceAudio:{assetId:audio.id,sha256:audio.sha256,variant:'A' as const},upload:{path:uploadPath,sha256:uploadHash!,format:'pcm_wav' as const,derivedFromSha256:audio.sha256},cover:{assetId:cover.id,sha256:cover.sha256},lyricsHash:hash(lyrics),metadata,...(metadata.albumMode==='existing'?{existingAlbum:{title:metadata.albumTitle}}:{})};
 }

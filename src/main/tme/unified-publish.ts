@@ -1,5 +1,6 @@
 import {createTmeAiBrowserPreparePort} from './ai-prepare-browser';
 import {createTmeAiBrowserSubmissionExecutor} from './ai-submission-browser';
+import {createTmeExistingAlbumPreparePort,createTmeExistingAlbumSubmissionExecutor} from './ai-existing-album-browser';
 import type {TmeAiSubmissionCapability} from '../../shared/tme-ai-submission';
 type Broker = {ui(action:string,input?:any):Promise<any>};
 type Options = {
@@ -7,6 +8,7 @@ type Options = {
  available:()=>boolean;
  generation:()=>number;
  nativeAvailable?:()=>boolean;
+ publicationBarrier?:(task:any)=>{reason:string}|null|Promise<{reason:string}|null>;
  preparationCapability?:()=>{available:boolean;reason?:string};
  prepare:Broker;
  submission:Broker;
@@ -25,6 +27,7 @@ export function createUnifiedPublishBroker(o:Options){
   const update=async(patch:any)=>{guard();task=await rpc('update',{id:task.id,expectedRevision:task.revision,patch});guard()};
   try{
    guard();
+   const barrier=await o.publicationBarrier?.(task);if(barrier){await update({state:'blocked',reason:barrier.reason});return}
    const preparation=o.preparationCapability?.()??{available:o.nativeAvailable?.()===true,reason:'WINDOWS_REQUIRED'};
    if(!preparation.available){await update({state:'blocked',reason:preparation.reason??'PREPARATION_EXECUTOR_UNAVAILABLE'});return}
    // Core resolves the exact current work/audio/account/material scope. Never guess a grant by title or work alone.
@@ -69,6 +72,7 @@ export function createUnifiedPublishBroker(o:Options){
   try{
    let task=(await rpc('list')).find((t:any)=>t.id===id);guard();if(!task)throw Error('NOT_FOUND');
    if(task.reason==='PROTECTED_PUBLISHED_WORK')throw Error('PROTECTED_PUBLISHED_WORK');
+   if(task.reason==='OFFICIAL_RECORD_ALREADY_EXISTS'&&task.receipt){await o.submission.ui('reconcile',{id:task.workId});guard();return(await rpc('list')).find((t:any)=>t.id===id)}
    if(task.submissionJobId){await o.submission.ui('reconcile',{id:task.submissionJobId});guard();return(await rpc('list')).find((t:any)=>t.id===id)}
    const context=await rpc('prepareContext',{id});guard();
    if(!context.job)throw Error('PREPARATION_REQUIRED');
@@ -100,10 +104,14 @@ export function createTmeAiTransportProvider(o:{
  platform:NodeJS.Platform;
  native:{request(action:string,input:any):Promise<any>};
  nativeObserve:(context:any)=>Promise<any>;
+ cloudExistingAlbumSession?:()=>Parameters<typeof createTmeExistingAlbumPreparePort>[0]|undefined;
+ readExternalReceipt?:(context:any)=>Promise<any>;
  cloudSession?:()=>Parameters<typeof createTmeAiBrowserSubmissionExecutor>[0]|undefined;
  cloudPreparationSession?:()=>Parameters<typeof createTmeAiBrowserPreparePort>[0]|undefined;
  cloudPrepare?:{request(action:string,input:any):Promise<any>;capability():{available:boolean;reason?:string}};
 }){
+ let existingSession:Parameters<typeof createTmeExistingAlbumPreparePort>[0]|undefined,existingPrepare:ReturnType<typeof createTmeExistingAlbumPreparePort>|undefined,existingSubmit:ReturnType<typeof createTmeExistingAlbumSubmissionExecutor>|undefined;
+ const resolveExisting=()=>{const current=o.cloudExistingAlbumSession?.();if(current!==existingSession){existingSession=current;existingPrepare=current?createTmeExistingAlbumPreparePort(current):undefined;existingSubmit=current?createTmeExistingAlbumSubmissionExecutor(current):undefined}return{prepare:existingPrepare,submit:existingSubmit}};
  let session:Parameters<typeof createTmeAiBrowserSubmissionExecutor>[0]|undefined;
  let browser:ReturnType<typeof createTmeAiBrowserSubmissionExecutor>|undefined;
  const resolve=()=>{
@@ -113,24 +121,25 @@ export function createTmeAiTransportProvider(o:{
  };
  let prepSession:Parameters<typeof createTmeAiBrowserPreparePort>[0]|undefined,prepBrowser:ReturnType<typeof createTmeAiBrowserPreparePort>|undefined;
  const resolvePrepare=()=>{const current=o.cloudPreparationSession?.();if(current!==prepSession){prepSession=current;prepBrowser=current?createTmeAiBrowserPreparePort(current):undefined}return prepBrowser};
- const required=()=>{const port=resolve();if(!port)throw Error('CLOUD_BROWSER_SESSION_REQUIRED');return port};
- const preparationCapability=()=>{const browser=resolvePrepare();if(browser){const c=browser.capability();return{available:c.available,reason:c.reasons[0]}}return o.cloudPrepare?.capability()??(o.platform==='win32'?{available:true}:{available:false,reason:'CLOUD_PREPARE_CONTRACT_UNVERIFIED'});};
+ const required=()=>{const port=resolveExisting().submit??resolve();if(!port)throw Error('CLOUD_BROWSER_SESSION_REQUIRED');return port};
+ const preparationCapability=()=>{if(o.cloudExistingAlbumSession){const port=resolveExisting().prepare;if(!port)return{available:false,reason:'CLOUD_BROWSER_SESSION_REQUIRED'};const c=port.capability();return{available:c.available,reason:c.reasons[0]}}const browser=resolvePrepare();if(browser){const c=browser.capability();return{available:c.available,reason:c.reasons[0]}}return o.cloudPrepare?.capability()??(o.platform==='win32'?{available:true}:{available:false,reason:'CLOUD_PREPARE_CONTRACT_UNVERIFIED'});};
  return{
   preparationCapability,
   prepare:{async request(action:string,input:any){
    const cap=preparationCapability();if(!cap.available)throw Error(cap.reason??'PREPARATION_EXECUTOR_UNAVAILABLE');
-   return(resolvePrepare()??o.cloudPrepare??o.native).request(action,input);
+   return(resolveExisting().prepare??resolvePrepare()??o.cloudPrepare??o.native).request(action,input);
   }},
   observe:async(context:any)=>{
-   const port=resolve();if(port)return port.observe(context);
+   const port=resolveExisting().submit??resolve();if(port)return port.observe(context);
    if(o.platform==='win32')return o.nativeObserve(context);
    throw Error('CLOUD_BROWSER_SESSION_REQUIRED');
   },
   executor:{
-   capability:():TmeAiSubmissionCapability=>resolve()?.capability()??{
+   capability:():TmeAiSubmissionCapability=>({...((resolveExisting().submit??resolve())?.capability()??{
     available:false,transport:o.platform==='win32'?'windows-uia':'cloud-playwright',
     reasons:o.platform==='win32'?['NATIVE_AI_SUBMIT_CONTRACT_UNVERIFIED','OFFICIAL_RECEIPT_CONTRACT_UNVERIFIED']:['CLOUD_BROWSER_SESSION_REQUIRED','BROWSER_AI_SUBMIT_CONTRACT_UNVERIFIED','OFFICIAL_RECEIPT_CONTRACT_UNVERIFIED'],
-   },
+   }),readOnlyReceiptAvailable:!!o.readExternalReceipt&&!!o.cloudExistingAlbumSession?.()}),
+   readExternalReceipt:async(context:any)=>{if(!o.readExternalReceipt)throw Error('OFFICIAL_RECEIPT_CONTRACT_UNVERIFIED');return o.readExternalReceipt(context)},
    accept:async(context:any)=>required().accept(context),
    submit:async(context:any)=>required().submit(context),
    readReceipt:async(context:any)=>required().readReceipt(context),

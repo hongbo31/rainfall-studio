@@ -271,6 +271,14 @@ export class YourMusicAdapter implements MusicAdapter {
       return { state: "error" };
     }
   }
+  async nativeWav(songId:string){
+    z.string().uuid().parse(songId);
+    const r=await this.api('POST','/v1/music/generations/wav',{songid:songId});
+    if(r.status!==200)throw Error('NATIVE_WAV_NOT_AVAILABLE');
+    const result=z.object({id:z.string(),audio_wav_url:z.string().url()}).parse(r.body);
+    if(result.id!==songId)throw Error('OUTPUT_ID_MISMATCH');
+    safeMusicUrl(result.audio_wav_url);return result;
+  }
   async recoverRecent(input:{draft:CreativeDraft;createdAt:string}){
     const r=await this.api('GET','/v1/music/generations/history?page=1&size=20');
     if(r.status!==200)return{state:'not_established',httpStatus:r.status};

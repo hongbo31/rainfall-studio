@@ -40,6 +40,7 @@ import {createTmeAiPrepareBroker,TmeAiNativePort,nativeSnapshot} from './tme/ai-
 import {createTmeAiSubmissionBroker} from './tme/ai-submission';
 import {TmeAiCloudSessionManager} from './tme/ai-cloud-session';
 import {createUnifiedPublishBroker,createTmeAiTransportProvider} from './tme/unified-publish';
+import {externalReceiptBarrier,persistExternalReceiptBarrier,persistExternalReceiptStop} from './tme/external-receipt-barrier';
 import {installNativeDiagnostics} from './native-diagnostics';
 if (require("electron-squirrel-startup")) app.quit();
 protocol.registerSchemesAsPrivileged([
@@ -127,15 +128,16 @@ const liveText=createLiveTextBroker({credentials:apiCredentials,rpc:(method,inpu
 const productionTransport=new WindowsUiaTransport(path.join(__dirname,'tme-uia-host.ps1'));
 const productionFlow=createProductionFlowBroker({credentials:apiCredentials,rpc:(method,input)=>rpc(method,input),available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,publication:blockedTmePublicationPort(productionTransport)});
 const tmeAiNative=new TmeAiNativePort(path.join(__dirname,'tme-ai-uia-host.ps1'));
-const tmeAiCloud=new TmeAiCloudSessionManager({available:()=>mode==='production'&&!switching&&!closing});
+const tmeAiCloud=new TmeAiCloudSessionManager({enableExistingAlbum:true,available:()=>mode==='production'&&!switching&&!closing});
 // Cloud sessions and calibrated browser contracts must be supplied by Main, never renderer flags.
-const tmeAiTransport=createTmeAiTransportProvider({platform:process.platform,cloudSession:()=>tmeAiCloud.submissionSession(),cloudPreparationSession:()=>tmeAiCloud.preparationSession(),native:tmeAiNative,nativeObserve:async(context)=>{
+const tmeAiTransport=createTmeAiTransportProvider({platform:process.platform,cloudSession:()=>tmeAiCloud.submissionSession(),cloudExistingAlbumSession:()=>tmeAiCloud.existingAlbumSession(),readExternalReceipt:async(context)=>{const receipt=await tmeAiCloud.readExternalReceipt(context);persistExternalReceiptBarrier(root,receipt);return receipt},cloudPreparationSession:()=>tmeAiCloud.preparationSession(),native:tmeAiNative,nativeObserve:async(context)=>{
   const g=context.grant.input;
   return nativeSnapshot((await tmeAiNative.request('observe',{binding:g.binding,artistName:g.metadata.artistName})).snapshot);
 }});
-const tmeAiPrepare=createTmeAiPrepareBroker({root,rpc:(method,input)=>rpc(method,input),port:tmeAiTransport.prepare,resolveScope:async(workId,createDerivative)=>{const result=await rpc('internal.tmeAiPrepare.resolveScope',{workId,createDerivative});if(!result.ok)throw Error(result.error.code);return result.value},available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,nativeHostHash:()=>createHash('sha256').update(fs.readFileSync(tmeAiNative.script)).digest('hex')});
+async function checkExternalReceiptBarrier(scope:any){const result=await rpc('internal.tmeAiSubmission.externalRecords',{});if(!result.ok)throw Error('EXTERNAL_RECEIPT_SCAN_REQUIRED');for(const receipt of result.value)persistExternalReceiptStop(root,receipt);return externalReceiptBarrier(root,scope)}
+const tmeAiPrepare=createTmeAiPrepareBroker({publicationBarrier:checkExternalReceiptBarrier,root,rpc:(method,input)=>rpc(method,input),port:tmeAiTransport.prepare,resolveScope:async(workId,createDerivative)=>{const result=await rpc('internal.tmeAiPrepare.resolveScope',{workId,createDerivative});if(!result.ok)throw Error(result.error.code);return result.value},available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,nativeHostHash:()=>createHash('sha256').update(fs.readFileSync(tmeAiNative.script)).digest('hex')});
 const tmeAiSubmission=createTmeAiSubmissionBroker({root,rpc:(method,input)=>rpc(method,input),available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,observe:tmeAiTransport.observe,executor:tmeAiTransport.executor});
-const unifiedPublish=createUnifiedPublishBroker({rpc:(method,input)=>rpc(method,input),available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,preparationCapability:tmeAiTransport.preparationCapability,prepare:tmeAiPrepare,submission:tmeAiSubmission});
+const unifiedPublish=createUnifiedPublishBroker({rpc:(method,input)=>rpc(method,input),available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,publicationBarrier:checkExternalReceiptBarrier,preparationCapability:tmeAiTransport.preparationCapability,prepare:tmeAiPrepare,submission:tmeAiSubmission});
 setInterval(()=>{void productionFlow.pump();void unifiedPublish.pump();},2000).unref();
 const pending = new Map<
   string,
@@ -244,7 +246,7 @@ function handlers() {
     }));
   ipcMain.handle('rainfall:tme-ai-prepare',(event,action,input)=>safe(async()=>{
     trusted(event);
-    try{if(action==='connectBrowser')return{ok:true,value:await tmeAiCloud.connect(input)};if(action==='inspectBrowserAccount')return{ok:true,value:await tmeAiCloud.inspectAccount(input)};if(action==='browserStatus')return{ok:true,value:tmeAiCloud.status()};if(action==='disconnectBrowser')return{ok:true,value:await tmeAiCloud.disconnect()};const value=await tmeAiPrepare.ui(action,input);if(['register','start','run','reconcile','resumePicker','resumeCrop'].includes(action))void unifiedPublish.pump();return{ok:true,value}}catch(e){
+    try{if(action==='connectBrowser')return{ok:true,value:await tmeAiCloud.connect(input)};if(action==='inspectBrowserAccount')return{ok:true,value:await tmeAiCloud.inspectAccount(input)};if(action==='fillIntakeFields')return{ok:true,value:await tmeAiCloud.fillIntakeFields(input)};if(action==='browserStatus')return{ok:true,value:tmeAiCloud.status()};if(action==='disconnectBrowser')return{ok:true,value:await tmeAiCloud.disconnect()};const value=await tmeAiPrepare.ui(action,input);if(['register','start','run','reconcile','resumePicker','resumeCrop'].includes(action))void unifiedPublish.pump();return{ok:true,value}}catch(e){
       const code=e instanceof Error&&/^[A-Z0-9_]+$/.test(e.message)?e.message:'REQUEST_REJECTED';
       return{ok:false,error:{code,message:'腾讯AI准备未完成：'+code+'。未知结果须只读核对，禁止重复上传；尚未接受条款或正式提交。'}};
     }

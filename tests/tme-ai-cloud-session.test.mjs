@@ -8,8 +8,8 @@ const outfile=path.resolve('output/cloud-session-tests/manager.cjs');
 await build({entryPoints:['src/main/tme/ai-cloud-session.ts'],outfile,bundle:true,platform:'node',format:'cjs',packages:'external'});
 const {TmeAiCloudSessionManager,validateCloudCdpEndpoint}=createRequire(import.meta.url)(outfile);
 function fixture(options={}){
- const state={connected:true,closed:false,connects:0,disconnects:0,url:'https://y.tencentmusic.com/#/user/manage/aiChoose/add',values:{kg:'123456',qq:'Test QQ',artist:'Test Artist'},count:1,visible:true};
- const page={url:()=>state.url,isClosed:()=>state.closed,locator:s=>({count:async()=>state.count,isVisible:async()=>state.visible,innerText:async()=>state.values[s]??''})};
+ const state={connected:true,closed:false,connects:0,disconnects:0,pageInteractions:[],rejectPageInteraction:false,url:'https://y.tencentmusic.com/#/user/manage/aiChoose/add',values:{kg:'123456',qq:'Test QQ',artist:'Test Artist'},count:1,visible:true};
+ const page=new Proxy({url:()=>state.url,isClosed:()=>state.closed,locator:s=>({count:async()=>state.count,isVisible:async()=>state.visible,innerText:async()=>state.values[s]??''})},{get(target,key,receiver){if(state.rejectPageInteraction){state.pageInteractions.push(String(key));throw Error('UNEXPECTED_PAGE_INTERACTION')}return Reflect.get(target,key,receiver)}});
  const browser={contexts:()=>[{pages:()=>state.pages??[page]}],isConnected:()=>state.connected,on:(_,fn)=>{state.onDisconnect=fn},close:async()=>{state.disconnects++;state.connected=false;state.onDisconnect?.()}};
  const manager=new TmeAiCloudSessionManager({...options,connectCDP:async port=>{state.connects++;state.port=port;return browser}});
  return{manager,state,page,browser};
@@ -53,4 +53,15 @@ test('status is read-only and session close invalidates cached session',async()=
 });
 test('bootstrap supplies concrete session callbacks and explicit connection handler',()=>{
  const bootstrap=fs.readFileSync('src/main/bootstrap.ts','utf8');for(const expected of ['new TmeAiCloudSessionManager','cloudSession:()=>tmeAiCloud.submissionSession()','cloudPreparationSession:()=>tmeAiCloud.preparationSession()',"action==='connectBrowser'",'tmeAiCloud.connect(input)'])assert.ok(bootstrap.includes(expected),expected);
+});
+test('intake fill remains unconditionally locked with an explicitly enabled connected existing-album session',async()=>{
+ const x=fixture({enableExistingAlbum:true,available:()=>true});await x.manager.connect({allowConnection:true});
+ assert.equal(x.manager.status().connected,true);assert.ok(x.manager.existingAlbumSession());
+ assert.equal(x.manager.status().existingAlbumWritesEnabled,false);
+ x.state.rejectPageInteraction=true;
+ for(const input of [undefined,{}, {metadata:{title:'Offline song',albumMode:'existing',albumTitle:'Official album'},consent:true,enableExistingAlbum:true}]){
+  await assert.rejects(x.manager.fillIntakeFields(input),/^Error: EXISTING_ALBUM_WRITE_INTEGRATION_UNVERIFIED$/);
+  assert.deepEqual(x.state.pageInteractions,[],'locked fill must not read or mutate any Page property');
+ }
+ assert.equal(x.state.connects,1);assert.equal(x.state.disconnects,0);
 });

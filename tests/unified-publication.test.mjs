@@ -6,6 +6,14 @@ test('published Leave a Light recording cannot create or claim another upload',t
  const x=setup(t),task=x.service.enqueue([{...x.request,title:'留一盏灯'}])[0];assert.equal(task.state,'blocked');assert.equal(task.reason,'PROTECTED_PUBLISHED_WORK');assert.throws(()=>x.service.claim({id:task.id,expectedRevision:task.revision}),/PROTECTED/);
 });
 const w=createRequire(import.meta.url)('../output/unified-tests/core.cjs');
+function externalReceipt(x){return{source:'official',state:'reviewing',workId:x.request.workId,title:x.request.title,artistName:'fixture artist',audioSha256:'a'.repeat(64),externalSongRecordId:'18281901',albumId:'6437318',albumTitle:'fixture album',acceptedAt:'2026-10-18T09:00:00Z',termsSha256:'d'.repeat(64),explicitUserConsentAt:'2026-10-18T08:59:00Z',submittedAt:'2026-10-18T09:00:01Z',observedAt:'2026-10-18T10:00:00Z',officialStatusText:'审核中',sourceUrl:'https://y.tencentmusic.com/#/user/manage/albumlist'};}
+test('a recorded official song receipt protects the same work and copied recording before preparation',t=>{
+ const x=setup(t),receipt=externalReceipt(x);x.repo.save('settings',{id:'external-publication:tme:'+receipt.workId,value:receipt});
+ const task=x.service.enqueue([x.request])[0];assert.equal(task.state,'reviewing');assert.equal(task.reason,'OFFICIAL_RECORD_ALREADY_EXISTS');assert.throws(()=>x.service.claim({id:task.id,expectedRevision:task.revision}),/OFFICIAL_RECORD_ALREADY_EXISTS/);
+ const copy=x.service.enqueue([{...x.request,workId:randomUUID(),accountId:randomUUID()}])[0];assert.equal(copy.state,'blocked');assert.equal(copy.reason,'OFFICIAL_RECORD_ALREADY_EXISTS');assert.throws(()=>x.service.claim({id:copy.id,expectedRevision:copy.revision}),/OFFICIAL_RECORD_ALREADY_EXISTS/);
+ const restarted=new w.UnifiedPublicationService(x.repo,x.options);assert.equal(restarted.byId(task.id).receipt.remoteId,'18281901');assert.equal(restarted.byId(task.id).state,'reviewing');
+});
+test('malformed external observations cannot fabricate a terminal pipeline state',t=>{const x=setup(t);x.repo.save('settings',{id:'external-publication:tme:'+x.request.workId,value:{...externalReceipt(x),source:'user-reported'}});assert.equal(x.service.enqueue([x.request])[0].state,'queued')});
 function setup(t){
  assert.equal(typeof w.UnifiedPublicationService,'function');
  const repo=new w.Repository('output/test-runs/unified-'+randomUUID()+'/db.sqlite');t.after(()=>repo.close());
