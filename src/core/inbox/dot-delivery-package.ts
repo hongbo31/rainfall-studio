@@ -82,6 +82,7 @@ export function deliveryFailure(error: any) {
       "DELIVERY_SYNC_PENDING",
       "DELIVERY_FILE_CHANGED",
       "DELIVERY_IO_FAILED",
+      "DELIVERY_VOLUME_FACTS_UNAVAILABLE",
     ].includes(reason) || !/^(DELIVERY_|DOT_DELIVERY_|INBOX_)/.test(reason);
   return { reason, retryable };
 }

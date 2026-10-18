@@ -3,6 +3,7 @@ import { build as viteBuild } from "vite";
 import fs from "node:fs/promises";
 await fs.mkdir("build", { recursive: true });
 await fs.copyFile('src/core/inbox/dot-rename-exclusive.ps1','build/dot-rename-exclusive.ps1');
+await fs.copyFile('src/core/inbox/dot-volume-facts.ps1','build/dot-volume-facts.ps1');
 await fs.copyFile('src/main/tme/uia-host.ps1','build/tme-uia-host.ps1');
 await fs.copyFile('src/main/tme/ai-uia-host.ps1','build/tme-ai-uia-host.ps1');
 await fs.copyFile('src/main/tme/uia-grid.ps1','build/uia-grid.ps1');

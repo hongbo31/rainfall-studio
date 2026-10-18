@@ -1,10 +1,15 @@
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-export const exclusiveHelperPath = (base: string = __dirname) =>
+export const physicalInboxHelperPath = (
+  name: "dot-rename-exclusive.ps1" | "dot-volume-facts.ps1",
+  base: string = __dirname,
+) =>
   path.join(
     base.replace(/([\\/])app\.asar([\\/])/, "$1app.asar.unpacked$2"),
-    "dot-rename-exclusive.ps1",
+    name,
   );
+export const exclusiveHelperPath = (base: string = __dirname) =>
+  physicalInboxHelperPath("dot-rename-exclusive.ps1", base);
 /** Windows File.Move is atomic and never replaces an existing destination, including on DriveFS. */
 export function renameExclusive(source: string, destination: string) {
   if (process.platform !== "win32")

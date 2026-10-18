@@ -477,3 +477,24 @@ test("exclusive move helper resolves physical unpacked path and accepted receipt
     path.resolve("output/resources/app/build/dot-rename-exclusive.ps1"),
   );
 });
+
+test("file-policy upgrade retries old file rejection once through the normal bridge", async (t) => {
+  const x = setup(t);
+  payload(x);
+  await x.bridge.scanOnce();
+  const row = x.repo
+    .all("settings")
+    .find((r) => r.id.startsWith("dot-bridge-state:"));
+  x.repo.save("settings", {
+    ...row,
+    state: "rejected",
+    reason: "DELIVERY_FILE_REJECTED",
+    manifestSha256: null,
+    filePolicyVersion: 1,
+  });
+  await x.bridge.scanOnce();
+  const upgraded = x.repo.get("settings", row.id);
+  assert.equal(upgraded.state, "staged");
+  assert.equal(upgraded.filePolicyVersion, 2);
+  assert.equal(x.repo.all("textCandidates").length, 0);
+});

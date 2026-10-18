@@ -19,7 +19,7 @@ const runtime=path.resolve('node_modules/electron/dist'),app=path.join(dest,'res
 await fs.promises.cp(runtime,dest,{recursive:true});await fs.promises.mkdir(app,{recursive:true});
 const filter=p=>!p.endsWith('.map')&&!/\.(pdb|obj|ilk|lib|tlog)$/i.test(p);
 await fs.promises.mkdir(path.join(app,'build'),{recursive:true});
-for(const name of ['main.cjs','core.cjs','preload.cjs','tme-uia-host.ps1','tme-ai-uia-host.ps1','uia-grid.ps1','dot-rename-exclusive.ps1','dot-inbox-host.cjs'])await fs.promises.copyFile(path.join('build',name),path.join(app,'build',name));
+for(const name of ['main.cjs','core.cjs','preload.cjs','tme-uia-host.ps1','tme-ai-uia-host.ps1','uia-grid.ps1','dot-rename-exclusive.ps1','dot-volume-facts.ps1','dot-inbox-host.cjs'])await fs.promises.copyFile(path.join('build',name),path.join(app,'build',name));
 await fs.promises.cp('build/ui',path.join(app,'build','ui'),{recursive:true,filter});
 await fs.promises.cp('assets',path.join(app,'assets'),{recursive:true});
 const pkg=JSON.parse(fs.readFileSync('package.json','utf8'));fs.writeFileSync(path.join(app,'package.json'),JSON.stringify({...pkg,name:'rainfall-studio-tme-candidate',productName:'Rainfall Studio · 独立联调候选',version:(nightly||productionFlow)?pkg.version:simplePublish?'0.5.3-simple-publish.1':musicLive?'0.5.2-music-live-once.3':connectionCheck?'0.5.1-api-connection.2':'0.5.1-tme-readiness.1',scripts:undefined,devDependencies:undefined,config:undefined},null,2));

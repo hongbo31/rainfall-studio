@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { TextDecoder } from "node:util";
 import { assertInboxPath } from "./receiver";
 import { renameExclusive } from "./dot-rename-exclusive";
+import { acceptableLinkCount } from "./dot-volume-policy";
 export const sha = (bytes: Buffer) =>
   createHash("sha256").update(bytes).digest("hex");
 export function directory(folder: string) {
@@ -17,7 +18,7 @@ export function directory(folder: string) {
 export function read(file: string, max: number) {
   assertInboxPath(file);
   const before = fs.lstatSync(file);
-  if (!before.isFile() || before.nlink !== 1)
+  if (!before.isFile() || !acceptableLinkCount(before, file))
     throw Error("DELIVERY_FILE_REJECTED");
   if (before.size > max) throw Error("DELIVERY_FILE_LIMIT");
   const fd = fs.openSync(
@@ -28,7 +29,7 @@ export function read(file: string, max: number) {
     const pinned = fs.fstatSync(fd);
     if (
       !pinned.isFile() ||
-      pinned.nlink !== 1 ||
+      !acceptableLinkCount(pinned, file) ||
       pinned.ino !== before.ino ||
       pinned.dev !== before.dev ||
       pinned.size !== before.size
@@ -41,7 +42,8 @@ export function read(file: string, max: number) {
       length !== pinned.size ||
       after.size !== pinned.size ||
       after.mtimeMs !== pinned.mtimeMs ||
-      after.ctimeMs !== pinned.ctimeMs
+      after.ctimeMs !== pinned.ctimeMs ||
+      after.nlink !== pinned.nlink
     )
       throw Error("DELIVERY_FILE_CHANGED");
     assertInboxPath(file);

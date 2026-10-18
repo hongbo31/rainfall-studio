@@ -73,6 +73,7 @@ export class DotDeliveryBridge {
       projectRoot: this.options.projectRoot,
       deliveryId: id,
       updatedAt: this.now().toISOString(),
+      filePolicyVersion: 2,
     });
   }
   status() {
@@ -170,7 +171,14 @@ export class DotDeliveryBridge {
           const id = entry.name,
             old = this.state(id),
             source = path.join(incomingRoot, id);
-          if (old?.state === "rejected") continue;
+          if (
+            old?.state === "rejected" &&
+            !(
+              old.reason === "DELIVERY_FILE_REJECTED" &&
+              (old.filePolicyVersion ?? 1) < 2
+            )
+          )
+            continue;
           if (
             old?.nextAttemptAt &&
             Date.parse(old.nextAttemptAt) > this.now().getTime()

@@ -255,6 +255,7 @@ export class DotDeliveryReceiver {
                 "DELIVERY_SYNC_PENDING",
                 "DELIVERY_FILE_CHANGED",
                 "DELIVERY_IO_FAILED",
+                "DELIVERY_VOLUME_FACTS_UNAVAILABLE",
               ].includes(reason) ||
               reason.startsWith("SQLITE_IOERR_") ||
               reason.startsWith("SQLITE_BUSY_");
