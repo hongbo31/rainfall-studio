@@ -132,6 +132,7 @@ if (port) {
   );
   let chain = Promise.resolve().then(() => studio.scanInbox());
   const execute = async (method: string, input: any) => {
+    if(method==='internal.inboxBridge.configure')return studio.inboxController().configureBridge(input);
     if(method.startsWith('internal.unifiedPublish.'))return executeUnifiedPublication(studio,method.slice('internal.unifiedPublish.'.length),input);
     if(method.startsWith('internal.tmeAiSubmission.'))return executeTmeAiSubmission(studio,method.slice('internal.tmeAiSubmission.'.length),input);
     if(method.startsWith('internal.tmeAiPrepare.'))return executeTmeAiPrepare(studio,method.slice('internal.tmeAiPrepare.'.length),input);
@@ -266,6 +267,9 @@ if (port) {
   };
   port.on("message", ({ data }: any) => {
     if(data.kind==='music-provider-result'){const p=networkPending.get(data.id);if(p){clearTimeout(p.timer);networkPending.delete(data.id);if(data.ok)p.resolve(data.value);else p.reject(Error('PROVIDER_OPERATION_FAILED'))}return;}
+    if(['inbox.pause','inbox.bridge.pause','internal.inboxBridge.configure'].includes(data.method)){
+      try{studio.inboxController().interruptRequest(data.method,data.input)}catch{/* Serialized execution returns the validation error. */}
+    }
     chain = chain.then(async () => {
       try {
         const value = await execute(data.method, data.input);

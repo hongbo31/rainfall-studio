@@ -217,10 +217,87 @@ export default function TextCandidates() {
       {status.packageDelivery && (
         <details>
           <summary>歌词与封面包收件 · 本地通道</summary>
-          <p>
-            云端同步链路尚未验收。Google Drive
-            登录及同步目录映射完成后，才能验证自动送达。
-          </p>
+          <p>云端同步链路尚未验收；本地回执写入不代表云端已收到。</p>
+          <button
+            type="button"
+            disabled={busy || !status.configured}
+            onClick={async () => {
+              setBusy(true);
+              setError("");
+              try {
+                await call("inbox.bridge.chooseDirectory");
+                await refresh();
+              } catch {
+                setError(
+                  "同步目录未保存。请选择包含 incoming 和 receipts 的专用项目目录，并确认目录可用。",
+                );
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            {status.bridge?.configured
+              ? "更换可信同步目录"
+              : "选择可信同步目录"}
+          </button>
+          {!status.configured && <p>先配置本地收件通道，再选择同步目录。</p>}
+          {status.bridge?.configured ? (
+            <>
+              <p>
+                同步项目：<code>{status.bridge.projectRoot}</code> ·{" "}
+                {status.bridge.enabled && status.active
+                  ? "文件桥接已启用"
+                  : "文件桥接已暂停"}
+              </p>
+              <p>
+                只读 incoming 中的投递包；只向 receipts
+                写入本地数据库已确认的回执。
+              </p>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  setError("");
+                  try {
+                    await call(
+                      status.bridge.enabled
+                        ? "inbox.bridge.pause"
+                        : "inbox.bridge.resume",
+                      { expectedRevision: status.bridge.revision },
+                    );
+                    await refresh();
+                  } catch {
+                    setError("桥接状态未变更，请检查目录及配置版本后重试。");
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                {status.bridge.enabled ? "暂停文件桥接" : "恢复文件桥接"}
+              </button>
+              {status.bridge.states.map((s: any) => (
+                <p key={s.deliveryId}>
+                  {s.deliveryId} ·{" "}
+                  {s.state === "acknowledged"
+                    ? "回执已写入同步目录（未核实云端）"
+                    : s.state === "staged"
+                      ? "文件已校验，等待私有收件入库"
+                      : s.state === "receipt_waiting"
+                        ? "回执等待写回同步目录"
+                        : s.state === "waiting"
+                          ? "等待文件同步或目录恢复"
+                          : "桥接已拒收"}
+                  {s.reason && ` · ${s.reason}`}
+                </p>
+              ))}
+              {status.bridge.lastError && (
+                <p role="alert">文件桥接：{status.bridge.lastError}</p>
+              )}
+            </>
+          ) : (
+            <p>同步路径未配置；等待登录 Google Drive 后选择实际项目目录。</p>
+          )}
           <p>
             包目录：<code>{status.packageDelivery.root}</code>
           </p>

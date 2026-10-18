@@ -1,18 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createHash, randomUUID } from "node:crypto";
-import { TextDecoder } from "node:util";
-import { InboxId, InboxPackageSchema } from "../../shared/inbox";
-import {
-  DeliveryManifestSchema,
-  DeliveryReadySchema,
-} from "../../shared/dot-delivery";
-import { verifyDeliveryImage } from "./dot-delivery-image";
+import { randomUUID } from "node:crypto";
+
+import { InboxId } from "../../shared/inbox";
+import { DeliveryReadySchema } from "../../shared/dot-delivery";
+import { readDeliveryPackage } from "./dot-delivery-package";
+import { directory, read, json, writeJson, sha } from "./dot-delivery-files";
 import { DotDeliveryStore } from "./dot-delivery-store";
 import { assertInboxPath } from "./receiver";
 import { inboxHash } from "./service";
 
-const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 const statePrefix = "dot-delivery-state:";
 type Options = {
   store: DotDeliveryStore;
@@ -22,81 +19,6 @@ type Options = {
   now?: () => Date;
   afterCommit?: () => void;
 };
-function directory(folder: string) {
-  assertInboxPath(folder);
-  fs.mkdirSync(folder, { recursive: true });
-  assertInboxPath(folder);
-  if (!fs.lstatSync(folder).isDirectory())
-    throw Error("DELIVERY_DIRECTORY_REQUIRED");
-}
-/** Pin and bound every read. Hashes, not the arrival of READY, establish that sync completed. */
-function read(file: string, max: number) {
-  assertInboxPath(file);
-  const before = fs.lstatSync(file);
-  if (!before.isFile() || before.nlink !== 1)
-    throw Error("DELIVERY_FILE_REJECTED");
-  if (before.size > max) throw Error("DELIVERY_FILE_LIMIT");
-  const fd = fs.openSync(
-    file,
-    fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0),
-  );
-  try {
-    const pinned = fs.fstatSync(fd);
-    if (
-      !pinned.isFile() ||
-      pinned.nlink !== 1 ||
-      pinned.ino !== before.ino ||
-      pinned.dev !== before.dev ||
-      pinned.size !== before.size
-    )
-      throw Error("DELIVERY_FILE_CHANGED");
-    const bytes = Buffer.alloc(pinned.size + 1),
-      length = fs.readSync(fd, bytes, 0, bytes.length, 0),
-      after = fs.fstatSync(fd);
-    if (
-      length !== pinned.size ||
-      after.size !== pinned.size ||
-      after.mtimeMs !== pinned.mtimeMs ||
-      after.ctimeMs !== pinned.ctimeMs
-    )
-      throw Error("DELIVERY_FILE_CHANGED");
-    assertInboxPath(file);
-    return bytes.subarray(0, length);
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-function json(bytes: Buffer) {
-  try {
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-  } catch {
-    throw Error("DELIVERY_JSON_INVALID");
-  }
-}
-function writeJson(root: string, name: string, value: unknown) {
-  directory(root);
-  const dest = path.join(root, name);
-  assertInboxPath(dest);
-  if (fs.existsSync(dest)) {
-    const stat = fs.lstatSync(dest);
-    if (!stat.isFile() || stat.nlink !== 1)
-      throw Error("DELIVERY_FILE_REJECTED");
-  }
-  const temporary = path.join(root, randomUUID() + ".partial"),
-    fd = fs.openSync(temporary, "wx");
-  try {
-    fs.writeFileSync(fd, JSON.stringify(value, null, 2));
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
-  try {
-    assertInboxPath(dest);
-    fs.renameSync(temporary, dest);
-  } finally {
-    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
-  }
-}
 function materialize(root: string, bytes: Buffer, hash: string, ext: string) {
   const parent = path.join(root, "sha256", hash.slice(0, 2));
   directory(parent);
@@ -190,61 +112,33 @@ export class DotDeliveryReceiver {
     this.stopped = true;
   }
   private async receive(id: string, folder: string) {
-    const readyBytes = read(path.join(folder, "READY.json"), 4096);
-    // READY has no prior content hash: a stable partial/older sync is still incomplete.
-    let ready;
-    try {
-      ready = DeliveryReadySchema.parse(json(readyBytes));
-      if (ready.deliveryId !== id) throw Error("DELIVERY_ID_MISMATCH");
-    } catch {
-      throw Error("DELIVERY_SYNC_PENDING");
-    }
-    const manifestBytes = read(path.join(folder, "manifest.json"), 65536);
-    if (sha(manifestBytes) !== ready.manifestSha256)
-      throw Error("DELIVERY_SYNC_PENDING");
-    const manifest = DeliveryManifestSchema.parse(json(manifestBytes));
-    if (manifest.deliveryId !== id) throw Error("DELIVERY_ID_MISMATCH");
-    if (manifest.targetWorkspaceRef !== this.options.store.channel.workspaceRef)
-      throw Error("INBOX_WORKSPACE_MISMATCH");
-    const textBytes = read(path.join(folder, manifest.text.file), 1024 * 1024);
-    if (sha(textBytes) !== manifest.text.sha256)
-      throw Error("DELIVERY_SYNC_PENDING");
-    const textPackage = InboxPackageSchema.parse(json(textBytes));
-    const expected = new Set(
-      textPackage.items.map(
-        (item) => item.externalItemId + ":" + item.revision,
-      ),
+    const {
+      ready,
+      manifest,
+      textPackage,
+      images: verifiedImages,
+    } = await readDeliveryPackage(
+      folder,
+      id,
+      this.options.store.channel.workspaceRef,
     );
-    if (
-      manifest.images.length !== expected.size ||
-      manifest.images.some(
-        (image) => !expected.has(image.externalItemId + ":" + image.revision),
-      )
-    )
-      throw Error("DELIVERY_COVER_SCOPE");
-    const images = [];
-    for (const image of manifest.images) {
-      const bytes = read(path.join(folder, image.file), 20 * 1024 * 1024);
-      // A synchronized final filename may temporarily refer to older bytes. Wait instead of importing early.
-      if (bytes.length !== image.bytes || sha(bytes) !== image.sha256)
-        throw Error("DELIVERY_SYNC_PENDING");
-      const verified = await verifyDeliveryImage(bytes, image);
-      const { width, height, ...fileFacts } = verified;
-      images.push({
-        externalItemId: image.externalItemId,
-        revision: image.revision,
+    const images = verifiedImages.map(({ descriptor, verified, bytes }) => {
+      const { width, height, ...facts } = verified;
+      return {
+        externalItemId: descriptor.externalItemId,
+        revision: descriptor.revision,
         asset: {
           id: randomUUID(),
           kind: "image" as const,
-          ...fileFacts,
+          ...facts,
           metadata: { width, height },
           createdAt: this.now().toISOString(),
           source: "dot-delivery",
-          label: image.file,
+          label: descriptor.file,
         },
         bytes,
-      });
-    }
+      };
+    });
     if (this.stopped) return;
     // Immutable media may exist without a DB row after a crash; that is safe to reuse on the next scan.
     for (const image of images)

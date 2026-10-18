@@ -42,6 +42,7 @@ import {TmeAiCloudSessionManager} from './tme/ai-cloud-session';
 import {createUnifiedPublishBroker,createTmeAiTransportProvider} from './tme/unified-publish';
 import {externalReceiptBarrier,persistExternalReceiptBarrier,persistExternalReceiptStop} from './tme/external-receipt-barrier';
 import {installNativeDiagnostics} from './native-diagnostics';
+import {chooseInboxBridgeProject} from './inbox-bridge';
 if (require("electron-squirrel-startup")) app.quit();
 protocol.registerSchemesAsPrivileged([
   {
@@ -298,6 +299,10 @@ function handlers() {
     safe(async () => {
       trusted(e);
       const parsed = validate(method, input);
+      if(method==='inbox.bridge.chooseDirectory')return chooseInboxBridgeProject({
+        capture:()=>({mode,generation:coreGeneration,epoch:importEpoch,available:!switching&&!closing}),
+        choose:()=>dialog.showOpenDialog(window,{title:'选择专用 dot-delivery 项目目录（包含 incoming 和 receipts）',properties:['openDirectory']}),rpc,
+      });
       if (method === "runtime")
         return {
           ok: true,

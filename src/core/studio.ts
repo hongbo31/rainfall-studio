@@ -349,6 +349,8 @@ export class Studio {
       case 'tme.batchCancel': return this.tmeDraftService().updateBatch(v.id,{state:'TME_CANCELLED',cancelled:true});
       case "inbox.status":
         return this.inboxController().status();
+        case "inbox.bridge.pause": return this.inboxController().setBridgeEnabled(false,v.expectedRevision);
+        case "inbox.bridge.resume": return this.inboxController().setBridgeEnabled(true,v.expectedRevision);
       case "inbox.configure":
         return this.inboxController().configure(v);
       case "inbox.pause":

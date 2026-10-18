@@ -1,5 +1,7 @@
 # dot text + cover receiver checkpoint
 
+Follow-up: trusted bridge, actual Drive-path setup and packaging continuation are recorded in `dot-sync-bridge-checkpoint-20261018.md`; the remaining-gates section below describes the earlier receiver-only checkpoint.
+
 Implemented in the independent candidate repository on DESKTOP-90VCPDC:
 `C:/Users/31559/Documents/Codex/2026-10-15/task/rainfall-studio-unified-acceptance-20261018`.
 
