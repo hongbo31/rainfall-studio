@@ -1,0 +1,67 @@
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),{randomUUID}=require('node:crypto');
+const w=require(process.env.RAINFALL_WORKFLOW_BUNDLE),q=require(process.env.RAINFALL_QUALITY_BUNDLE),{pair}=require('../fixtures/quality.cjs'),{draft}=require('../fixtures/workflow.cjs');
+test('official OSS generic binary MP3 needs its file signature and does not admit HTML',async()=>{
+ const good=Buffer.from([0x49,0x44,0x33,4,0,0,0,0,0,0,0xff,0xfb,0x90,0x64]);
+ for(const [bytes,accepted] of [[good,true],[Buffer.from('<html>not audio</html>'),false]]){
+  const a=new w.YourMusicAdapter({source:'external',credential:async()=>{throw Error('download must not use credential')},request:async r=>{assert.equal(r.headers,undefined);return{status:200,headers:{'content-type':'application/octet-stream'},body:bytes}}});
+  if(accepted)assert.equal((await a.download('https://oss.yourmusic.fun/my-music/audio/own-song.mp3')).mime,'audio/mpeg');else await assert.rejects(a.download('https://oss.yourmusic.fun/my-music/audio/own-song.mp3'),/DOWNLOAD_REJECTED/);
+ }
+});
+test('official generic binary M4A needs an MP4 file-type box and still rejects HTML',async()=>{
+ const header=Buffer.from('0000001C6674797069736F6D0000020069736F6D69736F326D7034310000A7A4','hex');
+ const adapter=bytes=>new w.YourMusicAdapter({source:'external',credential:async()=>{throw Error('no download auth')},request:async()=>({status:200,headers:{'content-type':'application/octet-stream'},body:bytes})});
+ assert.equal((await adapter(header).download('https://oss.yourmusic.fun/my-music/audio/own-song.m4a')).mime,'audio/mp4');
+ await assert.rejects(adapter(Buffer.from('<html>not an audio file</html>')).download('https://oss.yourmusic.fun/my-music/audio/own-song.m4a'),/DOWNLOAD_REJECTED/);
+ await assert.rejects(adapter(header).download('https://oss.yourmusic.fun/my-music/audio/own-song.mp3'),/DOWNLOAD_REJECTED/);
+});
+test('real HTTPS transport preserves HTTP status without exposing malformed response text',async()=>{
+ const vm=require('node:vm'),{EventEmitter}=require('node:events'),{createRequire}=require('node:module');
+ const bundle=process.env.RAINFALL_WORKFLOW_BUNDLE,load=createRequire(bundle),source=fs.readFileSync(bundle,'utf8');
+ for(const code of [200,401,403,429]){
+  const module={exports:{}};
+  const request=(_url,_options,onResponse)=>{
+   const req=new EventEmitter();req.setTimeout=()=>{};req.write=()=>{throw Error('GET must not write a body')};
+   req.end=()=>queueMicrotask(()=>{const res=new EventEmitter();res.statusCode=code;res.headers={'content-type':'text/html'};onResponse(res);res.emit('data',Buffer.from('<p>PRIVATE_REMOTE_BODY</p>'));res.emit('end')});
+   return req;
+  };
+  vm.runInNewContext(source,{module,exports:module.exports,require:id=>id==='node:https'?{request}:id==='node:dns'?{promises:{lookup:async()=>[{address:'8.8.8.8',family:4}]}}:load(id),process,Buffer,console,setTimeout,clearTimeout,URL,__dirname:path.dirname(bundle),__filename:bundle});
+  const result=await module.exports.nodeHttpsTransport({method:'GET',url:'https://api.yourmusic.fun/v1/music/generations/history?page=1&size=1'});
+  assert.equal(result.status,code);assert.equal(result.body,null);assert(!JSON.stringify(result).includes('PRIVATE_REMOTE_BODY'));
+ }
+});
+test('YourMusic maps documented custom and song-ID query, never treats task ID or 404 as unsent',async()=>{
+ assert.equal(typeof w.YourMusicAdapter,'function');const calls=[];
+ const adapter=new w.YourMusicAdapter({source:'fixture',credential:async()=>'FAKE_ONLY',request:async r=>{calls.push(r);return r.method==='POST'?{status:202,body:{task_id:'trace',status:'pending',created_at:'2026-10-15',songs:[{id:'s1',status:'pending'},{id:'s2',status:'pending'}]}}:{status:404,body:{}};}});
+ const accepted=await adapter.submit({draft:draft(),modelId:'chirp-v6',operationId:'local-key'});assert.equal(accepted.state,'accepted');assert.deepEqual(accepted.songIds,['s1','s2']);assert.equal(accepted.trackingId,'trace');assert.equal(calls[0].body.is_max_mode,false);assert.equal(calls[0].headers['Idempotency-Key'],undefined);const r=await adapter.query(accepted.songIds);assert.equal(r.state,'pending');assert.ok(calls[1].url.endsWith('songid=s1%2Cs2'));assert.equal(adapter.capabilities.lookupByClientKey,false);assert.equal(adapter.capabilities.automaticPaid,false);
+ await assert.rejects(adapter.submit({draft:{...draft(),musicPrompts:{...draft().musicPrompts,yourmusic:{...draft().musicPrompts.yourmusic,voiceArrangement:'duet'}}},modelId:'chirp-v6',operationId:'duet'}),/DUET_NOT_SUPPORTED/);
+});
+function setup({unknown=false,mode='simulation',downloadFail=false,actualLyrics=null}={}){
+ assert.equal(typeof w.MusicService,'function');const root=path.resolve('output/test-runs','workflow-music-'+randomUUID());fs.mkdirSync(root,{recursive:true});const repo=new w.Repository(path.join(root,'library.sqlite'));let submissions=0,downloads=0,now=new Date('2026-10-15T10:00:00Z');const p=pair(),d={id:randomUUID(),pair:p,pairHash:q.pairHash(p),draft:draft(),artistId:randomUUID(),sessionId:randomUUID(),source:'fixture'};repo.save('drafts',d);repo.save('evaluations',{id:randomUUID(),draftId:d.id,pairHash:d.pairHash,decision:{state:'pass'},source:'fixture'});
+ const adapter={source:'fixture',capabilities:{provider:'yourmusic',version:'1.0.0',maximumOutputs:2,lookupByClientKey:false,automaticPaid:false},submit:async()=>{submissions++;return unknown?{state:'unknown'}:{state:'accepted',trackingId:'trace',songIds:['s1','s2'],actualCost:2,evidenceId:'invoice-fake'};},query:async ids=>({state:'known',songs:ids.map(id=>({id,status:'succeeded',audio_url:'https://oss.yourmusic.fun/'+id+'.wav'}))}),download:async()=>{downloads++;if(downloadFail)throw Error('expired');return{bytes:Buffer.from('fixture wav bytes verified by injected ingest'),mime:'audio/wav'};}};
+ if(actualLyrics)adapter.query=async ids=>({state:'known',songs:ids.map(id=>({id,status:'succeeded',audio_url:'https://oss.yourmusic.fun/'+id+'.wav',actualLyrics}))});
+ const service=new w.MusicService(repo,mode,{adapter,now:()=>now,dailyLimit:100,ingest:async()=>({id:randomUUID()})});
+ const input={requestId:randomUUID(),draftId:d.id,expectedPairHash:d.pairHash,accountRef:'fixture-account',modelId:'chirp-v6',candidateLimit:2,budgetLimit:10};return{repo,service,input,root,submissions:()=>submissions,downloads:()=>downloads,advance:ms=>{now=new Date(now.getTime()+ms);}};
+}
+test('music persists two output identities and resumes query/download without a second submission',async()=>{
+ const x=setup();try{const op=x.service.prepare(x.input);await x.service.submit(op.id);assert.equal(x.submissions(),1);await x.service.reconcile(op.id);assert.equal(x.repo.all('candidates').length,2);assert.ok(x.repo.all('candidates').every(c=>c.state==='ready'&&c.assetId));assert.equal(x.service.prepare(x.input).id,op.id);await x.service.submit(op.id);await x.service.reconcile(op.id);assert.equal(x.submissions(),1);assert.equal(x.downloads(),2);assert.equal(x.repo.all('operations')[0].state,'assets_verified');assert.equal(x.repo.all('workflowLedger').filter(e=>e.kind==='settle').reduce((n,e)=>n+e.amount,0),2);assert.throws(()=>x.service.prepare({...x.input,modelId:'different'}),/IDEMPOTENCY_CONFLICT/);}finally{x.repo.close();}
+});
+test('unknown submit keeps reservation across restart/date; odd remaining slot and production are blocked',async()=>{
+ const x=setup({unknown:true});try{const op=x.service.prepare(x.input);await x.service.submit(op.id);x.advance(86400000);const n=x.service.prepare({...x.input,requestId:randomUUID()});assert.equal(n.state,'blocked');assert.ok(n.reasons.includes('PROVIDER_RISK_FROZEN'));await x.service.submit(op.id);assert.equal(x.submissions(),1);assert.equal(x.repo.all('workflowLedger').some(e=>e.kind==='release'),false);}finally{x.repo.close();}
+ for(const options of [{mode:'production'},{}]){const y=setup(options);try{const op=y.service.prepare({...y.input,candidateLimit:1});assert.equal(op.state,'blocked');await y.service.submit(op.id);assert.equal(y.submissions(),0);assert.ok(op.reasons.includes('TWO_OUTPUTS_REQUIRE_CAPACITY'));}finally{y.repo.close();}}
+});
+test('download exhaustion leaves paid output counted and never regenerates',async()=>{
+ const x=setup({downloadFail:true});try{const op=x.service.prepare(x.input);await x.service.submit(op.id);for(let i=0;i<7;i++){await x.service.reconcile(op.id);x.advance(15000);}assert.equal(x.submissions(),1);assert.equal(x.downloads(),8);assert.ok(x.repo.all('candidates').every(c=>c.state==='download_failed'&&c.downloadAttempts===4));assert.equal(typeof x.service.retryDownloads,'function');x.service.retryDownloads(op.id);await x.service.reconcile(op.id);assert.equal(x.submissions(),1);assert.ok(x.repo.all('candidates').every(c=>c.previousDownloadAttempts===4&&c.downloadAttempts===1));}finally{x.repo.close();}
+});
+test('network transport and download URL policy reject private hosts, redirects, auth and non-audio',async()=>{
+ assert.equal(typeof w.safeMusicUrl,'function');for(const u of ['http://oss.yourmusic.fun/a','https://127.0.0.1/a','https://oss.yourmusic.fun.evil/a','https://user:pw@oss.yourmusic.fun/a','file:///a'])assert.throws(()=>w.safeMusicUrl(u));assert.equal(w.safeMusicUrl('https://oss.yourmusic.fun/music.wav?token=temporary').hostname,'oss.yourmusic.fun');assert.equal(w.publicIpv4('127.0.0.1'),false);assert.equal(w.publicIpv4('169.254.169.254'),false);assert.equal(w.publicIpv4('8.8.8.8'),true);
+ const a=new w.YourMusicAdapter({source:'fixture',credential:async()=>'FAKE',request:async()=>({status:302,headers:{location:'https://127.0.0.1/a'},body:Buffer.from('not audio')})});await assert.rejects(a.download('https://oss.yourmusic.fun/a'),/DOWNLOAD_REJECTED/);
+});
+test('review: queued music cannot dispatch after another submission becomes unknown',async()=>{
+ const x=setup({unknown:true});try{const a=x.service.prepare({...x.input,candidateLimit:4}),b=x.service.prepare({...x.input,requestId:randomUUID(),candidateLimit:4});await x.service.submit(a.id);await x.service.submit(b.id);assert.equal(x.submissions(),1);assert.equal(x.repo.get('operations',b.id).state,'blocked');assert.ok(x.repo.get('operations',b.id).reasons.includes('PROVIDER_RISK_FROZEN'));}finally{x.repo.close();}
+});
+test('self review: unsent music cannot charge an old budget day after midnight',async()=>{
+ const x=setup();try{const op=x.service.prepare(x.input);x.advance(86400000);x.repo.save('workflowLedger',{id:randomUUID(),eventKey:'next-day-full',scope:'text',kind:'reserve',amount:100,date:'2026-10-16',unit:'fixture_credit'});await x.service.submit(op.id);assert.equal(x.submissions(),0);assert.equal(x.repo.get('operations',op.id).state,'blocked');}finally{x.repo.close();}
+});
+test('music preserves submitted lyric snapshot and only records actual lyrics when normalized provider output contains them',async()=>{
+ for(const actualLyrics of [null,{text:'提供方实际返回的歌词正文',version:'provider-version-3'}]){const x=setup({actualLyrics});try{const op=x.service.prepare(x.input);const expected=x.repo.get('drafts',x.input.draftId).pair.lyrics;assert.equal(op.submittedLyrics.text,expected);await x.service.submit(op.id);await x.service.reconcile(op.id);for(const c of x.repo.all('candidates')){assert.equal(c.submittedLyrics.text,expected);assert.equal(c.actualLyrics?.text??null,actualLyrics?.text??null);assert.equal(c.actualLyrics?.version??null,actualLyrics?.version??null)}}finally{x.repo.close()}}
+});

@@ -1,0 +1,3 @@
+import {build} from 'esbuild';import {spawnSync} from 'node:child_process';import electron from 'electron';
+for(const [entry,out] of [['src/core/index.ts','core'],['tests/fixtures/quick-publish-ui.tsx','quick-publish-ui']])await build({entryPoints:[entry],outfile:`build/${out}.cjs`,bundle:true,platform:'node',target:'node24',format:'cjs',packages:'external'});
+const result=spawnSync(electron,['--test','tests/integration/quick-publish.test.cjs','tests/quick-publish-ui.test.mjs','tests/integration/studio.test.cjs','tests/integration/review-regressions.test.cjs','tests/integration/cover-lyrics.test.cjs','tests/integration/tme-drafts.test.cjs'],{stdio:'inherit',windowsHide:true,env:{...process.env,ELECTRON_RUN_AS_NODE:'1'}});process.exit(result.status??1);

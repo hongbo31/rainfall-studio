@@ -1,0 +1,2 @@
+import React from 'react';import {renderToStaticMarkup} from 'react-dom/server';import {Context} from '../../src/renderer/context';import TmeDraftStudio from '../../src/renderer/components/TmeDraftStudio';
+export function renderTmeStudio(){const value:any={data:{mode:'production',works:[],accounts:[],assets:[]},selected:[],call:()=>{throw Error('SSR_MUST_NOT_CALL_CORE')},notify:()=>{},go:()=>{},importAsset:()=>{}};return renderToStaticMarkup(<Context.Provider value={value}><TmeDraftStudio/></Context.Provider>);}

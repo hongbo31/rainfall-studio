@@ -1,0 +1,24 @@
+node_modules/
+dist/
+build/
+out/
+.cache/
+.superpowers/
+output/
+*.log
+.env*
+*.sqlite*
+*.rainfall-backup.zip
+
+# Local secrets and user runtime data
+credentials/
+media/
+runtime/
+production/
+simulation/
+*.db
+*.db3
+*.pem
+*.p12
+*.pfx
+*.key

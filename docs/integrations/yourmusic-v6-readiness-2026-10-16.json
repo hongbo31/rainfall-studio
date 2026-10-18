@@ -1,0 +1,71 @@
+{
+  "checkedOn": "2026-10-16",
+  "scope": "read_only_permission_and_price_review",
+  "sources": {
+    "contract": "https://api.yourmusic.fun/v1/openapi.json?lang=zh",
+    "apiPricing": "https://api.yourmusic.fun/dashboard",
+    "billing": "https://api.yourmusic.fun/dashboard/billing",
+    "usage": "https://api.yourmusic.fun/dashboard/usage",
+    "v6Help": "https://yourmusic.fun/suno-v6",
+    "pricingStandard": "https://yourmusic.fun/pricing-standard"
+  },
+  "apiAuthentication": {
+    "state": "connected",
+    "checkedAt": "2026-10-16T11:39:21.043Z",
+    "configured": true,
+    "scope": "authentication_only",
+    "accountV6PermissionVerified": false
+  },
+  "contractModels": ["chirp-v6", "chirp-v6-wild", "chirp-v6-mini"],
+  "freeAccountModelPermissionOrQuoteEndpointDocumented": false,
+  "accountV6Permission": "unverified",
+  "normalModeV6CreditsForOneSubmissionReturningTwoSongs": null,
+  "normalModeV6CostUpperBound": null,
+  "publicSunoPricing": {
+    "display": "3 / 5 积分",
+    "explicitModels": ["chirp-v3-5", "chirp-v4", "chirp-v4-5", "chirp-v4-5+", "chirp-v5", "chirp-v5.5"],
+    "coversV6": false,
+    "safeToApplyToV6": false,
+    "maxModePerSongMultiplier": 2,
+    "maxModeRequested": false,
+    "queryCallsChargeCredits": false
+  },
+  "normalBrowserAccountObservation": {
+    "loggedIn": true,
+    "availableApiCredits": 385,
+    "dashboardObservedAt": "2026-10-16T11:47:55.0094825Z",
+    "billingObservedAt": "2026-10-16T11:48:51.8752508Z",
+    "billingAlsoShowsAvailableApiCredits": 385,
+    "existingPaidOrderLabel": "专业套餐 480 积分",
+    "existingPaidOrderStatus": "已支付",
+    "newRechargePerformed": false,
+    "usageVisibleRange": "2026-10-10 through 2026-10-16",
+    "usageCallsInVisibleRange": 2,
+    "usagePeak": "10-16 · 2 次",
+    "historicalCreditsConsumed": null,
+    "savedApiKeySubjectCrossCheckedAgainstBrowserSession": false
+  },
+  "preparedRequest": {
+    "method": "POST",
+    "url": "https://api.yourmusic.fun/v1/suno/generate/custom",
+    "bodyFile": "yourmusic-v6-two-output-request.json",
+    "expectedSongsPerSubmission": 2,
+    "submissionCount": 1,
+    "outputMeaning": "two variants of the same draft, not two separate paid submissions",
+    "lyricsSource": "unchanged original local sample in src/core/studio.ts; four-line chorus only",
+    "parametersStatus": "proposed preparation defaults; not a confirmed final song",
+    "containsCredentialOrAuthorizationHeader": false,
+    "submitted": false,
+    "automaticRetry": false,
+    "paidExecutionGate": "blocked_until_account_v6_permission_and_exact_total_or_explicit_cost_limit_are_confirmed"
+  },
+  "actionsThisReview": {
+    "paidGenerationSubmissions": 0,
+    "recharges": 0,
+    "platformPublications": 0,
+    "dailyPlanChanges": 0,
+    "credentialsReadOrExportedByTools": false,
+    "newCreditConsumptionTriggered": 0
+  },
+  "conclusion": "Free sources did not establish account-specific v6 execution permission or the exact two-song cost. Supplier confirmation or a documented free quote/permission interface is still needed. Do not use paid generation to discover an unknown price. No verified upper bound exists for a future v6 submission."
+}
