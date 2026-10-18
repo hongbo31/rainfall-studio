@@ -5,6 +5,7 @@ import {z} from 'zod';
 import {TmeAiPrepareBindingSchema,tmeAiSubjectHash} from '../../shared/tme-ai-prepare';
 import {TME_AI_BROWSER_PREPARE_CONTRACT,createTmeAiBrowserPreparePort,type TmeAiBrowserPrepareContract} from './ai-prepare-browser';
 import {TME_AI_BROWSER_SUBMISSION_CONTRACT,createTmeAiBrowserSubmissionExecutor,type TmeAiBrowserSubmissionContract} from './ai-submission-browser';
+import {readOfficialProfileIdentity,TME_READONLY_IDENTITY_EVIDENCE_HASH} from './browser-identity';
 const ORIGIN='https://y.tencentmusic.com';
 const ConnectSchema=z.strictObject({port:z.number().int().min(1024).max(65535).default(9222),allowConnection:z.literal(true)});
 /** Refuse discovery redirects or remote websocket endpoints. Never start or configure a browser. */
@@ -83,6 +84,14 @@ export class TmeAiCloudSessionManager{
   }catch(e){if(browser)await browser.close().catch(()=>{});throw e}finally{this.connecting=false}
  }
  private clear(){this.epoch++;this.browser=undefined;this.page=undefined;this.bindingValue=undefined;this.preparation=undefined;this.submission=undefined;this.fingerprint=undefined}
+ async inspectAccount(input:unknown={}){
+  z.strictObject({}).parse(input);this.available();const page=this.page,epoch=this.epoch;
+  if(!page)throw Error('CLOUD_BROWSER_SESSION_REQUIRED');this.assertCurrent(page,epoch);
+  const identity=await readOfficialProfileIdentity(page);this.assertCurrent(page,epoch);
+  const subjectHash=tmeAiSubjectHash(identity);if(this.fingerprint&&this.fingerprint!==subjectHash)throw Error('ACCOUNT_CHANGED');
+  this.fingerprint=subjectHash;
+  return{artistName:identity.artistName,qqDisplayName:identity.qqDisplayName,maskedKugouId:'***'+identity.kugouId.slice(-4),subjectType:'official_visible_binding_fingerprint' as const,subjectHash,observedAt:(this.options.now?.()??new Date()).toISOString(),evidenceHash:TME_READONLY_IDENTITY_EVIDENCE_HASH,binding:this.bindingValue,readOnly:true as const};
+ }
  /** Closing a connectOverCDP client disconnects it; it does not close the user's tabs/browser. */
  async disconnect(){const browser=this.browser;this.clear();if(browser)await browser.close();return this.status()}
  status(){

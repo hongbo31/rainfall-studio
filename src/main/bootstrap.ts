@@ -244,7 +244,7 @@ function handlers() {
     }));
   ipcMain.handle('rainfall:tme-ai-prepare',(event,action,input)=>safe(async()=>{
     trusted(event);
-    try{if(action==='connectBrowser')return{ok:true,value:await tmeAiCloud.connect(input)};if(action==='browserStatus')return{ok:true,value:tmeAiCloud.status()};if(action==='disconnectBrowser')return{ok:true,value:await tmeAiCloud.disconnect()};const value=await tmeAiPrepare.ui(action,input);if(['register','start','run','reconcile','resumePicker','resumeCrop'].includes(action))void unifiedPublish.pump();return{ok:true,value}}catch(e){
+    try{if(action==='connectBrowser')return{ok:true,value:await tmeAiCloud.connect(input)};if(action==='inspectBrowserAccount')return{ok:true,value:await tmeAiCloud.inspectAccount(input)};if(action==='browserStatus')return{ok:true,value:tmeAiCloud.status()};if(action==='disconnectBrowser')return{ok:true,value:await tmeAiCloud.disconnect()};const value=await tmeAiPrepare.ui(action,input);if(['register','start','run','reconcile','resumePicker','resumeCrop'].includes(action))void unifiedPublish.pump();return{ok:true,value}}catch(e){
       const code=e instanceof Error&&/^[A-Z0-9_]+$/.test(e.message)?e.message:'REQUEST_REJECTED';
       return{ok:false,error:{code,message:'腾讯AI准备未完成：'+code+'。未知结果须只读核对，禁止重复上传；尚未接受条款或正式提交。'}};
     }
