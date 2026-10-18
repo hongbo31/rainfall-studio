@@ -1,3 +1,4 @@
+import { unifiedPublicationService } from "./unified-publication-integration";
 import { randomUUID } from "node:crypto";
 import { hash, type Row } from "./database";
 import type { Studio } from "./studio";
@@ -307,7 +308,7 @@ function pendingTerms(
   }
   return null;
 }
-function check(
+export function checkSimplePublication(
   s: Studio,
   w: Row,
   target: PlatformTarget,
@@ -464,7 +465,7 @@ export function listSimplePublicationRequests(
   ) => {
     const key = JSON.stringify([w.id, c.target, accountId]);
     if (!current.has(key))
-      current.set(key, check(s, w, c.target, c, accountId));
+      current.set(key, checkSimplePublication(s, w, c.target, c, accountId));
     return current.get(key)!;
   };
   const configs = listPlatformConfigurations(s.repo);
@@ -537,7 +538,7 @@ export function publishSimple(s: Studio, input: PublishSelection) {
         accountId = selection.accountOverrides[target] ?? c.accountId;
       // Return the same JSON shape that SQLite/IPC preserve across a restart.
       const request: SimplePublicationRequest = JSON.parse(
-        JSON.stringify(check(s, s.get("works", workId), target, c, accountId)),
+        JSON.stringify(checkSimplePublication(s, s.get("works", workId), target, c, accountId)),
       );
       const {
         version: configVersion,
@@ -589,6 +590,7 @@ export function publishSimple(s: Studio, input: PublishSelection) {
     });
     return {
       requests,
+      pipeline: s.mode === "production" ? unifiedPublicationService(s).enqueue(requests) : [],
       reused,
       rechecked: true,
       checkedAt: s.now().toISOString(),

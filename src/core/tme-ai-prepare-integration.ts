@@ -1,3 +1,7 @@
+import {resolveTmeAiPrepareScope} from './tme-ai-scope';
+import {publishSimple} from './simple-publication';
+import {unifiedPublicationService} from './unified-publication-integration';
+import {TmeAiPrepareGrantSchema} from '../shared/tme-ai-prepare';
 import fs from 'node:fs';
 import path from 'node:path';
 import {z} from 'zod';
@@ -29,7 +33,13 @@ function assertPcmWav(file:string){
   if(!format||!data)throw Error('UPLOAD_PCM_REQUIRED');
  }finally{fs.closeSync(fd)}
 }
+export function verifyCurrentTmeAiScope(s:Studio,g:TmeAiPrepareGrant){
+ const current=resolveTmeAiPrepareScope(s,{workId:g.workId});
+ const material=(v:any)=>({workId:v.workId,sourceAudio:v.sourceAudio,upload:v.upload,cover:v.cover,lyricsHash:v.lyricsHash,metadata:v.metadata});
+ if(hash(material(current))!==hash(material(g)))throw Error('PREPARATION_GRANT_STALE');
+}
 export function verifyTmeAiPrepareAssets(s:Studio,g:TmeAiPrepareGrant){
+ if(s.repo.maybe('settings','tme-ai-prepare:grant:'+g.id)?.value?.scopeSource==='current-work')verifyCurrentTmeAiScope(s,g);
  const work=s.get('works',g.workId);
  if(work.assets?.audio_A!==g.sourceAudio.assetId||g.sourceAudio.variant!=='A')throw Error('SOURCE_AUDIO_SCOPE');
  const audio=s.get('assets',g.sourceAudio.assetId);
@@ -59,6 +69,24 @@ const idSchema=z.strictObject({id:z.uuid()}),empty=z.strictObject({});
 /** Only the parent Core port routes here; renderer RPC has no corresponding methods. */
 export function executeTmeAiPrepare(s:Studio,action:string,input:unknown={}){
  if(s.mode!=='production')throw Error('PRODUCTION_REQUIRED');
+ if(action==='resolveScope')return resolveTmeAiPrepareScope(s,z.strictObject({workId:z.uuid(),createDerivative:z.boolean().optional()}).parse(input));
+ if(action==='grantContext'){const id=idSchema.parse(input).id;const grant=s.repo.maybe('settings','tme-ai-prepare:grant:'+id)?.value;if(!grant)throw Error('NOT_FOUND');return grant;}
+ if(action==='registerScopedGrant'){
+  const i=z.strictObject({grant:TmeAiPrepareGrantSchema,accountId:z.uuid()}).parse(input);
+  return s.repo.transaction(()=>{
+   const tasks=unifiedPublicationService(s).list().filter(t=>t.workId===i.grant.workId&&t.targets.some((target:string)=>['qqmusic','kugou'].includes(target))&&!['published','reviewing','rejected'].includes(t.state));
+   const ids=[...new Set(tasks.map(t=>t.accountId))];
+   if(ids.length!==1||ids[0]!==i.accountId||tasks.some(t=>t.dispatchedAt||t.reason==='PROTECTED_PUBLISHED_WORK'))throw Error('PREPARATION_ACCOUNT_SCOPE');
+   const account=s.get('accounts',i.accountId);
+   if(!['tme','qqmusic','kugou'].includes(account.provider)||account.remoteSubject&&account.remoteSubject!==i.grant.identity.subjectHash)throw Error('IDENTITY_SCOPE');
+   verifyCurrentTmeAiScope(s,i.grant);
+   const grant=s.tmeAiPrepareService().registerGrant(i.grant);
+   const saved=s.get('settings','tme-ai-prepare:grant:'+grant.id);s.save('settings',{...saved,value:{...saved.value,scopeSource:'current-work'}});
+   if(!account.remoteSubject)s.save('accounts',{...account,remoteSubject:i.grant.identity.subjectHash});
+   for(const task of tasks)publishSimple(s,{workIds:[task.workId],targets:task.targets,accountOverrides:Object.fromEntries(task.targets.map((t:string)=>[t,i.accountId]))});
+   return grant;
+  });
+ }
  const service=s.tmeAiPrepareService();
  switch(action){
   case 'registerGrant':return service.registerGrant(input);

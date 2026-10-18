@@ -1,0 +1,42 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {build} from 'esbuild';
+import {createRequire} from 'node:module';
+import {createHash,randomUUID} from 'node:crypto';
+import {submissionBrowserFixture} from './fixtures/submission-browser-contract.mjs';
+import path from 'node:path';
+import fs from 'node:fs';
+const source='src/main/tme/ai-submission-browser.ts';
+const hash=x=>createHash('sha256').update(typeof x==='string'?x:JSON.stringify(x)).digest('hex');
+async function fixture(t){
+ assert.ok(fs.existsSync(source),'calibrated browser submission executor must exist');
+ const out=path.resolve('output/submission-browser-tests/executor.cjs');
+ await build({entryPoints:[source],outfile:out,bundle:true,platform:'node',format:'cjs',packages:'external'});
+ const api=createRequire(import.meta.url)(out);
+ const doc=submissionBrowserFixture(),page=doc.page;
+ const contract={version:'offline-fixture',verified:true,source:'browser',origin:'https://y.tencentmusic.com',calibrationEvidenceHash:'a'.repeat(64),identity:{kugouId:'#kugou',qqDisplayName:'#qq',artistName:'#artist'},title:'#title',mode:'#mode',modeText:'AI authorization',terms:'#terms',accept:'#accept',submit:'#submit',receipt:{rows:'#rows .receipt',kind:'.kind',kindText:'song',songId:'.id',title:'.title',artistName:'.artist',status:'.status',submittedAt:'.date',statuses:{reviewing:'reviewing',rejected:'rejected',published:'published'}}};
+ const binding={transport:'cloud-playwright',sessionId:'11111111-1111-4111-8111-111111111111',pageId:'22222222-2222-4222-8222-222222222222',started:'2026-10-18T10:00:00.000Z'};
+ const now=()=>new Date('2026-10-18T10:00:01Z');
+ const executor=api.createTmeAiBrowserSubmissionExecutor({page,binding:()=>binding,contract,now});
+ const identity={kugouId:'123456789',qqDisplayName:'fixture account',artistName:'fixture artist'};
+ identity.subjectHash=hash({subjectType:'official_visible_binding_fingerprint',...identity});
+ const scopeHash='b'.repeat(64),job={id:randomUUID(),workId:randomUUID(),scopeHash,termsHash:hash('fixture terms'),state:'dispatching',rightsConfirmed:true};
+ const prepared={grant:{input:{identity,binding,metadata:{title:'fixture song',artistName:'fixture artist'}}}};
+ const context=phase=>{const operation={id:randomUUID(),kind:'tme_ai_submission',phase,state:'dispatching',jobId:job.id,scopeHash,createdAt:'2026-10-18T10:00:00Z',receiptScope:{workId:job.workId,scopeHash,subjectHash:identity.subjectHash,binding,title:'fixture song',artistName:'fixture artist'}};return{job:{...job,termsAccepted:phase==='submit',operationId:operation.id},prepared,operation,operations:[operation],receiptScope:operation.receiptScope}};
+ return{api,executor,page,contract,binding,context,doc};
+}
+test('default browser capability is unavailable and never enables guessed selectors',async t=>{const x=await fixture(t);const executor=x.api.createTmeAiBrowserSubmissionExecutor({page:x.page,binding:()=>x.binding});assert.equal(executor.capability().available,false);await assert.rejects(executor.accept(x.context('accept')),/CONTRACT_UNVERIFIED/)});
+test('calibrated browser acceptance then single submit reads an official single-song receipt',async t=>{const x=await fixture(t);assert.equal((await x.executor.accept(x.context('accept'))).status,'accepted');const c=x.context('submit');const result=await x.executor.submit(c);assert.equal(result.status,'reviewing');assert.equal(result.receipt.remoteId,'song-12345');assert.equal(x.doc.state.clicks,1);assert.equal((await x.executor.submit(c)).status,'unknown');assert.equal(x.doc.state.clicks,1)});
+test('album-only record remains uncertain and reconciliation never clicks again',async t=>{const x=await fixture(t);await x.executor.accept(x.context('accept'));x.doc.state.record.kind='album';const c=x.context('submit');assert.equal((await x.executor.submit(c)).status,'unknown');await assert.rejects(x.executor.readReceipt(c),/SINGLE_SONG_RECEIPT_REQUIRED/);assert.equal(x.doc.state.clicks,1)});
+test('identity, terms, binding, duplicate controls and missing claim fail before click',async t=>{for(const change of ['identity','terms','binding','duplicate','claim']){const x=await fixture(t),c=x.context('accept');if(change==='identity')x.doc.set('qq','other');if(change==='terms')x.doc.set('terms','changed');if(change==='binding')c.prepared.grant.input.binding={...x.binding,documentId:'other'};if(change==='duplicate')x.doc.duplicate('accept');if(change==='claim')c.operation.state='complete';await assert.rejects(x.executor.accept(c));assert.equal(await x.page.locator('#accept').first().isChecked(),false)}});
+test('ambiguous and mismatched song records cannot be receipts',async t=>{for(const change of ['duplicate','title','timestamp','id']){const x=await fixture(t);await x.executor.accept(x.context('accept'));const c=x.context('submit');await x.executor.submit(c);const row=x.doc.state.rows[0];if(change==='duplicate')x.doc.state.rows.push({...row});if(change==='title')row.title='another song';if(change==='timestamp')row.date='2020-01-01T00:00:00Z';if(change==='id')row.id='';await assert.rejects(x.executor.readReceipt(c));assert.equal(x.doc.state.clicks,1)}});
+test('click timeout is uncertain, same scope new operation cannot retry, read-only reconciliation succeeds',async t=>{const x=await fixture(t);await x.executor.accept(x.context('accept'));x.doc.state.clickFailure=true;const c=x.context('submit');assert.equal((await x.executor.submit(c)).status,'unknown');assert.equal((await x.executor.submit(x.context('submit'))).reason,'SUBMISSION_ALREADY_DISPATCHED');assert.equal((await x.executor.readReceipt(c)).remoteId,'song-12345');assert.equal(x.doc.state.clicks,1)});
+test('fixture, uncalibrated and changed-origin contracts cannot write',async t=>{for(const change of ['fixture','evidence','origin']){const x=await fixture(t);if(change==='fixture')x.contract.source='fixture';if(change==='evidence')x.contract.calibrationEvidenceHash='';if(change==='origin')x.doc.state.url='https://attacker.invalid/';const executor=x.api.createTmeAiBrowserSubmissionExecutor({page:x.page,binding:()=>x.binding,contract:x.contract});await assert.rejects(executor.accept(x.context('accept')));assert.equal(await x.page.locator('#accept').isChecked(),false)}});
+test('submit requires durable accepted terms, stale claims cannot write',async t=>{const x=await fixture(t);await x.executor.accept(x.context('accept'));const c=x.context('submit');c.job.termsAccepted=false;await assert.rejects(x.executor.submit(c),/TERMS_ACCEPTANCE_REQUIRED/);const stale=x.context('submit');stale.operation.createdAt='2020-01-01T00:00:00Z';await assert.rejects(x.executor.submit(stale),/CLAIM_STALE/);assert.equal(x.doc.state.clicks,0)});
+test('missing or mismatched immutable receipt intent prevents submit before external effect',async t=>{for(const change of ['missing','title','identity','binding']){const x=await fixture(t);await x.executor.accept(x.context('accept'));const c=x.context('submit');if(change==='missing')delete c.operation.receiptScope;if(change==='title')c.operation.receiptScope.title='another song';if(change==='identity')c.operation.receiptScope.subjectHash='e'.repeat(64);if(change==='binding')c.operation.receiptScope.binding={...x.binding,documentId:'other'};await assert.rejects(x.executor.submit(c),/SUBMISSION_RECEIPT_SCOPE_REQUIRED/);assert.equal(x.doc.state.clicks,0)}});
+test('read-only official receipt can reconcile after reconnect while mutation binding remains fixed',async t=>{
+ const x=await fixture(t);await x.executor.accept(x.context('accept'));const c=x.context('submit');await x.executor.submit(c);
+ const renewed=x.api.createTmeAiBrowserSubmissionExecutor({page:x.page,binding:()=>({...x.binding,documentId:'new-readonly-session'}),contract:x.contract,now:()=>new Date('2026-10-18T10:00:02Z')});
+ assert.equal((await renewed.readReceipt(c)).remoteId,'song-12345');assert.equal(x.doc.state.clicks,1);
+ await assert.rejects(renewed.accept(x.context('accept')),/WINDOW_BINDING_CHANGED/);assert.equal(x.doc.state.clicks,1);
+});

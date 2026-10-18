@@ -31,16 +31,16 @@ public static class RainfallAiInput {
 $request=[Console]::In.ReadToEnd()|ConvertFrom-Json -DateKind String
 $script:root=$null;$script:bind=$null;$script:identity=$null;$script:strictDocument=$false
 function Nodes($root){return @($root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition))}
-function Wait-NativeReadback([scriptblock]$Read,[scriptblock]$Ready,[int]$TimeoutMs,[string]$FailureCode,[string[]]$TransientErrors=@()){
- if($TimeoutMs -lt 1){throw 'INVALID_READBACK_TIMEOUT'}
- $timer=[Diagnostics.Stopwatch]::StartNew()
+function Wait-NativeReadback([scriptblock]$Read,[scriptblock]$Ready,[int]$TimeoutMs,[string]$FailureCode,[string[]]$TransientErrors=@(),[int]$ConsecutiveReady=1){
+ if($TimeoutMs -lt 1 -or $ConsecutiveReady -lt 1){throw 'INVALID_READBACK_TIMEOUT'}
+ $timer=[Diagnostics.Stopwatch]::StartNew();$readyCount=0
  do{
   $hasValue=$false;$readValue=$null
   try{$readValue=& $Read;$hasValue=$true}catch{
    $unavailable=$_.Exception -is [Windows.Automation.ElementNotAvailableException] -or $_.Exception.InnerException -is [Windows.Automation.ElementNotAvailableException]
    if(-not $unavailable -and $_.Exception.Message -cnotin $TransientErrors){throw}
   }
-  if($hasValue -and (& $Ready $readValue)){return $readValue}
+  if($hasValue -and (& $Ready $readValue)){$readyCount++;if($readyCount -ge $ConsecutiveReady){return $readValue}}else{$readyCount=0}
   $remaining=$TimeoutMs-$timer.ElapsedMilliseconds;if($remaining -le 0){break}
   Start-Sleep -Milliseconds ([int][Math]::Min(100,$remaining))
  }while($timer.ElapsedMilliseconds -lt $TimeoutMs)
@@ -186,20 +186,24 @@ function Test-EditableContent($node){
  }
  return $false
 }
+function Test-GeneratedCoverBanner([string]$name){
+ # Only a bounded decorative prefix is accepted, never arbitrary prose or a suffix.
+ return $name.Trim() -cmatch '^[\p{So}\p{Sk}\p{Co}\p{P}\s\uFE0E\uFE0F]{0,8}已为您生成智能专辑封面$'
+}
 function Get-CoverUiEvidence($nodes){
- $labels=@($nodes|Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::Text -and -not $_.Current.IsOffscreen -and ([string]$_.Current.Name).Trim() -cin @('调整图片','裁剪图片','已为您生成智能专辑封面')})
+ $labels=@($nodes|Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::Text -and -not $_.Current.IsOffscreen -and (([string]$_.Current.Name).Trim() -cin @('调整图片','裁剪图片') -or (Test-GeneratedCoverBanner ([string]$_.Current.Name)))})
  $ui=@(foreach($n in $labels){if(-not (Test-EditableContent $n)){$n}})
  $heads=@($ui|Where-Object {([string]$_.Current.Name).Trim() -cin @('调整图片','裁剪图片')})
- return @{cropHeadings=$heads;cropVisible=($heads.Count -gt 0);generatorBanner=(@($ui|Where-Object {([string]$_.Current.Name).Trim() -ceq '已为您生成智能专辑封面'}).Count -gt 0)}
+ return @{cropHeadings=$heads;cropVisible=($heads.Count -gt 0);generatorBanner=(@($ui|Where-Object {Test-GeneratedCoverBanner ([string]$_.Current.Name)}).Count -gt 0)}
 }
 function Get-ManualCoverState($nodes,[string]$text){
- $manual=@($nodes|Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and ([string]$_.Current.Name).Trim() -ceq '更换图片' -and $_.Current.IsEnabled})
- $smart=@($nodes|Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and ([string]$_.Current.Name).Trim() -ceq '智能封面'})
+ $manual=@($nodes|Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and ([string]$_.Current.Name).Trim() -ceq '更换图片' -and $_.Current.IsEnabled -and -not $_.Current.IsOffscreen})
+ $smart=@($nodes|Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and ([string]$_.Current.Name).Trim() -ceq '智能封面' -and $_.Current.IsEnabled -and -not $_.Current.IsOffscreen})
  $evidence=Get-CoverUiEvidence $nodes
  return @{manualSelected=($manual.Count -eq 1 -and $smart.Count -eq 1 -and -not $evidence.generatorBanner -and -not $evidence.cropVisible);generatorBanner=$evidence.generatorBanner}
 }
 function Resolve-CoverUploadControl($nodes){
- $matches=@($nodes|Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and ([string]$_.Current.Name).Trim() -cin @('上传图片','更换图片') -and $_.Current.IsEnabled})
+ $matches=@($nodes|Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and ([string]$_.Current.Name).Trim() -cin @('上传图片','更换图片') -and $_.Current.IsEnabled -and -not $_.Current.IsOffscreen})
  if($matches.Count -ne 1){throw 'COVER_UPLOAD_CONTROL_NOT_UNIQUE'};return $matches[0]
 }
 function Form {
@@ -280,7 +284,8 @@ function Picker-Proof {
  return @{handle=[string]$fg.ToInt64();owner=$script:bind.handle;pid=$dlg.Current.ProcessId;name='打开';actualDirectory=$address[0].Current.Name.Substring(4);selectedFileName=$null}
 }
 function Crop-Proof {
- $p=Page;$heads=@((Get-CoverUiEvidence $p.nodes).cropHeadings)
+ $p=Page;if($p.url -notmatch '^https://y\.tencentmusic\.com/#/user/manage/aiChoose/add(?:\?|$)'){throw 'AI_ROUTE_CHANGED'}
+ $heads=@((Get-CoverUiEvidence $p.nodes).cropHeadings)
  if($heads.Count -ne 1){throw 'CROP_DIALOG_SCOPE_REQUIRED'}
  $group=Control-Parent $heads[0]
  if($group.Current.ControlType -ne [Windows.Automation.ControlType]::Group){throw 'CROP_DIALOG_SCOPE_REQUIRED'}
@@ -288,27 +293,28 @@ function Crop-Proof {
  if($confirm.Count -ne 1 -or $images.Count -lt 1 -or @($children|Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and ([string]$_.Current.Name).Trim() -ceq '更换图片'}).Count -ne 1){throw 'CROP_DIALOG_SCOPE_REQUIRED'}
  return @{groupId=($group.GetRuntimeId()-join '.');heading='调整图片';confirmName='确认';imageCount=$images.Count}
 }
-function Confirm-Crop([string]$expectedGroup=''){
+function Wait-ManualCover([int]$TimeoutMs=6000){
+ # A stable visible UI readback is not proof of a remote save or of remote file bytes.
+ return Wait-NativeReadback -Read {Form} -Ready {param($v)$v.mode -ceq 'editor' -and $v.coverState.manualSelected -eq $true -and $v.coverState.generatorBanner -eq $false} -TimeoutMs $TimeoutMs -FailureCode 'MANUAL_COVER_ACCEPTANCE_REQUIRED' -ConsecutiveReady 3
+}
+function Confirm-Crop([string]$expectedGroup='',[int]$TimeoutMs=6000){
  $proof=Crop-Proof;if($expectedGroup -and $proof.groupId -cne $expectedGroup){throw 'CROP_GROUP_CHANGED'}
  $p=Page;$group=@($p.nodes|Where-Object {($_.GetRuntimeId()-join '.') -ceq $proof.groupId})
  if($group.Count -ne 1){throw 'CROP_GROUP_CHANGED'}
  Invoke-Node (Unique (Nodes $group[0]) '确认' 'Button')
- for($i=0;$i -lt 30;$i++){
-  Start-Sleep -Milliseconds 200
-   try{$current=Form;if($current.coverState.manualSelected){return}}catch{if($_.Exception -isnot [Windows.Automation.ElementNotAvailableException] -and $_.Exception.InnerException -isnot [Windows.Automation.ElementNotAvailableException]){throw}}
- }
- throw 'MANUAL_COVER_ACCEPTANCE_REQUIRED'
+ # Never retry this mutation, even on timeout. Return the accepted observation itself.
+ return Wait-ManualCover -TimeoutMs $TimeoutMs
 }
 try{
  if($request.action -notin @('inspect','observe','step','inspect_picker','resume_cover_picker','locate_cover_picker','inspect_crop','confirm_existing_crop')){throw 'ACTION_NOT_ALLOWED'}
  Bind;Identity
- $receipt=$null;$status='verified_existing';$step=$request.step;$snap=Form
+ $receipt=$null;$acceptedSnapshot=$null;$status='verified_existing';$step=$request.step;$snap=Form
  if($request.action -eq 'inspect_crop'){
   @{ok=$true;value=@{snapshot=$snap;crop=(Crop-Proof)}}|ConvertTo-Json -Depth 20 -Compress;exit
  }
  if($request.action -eq 'confirm_existing_crop'){
-  Confirm-Crop $request.groupId
-  @{ok=$true;value=@{snapshot=(Form);status='applied'}}|ConvertTo-Json -Depth 20 -Compress;exit
+  $snap=Confirm-Crop $request.groupId
+  @{ok=$true;value=@{snapshot=$snap;status='applied'}}|ConvertTo-Json -Depth 20 -Compress;exit
  }
  if($request.action -in @('inspect_picker','locate_cover_picker')){
   $picker=Picker-Proof
@@ -357,20 +363,19 @@ try{
      $currentPage=Page;if((Get-CoverUiEvidence $currentPage.nodes).cropVisible){throw 'CROP_COMPLETION_REQUIRED'}
      Foreground;Click-Node (Resolve-CoverUploadControl $currentPage.nodes)
     }
-    $receipt=Pick-File $request.coverPath;$status='applied';Start-Sleep -Milliseconds 700
-    $p=Page
-    # Confirm only the local image crop modal, never a legal confirmation.
-    if((Get-CoverUiEvidence $p.nodes).cropVisible){
-     Confirm-Crop
-    }
-    $p=Page;if((Get-CoverUiEvidence $p.nodes).cropVisible){throw 'CROP_COMPLETION_REQUIRED'}
-    if(-not (Form).coverState.manualSelected){throw 'MANUAL_COVER_ACCEPTANCE_REQUIRED'}
+    $receipt=Pick-File $request.coverPath;$status='applied'
+    # The old editor may already display a manual cover. It cannot prove this selection.
+    # Require the new crop phase; without it stop rather than certify the old image.
+    $null=Wait-NativeReadback -Read {(Get-CoverUiEvidence (Page).nodes).cropVisible} -Ready {param($v)$v -eq $true} -TimeoutMs 6000 -FailureCode 'CROP_COMPLETION_REQUIRED'
+    $snap=Confirm-Crop
+    $acceptedSnapshot=$snap
    }
    'save_album' {
-    if(-not (Form).coverState.manualSelected){throw 'MANUAL_COVER_ACCEPTANCE_REQUIRED'}
+    $snap=Wait-ManualCover
     # Retained step name for journal compatibility: only a local material snapshot.
     # The optional official Save button is deliberately not invoked or retried.
     $script:saveEvidence=@{source='local_material_snapshot';text='已核对专辑材料，留存本地快照；未断言官网保存成功';remoteSavedVerified=$false;observedAt=[DateTime]::UtcNow.ToString('o')}
+    $snap.saveEvidence=$script:saveEvidence;$acceptedSnapshot=$snap
     $status='verified_existing'
    }
    'advance_to_terms' {
@@ -380,7 +385,7 @@ try{
    }
   }
  }
- $snap=Form
+ $snap=if($null -ne $acceptedSnapshot){$acceptedSnapshot}else{Form}
  @{ok=$true;value=@{snapshot=$snap;status=$status;receipt=$receipt}}|ConvertTo-Json -Depth 20 -Compress
 }catch{
  $code=$_.Exception.Message;if($code -notmatch '^[A-Z0-9_]+$'){$code='NATIVE_CONTROL_CONTRACT_FAILED'}

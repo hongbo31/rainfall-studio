@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import HelpNote from "./HelpNote";
 
-const authorizedWorkId = "00000000-0000-4000-8000-000000000002";
 type Action =
+  | "connectBrowser"
   | "inspect"
   | "register"
   | "list"
@@ -14,6 +14,7 @@ type Action =
   | "resumeCrop";
 type PublicRows = { grants: any[]; jobs: any[] };
 type Inspection = {
+  authorizationNonce?: string;
   identity: {
     subjectType: string;
     maskedKugouId: string;
@@ -21,11 +22,12 @@ type Inspection = {
     artistName: string;
     observedAt: string;
   };
-  binding: { pid: number; handle: string; started: string };
+  binding: { pid: number; handle: string; started: string } | {transport:"cloud-playwright";sessionId:string;pageId:string;started:string};
   page: { mode: string; route: string };
   registered: boolean;
 };
 type PanelProps = {
+  compact?: boolean;
   data: any;
   workId: string;
   inspection: Inspection | null;
@@ -56,6 +58,18 @@ const stepNames: Record<string, string> = {
   advance_to_terms: "进入条款预览",
 };
 
+const preparationErrorMessages: Record<string, string> = {
+  MANUAL_COVER_ACCEPTANCE_REQUIRED:
+    "封面回显尚未稳定，请核对官网当前封面后再做只读检查",
+  CROP_COMPLETION_REQUIRED: "尚未确认本次裁剪完成，请核对当前裁剪窗口",
+  COVER_READBACK_SCOPE_CHANGED:
+    "核对期间账号或页面已变化，请回到原作品后重新检查",
+  COVER_READBACK_SCOPE_REQUIRED: "无法确认当前账号和作品页面，请先检查原账户",
+  COVER_READBACK_INVALID_VALUE: "封面核对信息不完整，请先检查原账户",
+};
+const preparationErrorMessage = (code: string) =>
+  preparationErrorMessages[code] ?? code;
+
 /** Public, read-only view shared by the live bridge workspace and offline SSR checks. */
 export function TmeAiPreparePanel(props: PanelProps) {
   const {
@@ -73,16 +87,55 @@ export function TmeAiPreparePanel(props: PanelProps) {
     onAction,
   } = props;
   if (data.mode !== "production") return null;
-  const works = (data.works ?? []).filter(
-    (w: any) =>
-      w.id === authorizedWorkId || grants.some((g) => g.workId === w.id),
-  );
+  const works = data.works ?? [];
   const grant = grants.find((g) => g.workId === workId),
     job = context?.job?.workId === workId ? context.job : null;
   const history = jobs.filter((j) => j.workId === workId),
     existing = history.length > 0;
   const canWrite = !busy && consent && !!inspection;
   const identity = inspection?.identity ?? grant?.identity;
+  if (props.compact)
+    return (
+      <section aria-label="确认材料准备">
+        <button disabled={busy || !workId} onClick={() => onAction("inspect")}>
+          核对投稿账号
+        </button>
+        {inspection && (
+          <p>
+            {identity?.qqDisplayName} · {identity?.artistName} ·{" "}
+            {identity?.maskedKugouId}
+          </p>
+        )}
+        <label className="inline-check">
+          <input
+            type="checkbox"
+            checked={consent}
+            disabled={busy || !inspection}
+            onChange={(event) => onConsent(event.target.checked)}
+          />
+          同意将本首音频
+          A、封面和歌词发送至以上腾讯账号，并填写歌曲资料，准备到条款预览。
+        </label>
+        <button
+          className="primary"
+          disabled={!canWrite || !!grant}
+          onClick={() => onAction("register")}
+        >
+          确认并继续准备
+        </button>
+        {grant && (
+          <>
+            <p role="status">已有准备授权，请核对原任务与当前材料。</p>
+            <details>
+              <summary>核对原准备记录</summary>
+              <TmeAiPreparePanel {...props} compact={false} />
+            </details>
+          </>
+        )}
+        {busy && <p role="status">处理中…</p>}
+        {error && <p role="alert">{preparationErrorMessage(error)}</p>}
+      </section>
+    );
   return (
     <section
       className="panel"
@@ -98,9 +151,7 @@ export function TmeAiPreparePanel(props: PanelProps) {
         </div>
         <strong>本准备流程正式提交：0 · 未正式发布</strong>
       </div>
-      <p>
-        非独家授权 3 年 · 期间不可独家授权其他平台 · 条款未接受
-      </p>
+      <p>非独家授权 3 年 · 期间不可独家授权其他平台 · 条款未接受</p>
       <label>
         已授权作品（仅 A）
         <select
@@ -149,19 +200,20 @@ export function TmeAiPreparePanel(props: PanelProps) {
                 </time>{" "}
                 · {inspection.registered ? "已有授权登记" : "尚未登记本次授权"}
               </p>
-              <details><summary>窗口记录</summary><small>
-                绑定窗口 PID {inspection.binding.pid} /{" "}
-                {inspection.binding.handle} · 启动 {inspection.binding.started}
-                ；页面 {inspection.page.mode} · {inspection.page.route}
-              </small></details>
+              <details>
+                <summary>窗口记录</summary>
+                <small>
+                  {"transport" in inspection.binding ? `云浏览器页面 ${inspection.binding.pageId}` : `绑定窗口 PID ${inspection.binding.pid} / ${inspection.binding.handle}`} · 启动{" "}
+                  {inspection.binding.started}
+                  ；页面 {inspection.page.mode} · {inspection.page.route}
+                </small>
+              </details>
             </>
           )}
           {!inspection && <p>这是历史登记信息；本次操作前请先检查原账户。</p>}
         </div>
       ) : (
-        <p className="notice">
-          尚未核对当前账户
-        </p>
+        <p className="notice">尚未核对当前账户</p>
       )}
       <label className="inline-check">
         <input
@@ -199,7 +251,7 @@ export function TmeAiPreparePanel(props: PanelProps) {
       )}
       {error && (
         <p className="notice" role="alert">
-          {error}
+          {preparationErrorMessage(error)}
         </p>
       )}
       {job && (
@@ -217,14 +269,12 @@ export function TmeAiPreparePanel(props: PanelProps) {
               可选官网保存结果未知，未重试；已核对本地材料快照，继续仅投稿前预检。
             </p>
           )}
-          {job.reason && <p className="notice">{job.reason}</p>}
+          {job.reason && (
+            <p className="notice">{preparationErrorMessage(job.reason)}</p>
+          )}
           {["unknown", "reconcile_required", "dispatching"].includes(
             job.state,
-          ) && (
-            <p className="notice">
-              结果待核对 · 请勿重复上传
-            </p>
-          )}
+          ) && <p className="notice">结果待核对 · 请勿重复上传</p>}
           {job.audioDisposition && (
             <p>
               音频记录：
@@ -268,10 +318,20 @@ export function TmeAiPreparePanel(props: PanelProps) {
             <div className="notice" aria-label="待确认条款">
               <h3>待条款确认 · 未接受条款</h3>
               <p>{job.terms.modeText}</p>
-              <details><summary>查看官方页面原文</summary><pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere",maxHeight:280,overflowY:'auto' }}>
-                {job.terms.termsText}
-              </pre></details>
-              <small style={{overflowWrap:'anywhere'}}>
+              <details>
+                <summary>查看官方页面原文</summary>
+                <pre
+                  style={{
+                    whiteSpace: "pre-wrap",
+                    overflowWrap: "anywhere",
+                    maxHeight: 280,
+                    overflowY: "auto",
+                  }}
+                >
+                  {job.terms.termsText}
+                </pre>
+              </details>
+              <small style={{ overflowWrap: "anywhere" }}>
                 观察时间 {job.terms.observedAt} · 条款摘要 {job.terms.termsHash}
               </small>
             </div>
@@ -288,7 +348,7 @@ export function TmeAiPreparePanel(props: PanelProps) {
               {" "}
               · {item.updatedAt} · 修订 {item.revision}
             </small>
-            {item.reason && <p>{item.reason}</p>}
+            {item.reason && <p>{preparationErrorMessage(item.reason)}</p>}
             <button
               disabled={busy}
               onClick={() => onAction("context", item.id)}
@@ -305,14 +365,16 @@ export function TmeAiPreparePanel(props: PanelProps) {
 export default function TmeAiPrepareWorkspace({
   data,
   notify,
+  initialWorkId,
+  compact = false,
 }: {
   data: any;
+  initialWorkId?: string;
+  compact?: boolean;
   notify: (text: string) => void;
 }) {
-  const [workId, setWorkId] = useState(() =>
-    data.works?.some((w: any) => w.id === authorizedWorkId)
-      ? authorizedWorkId
-      : "",
+  const [workId, setWorkId] = useState(
+    () => initialWorkId ?? data.works?.[0]?.id ?? "",
   );
   const [rows, setRows] = useState<PublicRows>({ grants: [], jobs: [] });
   const [inspection, setInspection] = useState<Inspection | null>(null),
@@ -357,9 +419,13 @@ export default function TmeAiPrepareWorkspace({
       let result: any;
       const grant = rows.grants.find((g) => g.workId === workId),
         job = context?.job;
-      if (action === "inspect") {
+      if (action === "connectBrowser") {
+        setInspection(null);setConsent(false);
+        result = await request("connectBrowser", {port:9222,allowConnection:true});
+        if (!result.connected) throw Error(result.reason ?? "CLOUD_BROWSER_SESSION_REQUIRED");
+      } else if (action === "inspect") {
         setInspection(null);
-        result = await request("inspect");
+        result = await request("inspect", { workId });
         if (mounted.current) setInspection(result);
       } else if (action === "list") await read();
       else if (action === "context" || action === "reconcile") {
@@ -372,7 +438,7 @@ export default function TmeAiPrepareWorkspace({
           throw Error("请先检查原账户并确认本次准备范围。");
         if (action === "register") {
           if (!workId || grant) throw Error("请选择尚未登记的本次授权作品。");
-          result = await request("register", { workId, consent: true });
+          result = await request("register", { workId, consent: true, ...(inspection.authorizationNonce ? {authorizationNonce:inspection.authorizationNonce} : {}) });
         } else if (action === "start") {
           if (!grant || rows.jobs.some((j) => j.grantId === grant.id))
             throw Error("已有任务请查看记录，禁止重复开始。");
@@ -463,6 +529,7 @@ export default function TmeAiPrepareWorkspace({
   return (
     <TmeAiPreparePanel
       data={data}
+      compact={compact}
       workId={workId}
       inspection={inspection}
       grants={rows.grants}

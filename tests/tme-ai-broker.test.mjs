@@ -172,6 +172,7 @@ function setup(t, options = {}) {
       options.durationText ?? "03:30",
     );
     if (phase === "crop") value.form.text += "\n调整图片";
+    value.form.text += options.formTextSuffix ?? "";
     return {
       ...value,
       coverState: {
@@ -219,7 +220,8 @@ function setup(t, options = {}) {
         return { snapshot: observed(), crop: structuredClone(crop) };
       if (action === "confirm_existing_crop") {
         phase = "selected";
-        throw Error("NATIVE_CONTROL_CONTRACT_FAILED");
+        if (options.cropOutcome === "success") return {snapshot: observed(), status: "applied"};
+        throw Error(options.cropError ?? "NATIVE_CONTROL_CONTRACT_FAILED");
       }
       if (input.step === "advance_to_terms") mode = "ai_authorization";
       return {
@@ -259,6 +261,7 @@ function setup(t, options = {}) {
     available: () => true,
     generation: () => generation,
     nativeHostHash: () => hostSourceHash,
+    readbackTimeoutMs: options.readbackTimeoutMs,
   });
   const start = async () => {
     const g = await broker.ui("register", { workId, consent: true });
@@ -474,10 +477,9 @@ test("picker to crop to read-only cover reconciliation retains the original oper
   const read = await x.broker.ui("reconcile", { id: job.id });
   assert.equal(read.job.state, "ready");
   assert.equal(read.job.step, "save_album");
-  assert.deepEqual(
-    x.calls.slice(count).map((c) => c.action),
-    ["observe"],
-  );
+  const reconciliationReads=x.calls.slice(count);
+  assert.ok(reconciliationReads.length>=3);
+  assert.ok(reconciliationReads.every(c=>c.action==="observe"));
   assert.equal(x.service.context(job.id).operations.length, ops);
   const settled = x.repo.get("operations", operationId);
   assert.equal(settled.state, "complete");
@@ -767,4 +769,62 @@ test("a workspace change after the crop claim prevents confirming and retains th
   const op = x.service.context(job.id).operations.at(-1);
   assert.equal(op.state, "dispatching");
   assert.ok(op.cropResume);
+});
+
+
+test("read-only cover reconciliation does not mistake lyric crop words for a live modal", async (t) => {
+ const x=setup(t,{recoverCover:true,formTextSuffix:"\n歌词：调整图片与裁剪图片只是故事。"});
+ let job=await pendingCrop(x);job=(await execute(x,"resumeCrop",job)).job;
+ const count=x.calls.length,opId=x.service.context(job.id).job.operationId;
+ const read=await x.broker.ui("reconcile",{id:job.id});
+ assert.equal(read.job.state,"ready");assert.equal(read.job.step,"save_album");
+ assert.ok(x.calls.slice(count).every(c=>c.action==="observe"));
+ assert.equal(x.repo.get("operations",opId).state,"complete");
+ assert.equal(x.calls.filter(c=>c.action==="confirm_existing_crop").length,1);
+});
+test("a successful existing crop resumes once through the local snapshot to the unaccepted terms page", async (t) => {
+ const x=setup(t,{recoverCover:true,cropOutcome:"success"});
+ const job=await pendingCrop(x),before=x.service.context(job.id).operations.length;
+ const result=await execute(x,"resumeCrop",job);
+ assert.equal(result.job.state,"awaiting_terms_review");
+ assert.equal(x.calls.filter(c=>c.action==="confirm_existing_crop").length,1);
+ assert.equal(x.calls.filter(c=>c.action==="resume_cover_picker").length,1);
+ assert.equal(x.calls.filter(c=>c.action==="step"&&c.step==="set_cover").length,1);
+ assert.equal(result.job.submissionByClient,false);assert.equal(result.job.remoteId,null);
+ assert.equal(x.service.context(job.id).operations.length,before+2);
+});
+test("a crop timeout preserves the original claim and cannot trigger another confirm or upload", async (t) => {
+ const x=setup(t,{recoverCover:true,cropError:"MANUAL_COVER_ACCEPTANCE_REQUIRED"});
+ let job=await pendingCrop(x);job=(await execute(x,"resumeCrop",job)).job;
+ assert.equal(job.state,"reconcile_required");
+ const calls=x.calls.length;
+ await assert.rejects(execute(x,"resumeCrop",job),/CROP_RECONSTRUCTION_SCOPE_REQUIRED/);
+ assert.equal(x.calls.length,calls);assert.equal(x.calls.filter(c=>c.action==="confirm_existing_crop").length,1);
+ assert.equal(x.service.context(job.id).operations.at(-1).reason,"MANUAL_COVER_ACCEPTANCE_REQUIRED");
+});
+
+test("a delayed successful crop readback can recover from its timeout without another mutation", async (t) => {
+ const x=setup(t,{recoverCover:true,cropError:"MANUAL_COVER_ACCEPTANCE_REQUIRED"});
+ let job=await pendingCrop(x);job=(await execute(x,"resumeCrop",job)).job;
+ const calls=x.calls.length,operationId=x.service.context(job.id).job.operationId;
+ const result=await x.broker.ui("reconcile",{id:job.id});
+ assert.equal(result.job.state,"ready");assert.equal(result.job.step,"save_album");
+ assert.ok(x.calls.slice(calls).every(c=>c.action==="observe"));
+ assert.equal(x.calls.filter(c=>c.action==="confirm_existing_crop").length,1);
+ assert.equal(x.calls.filter(c=>c.action==="resume_cover_picker").length,1);
+ assert.equal(x.repo.get("operations",operationId).readOnlyCoverReconciliation.original.reason,"MANUAL_COVER_ACCEPTANCE_REQUIRED");
+});
+test("a timed out in-flight observation keeps native operations locked until that exact request settles", async (t) => {
+ const started=deferred(),release=deferred();let stall=false;
+ const x=setup(t,{recoverCover:true,readbackTimeoutMs:20,onNative:async action=>{if(stall&&action==="observe"){started.resolve();await release.promise;}}});
+ let job=await pendingCrop(x);job=(await execute(x,"resumeCrop",job)).job;
+ stall=true;const pending=x.broker.ui("reconcile",{id:job.id});
+ await started.promise;
+ await assert.rejects(pending,/MANUAL_COVER_ACCEPTANCE_REQUIRED/);
+ const calls=x.calls.length;
+ await assert.rejects(x.broker.ui("inspect",{workId:x.scope.workId}),/NATIVE_PREPARATION_BUSY/);
+ assert.equal(x.calls.length,calls);
+ release.resolve();await new Promise(resolve=>setTimeout(resolve,0));
+ stall=false;await x.broker.ui("inspect",{workId:x.scope.workId});
+ assert.equal(x.calls.length,calls+1);
 });

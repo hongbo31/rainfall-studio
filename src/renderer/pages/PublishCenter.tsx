@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useStudio, PageHead, Badge, names, label } from "../context";
 import HelpHint from "../components/HelpHint";
-import TmeAiSubmissionWorkspace from "../components/TmeAiSubmissionWorkspace";
+import PublicationPipelineProgress from "../components/PublicationPipelineProgress";
 import PublicationMaterialResult from "../components/PublicationMaterialResult";
 import {
   platformTargets,
@@ -27,6 +27,7 @@ export default function PublishCenter() {
     setPublishSelection,
     flushPublishSelection,
     call,
+    refresh,
     go,
   } = useStudio();
   const [fallback, setFallback] = useState<PublishSelection>(
@@ -46,6 +47,7 @@ export default function PublishCenter() {
   const [currentResult, setCurrentResult] = useState<{
     requests: SimplePublicationRequest[];
     reused: boolean;
+    pipeline?: any[];
   } | null>(null);
   const resultRef = useRef<HTMLElement>(null);
   const currentScope = JSON.stringify({ mode: data.mode, selection });
@@ -95,8 +97,18 @@ export default function PublishCenter() {
       await save(selection);
       const result = await call("publish.simple", selection);
       if (scopeRef.current !== submittedScope) return;
-      setCurrentResult({ requests: result.requests, reused: result.reused });
-      setMessage(result.reused ? "已重新核验" : "已整理发布材料");
+      setCurrentResult({
+        requests: result.requests ?? [],
+        reused: result.reused,
+        pipeline: result.pipeline,
+      });
+      setMessage(
+        result.pipeline?.length
+          ? "发布任务已更新"
+          : result.reused
+            ? "已重新核验"
+            : "已整理发布材料",
+      );
     } catch (e: any) {
       if (scopeRef.current === submittedScope)
         setError(
@@ -148,10 +160,40 @@ export default function PublishCenter() {
       });
   }
   const pendingTerms = [...termCards.values()];
+  const pipelineJobs = new Map<string, any>();
+  for (const job of currentResult?.pipeline ?? [])
+    pipelineJobs.set(job.id, job);
+  for (const job of data.publicationPipelineJobs ?? [])
+    pipelineJobs.set(job.id, job);
+  const pipeline = [...pipelineJobs.values()].filter((job: any) =>
+    selection.workIds.includes(job.workId),
+  );
+  const activePipeline = pipeline.some((job: any) =>
+    ["queued", "preparing", "awaiting_authorization"].includes(job.state),
+  );
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  useEffect(() => {
+    if (!activePipeline) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        await refreshRef.current?.();
+      } catch {
+        /* Keep the persisted progress visible; never replay publication. */
+      }
+      if (!stopped) timer = setTimeout(poll, 1500);
+    };
+    timer = setTimeout(poll, 1500);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [activePipeline]);
   return (
     <div className="simple-publishing">
       <PageHead title="发布中心" />
-      <TmeAiSubmissionWorkspace data={data} initialWorkId={selected?.[0]} />
       <section className="panel publish-choices" aria-label="选择歌曲和平台">
         <fieldset
           className="simple-publish-grid publish-selection-fields"
@@ -262,12 +304,16 @@ export default function PublishCenter() {
                         {target === "douyin"
                           ? "使用作品已有视频。"
                           : "使用原音频 A、已选封面和已有歌词。"}
-                        本地检查不上传；正式接口未接通。
+                        正式提交前需逐首确认当前条款。
                       </HelpHint>
                     </div>
                     <div className="simple-target-meta">
                       <span>
-                        {data.mode === "simulation" ? "模拟" : "未接通"}
+                        {data.mode === "simulation"
+                          ? "模拟"
+                          : ["qqmusic", "kugou"].includes(target)
+                            ? "腾讯 AI 投稿"
+                            : "未接通"}
                       </span>
                       <button
                         className="text-button"
@@ -331,7 +377,7 @@ export default function PublishCenter() {
                   : "发布"}
           </button>
           <HelpHint label="发布说明">
-            保存本地材料检查结果，不会上传、投稿或扣费。
+            检查材料并准备投稿；遇到授权或条款确认时暂停。
           </HelpHint>
           {message && (
             <span role="status">
@@ -344,7 +390,7 @@ export default function PublishCenter() {
             </span>
           )}
         </div>
-        {currentResult && (
+        {currentResult && !pipeline.length && (
           <section
             className="publication-current-result"
             ref={resultRef}
@@ -380,7 +426,17 @@ export default function PublishCenter() {
           </section>
         )}
       </section>
-      {(requests.length > 0 || pendingTerms.length > 0) && (
+      {!!pipeline.length && (
+        <PublicationPipelineProgress
+          jobs={pipeline}
+          data={data}
+          onRefresh={refresh}
+          onReconcile={(id) => call("publish.reconcile", {id})}
+          onTrack={(id) => go("track", id)}
+          onConfigure={(target) => void configure(target)}
+        />
+      )}
+      {!pipeline.length && (requests.length > 0 || pendingTerms.length > 0) && (
         <section className="panel simple-request-list" aria-label="发布任务">
           <h2>发布任务</h2>
           {pendingTerms.map((term) => (

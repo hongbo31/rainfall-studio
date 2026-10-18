@@ -1,3 +1,4 @@
+import {TmeAiPrepareMetadataSchema} from "./tme-ai-metadata";
 import { z } from "zod";
 
 export const platformTargets = [
@@ -159,6 +160,8 @@ export const SimplePublishingSchemas = {
     expectedRevision: z.number().int().nonnegative(),
   }),
   "publish.selection.save": PublishSelectionSchema,
+  "publish.metadata.save": z.strictObject({workId:z.uuid(),expectedRevision:z.number().int().positive(),metadata:TmeAiPrepareMetadataSchema.omit({title:true})}),
+  "publish.reconcile": z.strictObject({id:z.uuid()}),
   "publish.simple": PublishSelectionSchema.refine(
     (v) => v.workIds.length > 0,
     "请选择歌曲",

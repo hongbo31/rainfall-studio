@@ -38,7 +38,7 @@ foreach($row in @($data.nodes)){
 foreach($n in $script:fixtureNodes){if($null -ne $n.ParentId){$n.Parent=$lookup[[string]$n.ParentId]}}
 function Control-Parent($node){return $node.Parent}
 function Nodes($root){return @($script:fixtureNodes|Where-Object {$candidate=$_;$ancestor=$candidate.Parent;$seen=@{};while($null -ne $ancestor){if($ancestor.Id -eq $root.Id){return $true};if($seen.ContainsKey([string]$ancestor.Id)){return $false};$seen[[string]$ancestor.Id]=$true;$ancestor=$ancestor.Parent};return $false})}
-function Page {return @{url='https://y.tencentmusic.com/#/user/manage/aiChoose/add';nodes=$script:fixtureNodes;text=[string]$data.text}}
+function Page {return @{url=$(if($data.route){[string]$data.route}else{'https://y.tencentmusic.com/#/user/manage/aiChoose/add'});nodes=$script:fixtureNodes;text=[string]$data.text}}
 $script:bind=@{pid=1;handle='1';documentId='fixture'};$script:identity=@{artistName='fixture'}
 $script:reads=0
 try{
@@ -54,6 +54,18 @@ try{
   'cover-control' {if(-not (Get-Command Resolve-CoverUploadControl -ErrorAction SilentlyContinue)){throw 'MISSING_COVER_CONTROL_RESOLVER'};$node=Resolve-CoverUploadControl $script:fixtureNodes;@{ok=$true;id=$node.Id}|ConvertTo-Json -Compress}
   'form' {@{ok=$true;snapshot=(Form)}|ConvertTo-Json -Depth 12 -Compress}
   'crop-proof' {@{ok=$true;proof=(Crop-Proof)}|ConvertTo-Json -Depth 8 -Compress}
+  'confirm-crop' {
+   $script:invocations=0
+   function Invoke-Node($node){$script:invocations++}
+   function Form {
+    $script:reads++
+    if($data.permanentError){throw [string]$data.permanentError}
+    $ready=if($data.sequence){[bool]$data.sequence[[Math]::Min($script:reads-1,$data.sequence.Count-1)]}else{$false}
+    return @{mode='editor';coverState=@{manualSelected=$ready;generatorBanner=(-not $ready)};observedAt=[string]$script:reads}
+   }
+   try{$snapshot=Confirm-Crop -expectedGroup $(if($data.groupId){[string]$data.groupId}else{'100'}) -TimeoutMs $(if($data.timeoutMs){[int]$data.timeoutMs}else{1200});@{ok=$true;snapshot=$snapshot;invocations=$script:invocations;reads=$script:reads}|ConvertTo-Json -Depth 8 -Compress}
+   catch{@{ok=$false;error=$_.Exception.Message;invocations=$script:invocations;reads=$script:reads}|ConvertTo-Json -Compress}
+  }
   'page-documents' {
    $script:root=[pscustomobject]@{}
    $script:root|Add-Member ScriptMethod FindAll {param($scope,$condition)return @($script:fixtureNodes|Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::Document})}
@@ -67,6 +79,27 @@ try{
    function Click-Node {throw 'TEST_COVER_CLICK'}
    $entry=@($ast.EndBlock.Statements|Where-Object {$_ -is [System.Management.Automation.Language.TryStatementAst]})[-1]
    Invoke-Expression $entry.Extent.Text
+  }
+  'cover-flow' {
+   $request=[pscustomobject]@{action='step';step='set_cover';coverPath='C:\fixture\cover.jpg'}
+   $script:selections=0;$script:invocations=0;$script:pageReads=0;$script:waitingCrop=$false
+   function Bind {};function Identity {};function Foreground {};function Click-Node {}
+   function Pick-File($file){$script:selections++;$script:waitingCrop=$true;return @{selectedPath=$file}}
+   function Page {
+    $script:pageReads++
+    $show=$script:waitingCrop -and -not $data.noCrop -and $script:pageReads -ge 4
+    return @{url='https://y.tencentmusic.com/#/user/manage/aiChoose/add';nodes=$(if($show){$script:fixtureNodes}elseif($script:selections -eq 0){@([pscustomobject]@{Current=[pscustomobject]@{ControlType=[Windows.Automation.ControlType]::Button;Name='更换图片';IsEnabled=$true;IsOffscreen=$false}})}else{@()});text=''}
+   }
+   function Invoke-Node($node){$script:invocations++;$script:waitingCrop=$false}
+   function Form {
+    return @{mode='editor';form=@{metadataExpanded=$true};coverState=@{manualSelected=$true;generatorBanner=$false};test=@{selections=$script:selections;confirmations=$script:invocations;pageReads=$script:pageReads}}
+   }
+   $productionWait=(Get-Item Function:Wait-NativeReadback).ScriptBlock
+   function Wait-NativeReadback {param($Read,$Ready,$TimeoutMs,$FailureCode,$TransientErrors=@(),$ConsecutiveReady=1);return & $productionWait -Read $Read -Ready $Ready -TimeoutMs 500 -FailureCode $FailureCode -TransientErrors $TransientErrors -ConsecutiveReady $ConsecutiveReady}
+   $entry=@($ast.EndBlock.Statements|Where-Object {$_ -is [System.Management.Automation.Language.TryStatementAst]})[-1]
+   $result=(Invoke-Expression $entry.Extent.Text)|ConvertFrom-Json
+   $result|Add-Member -NotePropertyName test -NotePropertyValue @{selections=$script:selections;confirmations=$script:invocations}
+   $result|ConvertTo-Json -Depth 20 -Compress
   }
   'partial-metadata-step' {
    $request=[pscustomobject]@{action='step';step='fill_metadata';metadata=@{title='示例歌名'}}
@@ -226,4 +259,41 @@ test('cyclic or self-parented documents cannot be discarded as proven children o
 });
 test('a separate cyclic radio cluster cannot be discarded as mirrors of an unrelated radio',()=>{
  const r=probe({action:'unique-radio',nodes:[node(19,'RadioButton','完整版'),node(26,'RadioButton','完整版',{parentId:27}),node(27,'RadioButton','完整版',{parentId:26})]});assert.equal(r.ok,false);assert.equal(r.error,'CONTROL_NOT_UNIQUE');
+});
+
+// Windows-only execution: these replay production PowerShell functions, not a JavaScript translation.
+test('symbol-prefixed smart-cover banners cannot certify a manual cover',()=>{
+ for(const name of ['✓ 已为您生成智能专辑封面','ℹ️ 已为您生成智能专辑封面','✦已为您生成智能专辑封面','\ue001 已为您生成智能专辑封面']){
+  const r=probe({action:'cover-state',nodes:[node(1,'Button','更换图片'),node(2,'Button','智能封面'),node(3,'Text',name)]});assert.equal(r.ok,true,r.error);assert.equal(r.state.generatorBanner,true);assert.equal(r.state.manualSelected,false);
+ }
+});
+test('prefixed user text, hidden labels and editable descendants remain outside banner evidence',()=>{
+ for(const extra of [{name:'歌词：已为您生成智能专辑封面'}, {name:'✓ 已为您生成智能专辑封面',offscreen:true}, {name:'✓ 已为您生成智能专辑封面',parentId:4}]){
+  const r=probe({action:'cover-state',nodes:[node(1,'Button','更换图片'),node(2,'Button','智能封面'),node(3,'Text',extra.name,extra),node(4,'Edit','歌词')]});assert.equal(r.ok,true,r.error);assert.equal(r.state.generatorBanner,false);
+ }
+});
+test('hidden cover controls are neither accepted as evidence nor clicked',()=>{
+ const r=probe({action:'cover-state',nodes:[node(1,'Button','更换图片',{offscreen:true}),node(2,'Button','智能封面')]});assert.equal(r.ok,true,r.error);assert.equal(r.state.manualSelected,false);
+ const target=probe({action:'cover-control',nodes:[node(1,'Button','上传图片',{offscreen:true})]});assert.equal(target.ok,false);assert.equal(target.error,'COVER_UPLOAD_CONTROL_NOT_UNIQUE');
+});
+test('crop confirmation invokes once and returns the settled snapshot despite a transient old success',()=>{
+ const r=probe({action:'confirm-crop',nodes:cropNodes,sequence:[true,false,true,true,true]});assert.equal(r.ok,true,r.error);assert.equal(r.invocations,1);assert.equal(r.reads,5);assert.equal(r.snapshot.observedAt,'5');
+});
+test('crop confirmation timeout cannot invoke confirmation a second time',()=>{
+ const r=probe({action:'confirm-crop',nodes:cropNodes,sequence:[false],timeoutMs:40});assert.equal(r.ok,false);assert.equal(r.error,'MANUAL_COVER_ACCEPTANCE_REQUIRED');assert.equal(r.invocations,1);
+});
+test('crop confirmation refuses a changed group before clicking and stops on permanent read errors',()=>{
+ const changed=probe({action:'confirm-crop',nodes:cropNodes,groupId:'other',sequence:[true]});assert.equal(changed.ok,false);assert.equal(changed.error,'CROP_GROUP_CHANGED');assert.equal(changed.invocations,0);
+ const failed=probe({action:'confirm-crop',nodes:cropNodes,permanentError:'AI_ROUTE_CHANGED'});assert.equal(failed.ok,false);assert.equal(failed.error,'AI_ROUTE_CHANGED');assert.equal(failed.invocations,1);assert.equal(failed.reads,1);
+});
+
+test('cover selection waits for a delayed new crop instead of accepting the old manual cover tree',()=>{
+ const r=probe({action:'cover-flow',nodes:cropNodes});assert.equal(r.ok,true,r.error);assert.equal(r.value.status,'applied');assert.equal(r.value.snapshot.test.selections,1);assert.equal(r.value.snapshot.test.confirmations,1);assert.ok(r.value.snapshot.test.pageReads>=4);
+});
+test('an unchanged old manual cover without a new crop fails closed after one selection',()=>{
+ const r=probe({action:'cover-flow',nodes:cropNodes,noCrop:true});assert.equal(r.ok,false);assert.equal(r.error,'CROP_COMPLETION_REQUIRED');assert.equal(r.test.selections,1);assert.equal(r.test.confirmations,0);
+});
+
+test('crop confirmation refuses navigation within the same official document before any click',()=>{
+ const r=probe({action:'confirm-crop',nodes:cropNodes,route:'https://y.tencentmusic.com/#/account/settings',sequence:[true]});assert.equal(r.ok,false);assert.equal(r.error,'AI_ROUTE_CHANGED');assert.equal(r.invocations,0);
 });

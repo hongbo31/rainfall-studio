@@ -1,3 +1,4 @@
+import {unifiedPublicationService,savePublicationMetadata} from "./unified-publication-integration";
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -331,6 +332,7 @@ export class Studio {
       case 'platformConfig.list': return listPlatformConfigurations(this.repo);
       case 'platformConfig.save': return savePlatformConfiguration(this.repo,v.config,v.expectedRevision);
       case 'publish.selection.save': return savePublishSelection(this,v);
+      case 'publish.metadata.save': return savePublicationMetadata(this,v);
       case 'publish.simple': return publishSimple(this,v);
       case 'tme.observations.record': return recordTmeObservation(this,v);
       case 'tme.observations.list': return listTmeObservations(this,v);
@@ -694,6 +696,7 @@ export class Studio {
       mode: this.mode,
       platformConfigurations: listPlatformConfigurations(this.repo),
       publicationRequests: listSimplePublicationRequests(this),
+      publicationPipelineJobs: this.mode === "production" ? unifiedPublicationService(this).list() : [],
       publicationPendingTerms: listPublicationPendingTerms(this),
       publishSelection: publishSelection(this),
       artists: this.all("artists"),

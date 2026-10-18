@@ -15,7 +15,7 @@ test("preparation UI is production only and SSR never invokes the browser bridge
   assert.match(html, /尚未核对当前账户/);
   assert.match(html, /正式提交：0/);
   assert.match(html, /未正式发布/);
-  assert.ok(!html.includes("未授权作品"));
+  assert.ok(html.includes("未授权作品")); // Selection alone never grants upload permission.
   assert.ok(!html.includes('value="audio_B"'));
   assert.match(button(html, "登记本次授权")[1], /disabled/);
 });
@@ -159,4 +159,26 @@ test("album preparation labels local snapshots honestly and preserves an unknown
   );
   assert.ok(!html.includes("保存专辑资料"));
   assert.ok(!html.includes("官网保存成功"));
+});
+
+test('cover uncertainty and scope errors show an actionable message without inviting a duplicate upload',()=>{
+ for(const [reason,message] of [
+  ['MANUAL_COVER_ACCEPTANCE_REQUIRED','封面回显尚未稳定，请核对官网当前封面后再做只读检查'],
+  ['CROP_COMPLETION_REQUIRED','尚未确认本次裁剪完成，请核对当前裁剪窗口'],
+  ['COVER_READBACK_SCOPE_CHANGED','核对期间账号或页面已变化，请回到原作品后重新检查'],
+ ]){
+  const html=ui.renderAiPrepare({state:'reconcile_required',step:'set_cover',reason,error:reason});
+  assert.ok(html.includes(message));assert.ok(!html.includes('>'+reason+'<'));
+  assert.match(button(html,'继续准备到条款预览')[1],/disabled/);
+ }
+});
+
+
+test("compact preparation requires explicit inspected-account consent and hides diagnostic actions", () => {
+  const html = ui.renderAiPrepare({compact:true,grants:[],consent:false});
+  assert.ok(button(html,"核对投稿账号"));
+  assert.match(button(html,"确认并继续准备")[1],/disabled/);
+  assert.ok(!button(html,"开始准备"));
+  assert.ok(!button(html,"继续准备到条款预览"));
+  assert.match(html,/本首音频 A、封面和歌词发送至以上腾讯账号/);
 });

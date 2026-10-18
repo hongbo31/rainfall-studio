@@ -4,10 +4,16 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import sharp from "sharp";
 import type { Studio } from "./studio";
-export const ffmpeg =
-  "C:\\ffmpeg\\ffmpeg-8.1-essentials_build\\bin\\ffmpeg.exe";
-export const ffprobe =
-  "C:\\ffmpeg\\ffmpeg-8.1-essentials_build\\bin\\ffprobe.exe";
+// Fixed, trusted installation locations only: never search PATH or download tools.
+export function mediaToolPath(tool: "ffmpeg" | "ffprobe", platform = process.platform) {
+  if (tool !== "ffmpeg" && tool !== "ffprobe") throw Error("MEDIA_TOOL_UNSUPPORTED");
+  if (platform === "linux") return `/usr/bin/${tool}`;
+  if (platform === "win32")
+    return `C:\\ffmpeg\\ffmpeg-8.1-essentials_build\\bin\\${tool}.exe`;
+  throw Error("MEDIA_TOOL_PLATFORM_UNSUPPORTED");
+}
+export const ffmpeg = mediaToolPath("ffmpeg");
+export const ffprobe = mediaToolPath("ffprobe");
 export function digest(file: string) {
   const h = createHash("sha256");
   const fd = fs.openSync(file, "r");

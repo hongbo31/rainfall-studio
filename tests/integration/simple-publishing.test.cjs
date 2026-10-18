@@ -759,3 +759,26 @@ test("terms summaries stay neutral and preserve exact original evidence", async 
     f.s.close();
   }
 });
+test('unified production entry persists a task visible in snapshot and reuses it on repeated click', async () => {
+ const f=setup();try {
+  await configured(f,'qqmusic','tme');
+  const first=await f.s.call('publish.simple',input(f,['qqmusic']));
+  assert.equal(first.pipeline.length,1);assert.equal(first.pipeline[0].state,'needs_materials');
+  const second=await f.s.call('publish.simple',input(f,['qqmusic']));
+  assert.equal(second.pipeline[0].id,first.pipeline[0].id);
+  assert.equal(f.s.snapshot().publicationPipelineJobs[0].id,first.pipeline[0].id);
+  assert.equal(f.s.all('operations').filter(o=>o.kind==='tme_ai_prepare').length,0);
+ }finally{f.s.close()}
+});
+test('publication metadata save is local, revision checked and cannot change dispatched material',async()=>{
+ const f=setup();try{
+  await configured(f,'qqmusic','tme');const result=await f.s.call('publish.simple',input(f,['qqmusic']));
+  const metadata={albumTitle:'Local album',albumDescription:'Verified description',artistName:'Artist',lyricist:'Writer',composer:'Composer',ownLyrics:false,ownComposition:false,allowCover:false,aiTool:'Actual tool',generatedOn:'2026-10-15',genre:'流行',language:'国语',version:'完整版',releaseMode:'审核通过即发布'};
+  const revision=f.s.get('works',f.work.id).revision;
+  const saved=await f.s.call('publish.metadata.save',{workId:f.work.id,expectedRevision:revision,metadata});assert.equal(saved.publicationMetadata.aiTool,'Actual tool');
+  await assert.rejects(f.s.call('publish.metadata.save',{workId:f.work.id,expectedRevision:revision,metadata}),/REVISION_CONFLICT/);
+  const task=f.s.all('settings').find(r=>r.id.startsWith('unified-publication:v1:'));f.s.save('settings',{...task,value:{...task.value,dispatchedAt:'2026-10-18T10:00:00Z'}});
+  await assert.rejects(f.s.call('publish.metadata.save',{workId:f.work.id,expectedRevision:saved.revision,metadata}),/PUBLICATION_MATERIALS_LOCKED/);
+  assert.equal(f.s.all('operations').filter(o=>o.kind==='tme_ai_prepare').length,0);
+ }finally{f.s.close()}
+});

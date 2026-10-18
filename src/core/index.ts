@@ -1,6 +1,7 @@
+import {executeUnifiedPublication} from "./unified-publication-integration";
 import { materialEntries } from "./materials";
 export { materialEntries };
-export { probe } from "./assets";
+export { probe, ffmpeg, ffprobe } from "./assets";
 import { Studio } from "./studio";
 import fs from "node:fs";
 import path from "node:path";
@@ -131,6 +132,7 @@ if (port) {
   );
   let chain = Promise.resolve().then(() => studio.scanInbox());
   const execute = async (method: string, input: any) => {
+    if(method.startsWith('internal.unifiedPublish.'))return executeUnifiedPublication(studio,method.slice('internal.unifiedPublish.'.length),input);
     if(method.startsWith('internal.tmeAiSubmission.'))return executeTmeAiSubmission(studio,method.slice('internal.tmeAiSubmission.'.length),input);
     if(method.startsWith('internal.tmeAiPrepare.'))return executeTmeAiPrepare(studio,method.slice('internal.tmeAiPrepare.'.length),input);
     if(method.startsWith('internal.productionFlow.')){

@@ -38,6 +38,8 @@ import {createLiveTextBroker} from './live-text';
 import {createProductionFlowBroker,blockedTmePublicationPort} from './production-flow';
 import {createTmeAiPrepareBroker,TmeAiNativePort,nativeSnapshot} from './tme/ai-prepare';
 import {createTmeAiSubmissionBroker} from './tme/ai-submission';
+import {TmeAiCloudSessionManager} from './tme/ai-cloud-session';
+import {createUnifiedPublishBroker,createTmeAiTransportProvider} from './tme/unified-publish';
 import {installNativeDiagnostics} from './native-diagnostics';
 if (require("electron-squirrel-startup")) app.quit();
 protocol.registerSchemesAsPrivileged([
@@ -125,18 +127,22 @@ const liveText=createLiveTextBroker({credentials:apiCredentials,rpc:(method,inpu
 const productionTransport=new WindowsUiaTransport(path.join(__dirname,'tme-uia-host.ps1'));
 const productionFlow=createProductionFlowBroker({credentials:apiCredentials,rpc:(method,input)=>rpc(method,input),available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,publication:blockedTmePublicationPort(productionTransport)});
 const tmeAiNative=new TmeAiNativePort(path.join(__dirname,'tme-ai-uia-host.ps1'));
-const tmeAiPrepare=createTmeAiPrepareBroker({root,rpc:(method,input)=>rpc(method,input),port:tmeAiNative,available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,nativeHostHash:()=>createHash('sha256').update(fs.readFileSync(tmeAiNative.script)).digest('hex')});
-// Native accept/submit and official receipt contracts have not been validated. Never supply an executor here yet.
-const tmeAiSubmission=createTmeAiSubmissionBroker({root,rpc:(method,input)=>rpc(method,input),available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,observe:async(context)=>{
+const tmeAiCloud=new TmeAiCloudSessionManager({available:()=>mode==='production'&&!switching&&!closing});
+// Cloud sessions and calibrated browser contracts must be supplied by Main, never renderer flags.
+const tmeAiTransport=createTmeAiTransportProvider({platform:process.platform,cloudSession:()=>tmeAiCloud.submissionSession(),cloudPreparationSession:()=>tmeAiCloud.preparationSession(),native:tmeAiNative,nativeObserve:async(context)=>{
   const g=context.grant.input;
   return nativeSnapshot((await tmeAiNative.request('observe',{binding:g.binding,artistName:g.metadata.artistName})).snapshot);
 }});
-setInterval(()=>{void productionFlow.pump();},2000).unref();
+const tmeAiPrepare=createTmeAiPrepareBroker({root,rpc:(method,input)=>rpc(method,input),port:tmeAiTransport.prepare,resolveScope:async(workId,createDerivative)=>{const result=await rpc('internal.tmeAiPrepare.resolveScope',{workId,createDerivative});if(!result.ok)throw Error(result.error.code);return result.value},available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,nativeHostHash:()=>createHash('sha256').update(fs.readFileSync(tmeAiNative.script)).digest('hex')});
+const tmeAiSubmission=createTmeAiSubmissionBroker({root,rpc:(method,input)=>rpc(method,input),available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,observe:tmeAiTransport.observe,executor:tmeAiTransport.executor});
+const unifiedPublish=createUnifiedPublishBroker({rpc:(method,input)=>rpc(method,input),available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,preparationCapability:tmeAiTransport.preparationCapability,prepare:tmeAiPrepare,submission:tmeAiSubmission});
+setInterval(()=>{void productionFlow.pump();void unifiedPublish.pump();},2000).unref();
 const pending = new Map<
   string,
   { resolve: (v: any) => void; reject: (e: any) => void; timer: NodeJS.Timeout }
 >();
 function startCore() {
+  void tmeAiCloud.disconnect().catch(()=>{});
   coreGeneration++;
   ready = new Promise((resolve, reject) => {
     child = utilityProcess.fork(
@@ -238,7 +244,7 @@ function handlers() {
     }));
   ipcMain.handle('rainfall:tme-ai-prepare',(event,action,input)=>safe(async()=>{
     trusted(event);
-    try{return{ok:true,value:await tmeAiPrepare.ui(action,input)}}catch(e){
+    try{if(action==='connectBrowser')return{ok:true,value:await tmeAiCloud.connect(input)};if(action==='browserStatus')return{ok:true,value:tmeAiCloud.status()};if(action==='disconnectBrowser')return{ok:true,value:await tmeAiCloud.disconnect()};const value=await tmeAiPrepare.ui(action,input);if(['register','start','run','reconcile','resumePicker','resumeCrop'].includes(action))void unifiedPublish.pump();return{ok:true,value}}catch(e){
       const code=e instanceof Error&&/^[A-Z0-9_]+$/.test(e.message)?e.message:'REQUEST_REJECTED';
       return{ok:false,error:{code,message:'腾讯AI准备未完成：'+code+'。未知结果须只读核对，禁止重复上传；尚未接受条款或正式提交。'}};
     }
@@ -279,7 +285,7 @@ function handlers() {
   },new WindowsUiaTransport(path.join(__dirname,'tme-uia-host.ps1')),os.hostname());
   const liveScope=registerTmeLiveHandlers((name,fn)=>ipcMain.handle(name,fn),trusted,liveManager,{mode:()=>mode,generation:()=>coreGeneration,unavailable:()=>switching||closing});
   checkLiveScope=liveScope.assertScope;
-  interruptTme=()=>{tmeScope.invalidate();liveScope.invalidate();tmeAiNative.interrupt();};
+  interruptTme=()=>{void tmeAiCloud.disconnect().catch(()=>{});tmeScope.invalidate();liveScope.invalidate();tmeAiNative.interrupt();};
   app.on('before-quit',()=>liveManager.dispose());
   registerApiCredentialHandlers(
     (channel, handler) => ipcMain.handle(channel, handler),
@@ -303,6 +309,12 @@ function handlers() {
             networkObservationScope: 'not_measured_by_runtime',
           },
         };
+      if (method === "publish.reconcile") return {ok:true,value:await unifiedPublish.reconcile((parsed as {id:string}).id)};
+      if (method === "publish.simple" && mode === 'production') {
+        const result = await rpc(method, parsed);
+        if (result.ok) void unifiedPublish.pump();
+        return result;
+      }
       return method === "apiProfile.save"
         ? apiCredentials.runExclusive(() => rpc(method, parsed))
         : rpc(method, parsed);
@@ -358,7 +370,7 @@ function handlers() {
       const performImport = () =>
         rpc("internal.import", { role, workId, requestId, source: r.filePaths[0] });
       return role === "backup"
-        ? apiCredentials.runExclusive(async()=>{if(tmeScope.isBusy()||liveScope.isBusy())throw Error('TME_BUSY');tmeScope.invalidate();liveScope.invalidate();importEpoch++;switching=true;try{return await performImport()}finally{switching=false}})
+        ? apiCredentials.runExclusive(async()=>{if(tmeScope.isBusy()||liveScope.isBusy())throw Error('TME_BUSY');tmeScope.invalidate();liveScope.invalidate();importEpoch++;switching=true;try{await tmeAiCloud.disconnect();return await performImport()}finally{switching=false}})
         : performImport();
     }),
   );
@@ -396,6 +408,7 @@ function handlers() {
           liveScope.invalidate();
         switching = true;
         tmeAiNative.interrupt();
+        await tmeAiCloud.disconnect();
         try {
           await rpc("internal.close");
           child.kill();
@@ -523,6 +536,7 @@ app
   });
 let closing = false;
 app.on("before-quit", (e) => {
+  void tmeAiCloud.disconnect().catch(()=>{});
   tmeAiNative.interrupt();
   if (!closing && child) {
     e.preventDefault();

@@ -24,7 +24,7 @@ function setup(t){
  const authorize=row=>service.authorize({id:row.id,expectedRevision:row.revision,termsHash:row.termsHash,consent:true,rightsConfirmed:true,sessionId});
  const claim=(row,phase)=>service.claim({id:row.id,expectedRevision:row.revision,phase,snapshot:snapshot(),sessionId});
  const accept=()=>{let row=authorize(review());const c=claim(row,'accept');row=service.record({id:row.id,operationId:c.operation.id,result:{status:'accepted',snapshot:snapshot(),scopeHash:row.scopeHash}});return row};
- const receipt=row=>({source:'official-tencent-review-record',remoteId:'123456789',title:metadata.title,artistName:metadata.artistName,status:'reviewing',subjectHash:identity.subjectHash,scopeHash:row.scopeHash,submittedAt:now.toISOString(),observedAt:now.toISOString(),evidenceHash:'9'.repeat(64),url:'https://y.tencentmusic.com/#/user/manage/official-fixture'});
+ const receipt=row=>({source:'official-tencent-review-record',entityType:'song',remoteId:'123456789',title:metadata.title,artistName:metadata.artistName,status:'reviewing',subjectHash:identity.subjectHash,scopeHash:row.scopeHash,submittedAt:now.toISOString(),observedAt:now.toISOString(),evidenceHash:'9'.repeat(64),url:'https://y.tencentmusic.com/#/user/manage/official-fixture'});
  return{repo,service,options,prepared,sessionId,workId,prepareJobId,snapshot,review,authorize,claim,accept,receipt,invalidate:()=>valid=false,clock:s=>now=new Date(s)};
 }
 test('prepare-only consent cannot authorize or dispatch a formal submission',t=>{
@@ -153,4 +153,9 @@ test('historical official receipts reconcile after local materials change or the
  assert.equal(x.repo.all('operations').length,2);assert.equal(x.repo.get('operations',claim.operation.id).state,'complete');
  const bad={...receipt,title:'本地已改名'};assert.throws(()=>restarted.reconcile({id:row.id,receipt:bad}),/OFFICIAL_RECEIPT_SCOPE/);
  x.options.resolvePrepared=()=>{throw Error('PREPARATION_REMOVED')};assert.equal(restarted.receiptContext(row.id).receiptScope.title,'离线原创新歌');assert.equal(restarted.publicById(row.id).remoteId,receipt.remoteId);
+});
+test('official receipt explicitly identifies a song, never an album or an unlabeled record',t=>{
+ const x=setup(t),row=x.accept(),c=x.claim(row,'submit');
+ const missing={...x.receipt(row)};delete missing.entityType;
+ for(const receipt of [{...x.receipt(row),entityType:'album'},missing])assert.throws(()=>x.service.record({id:row.id,operationId:c.operation.id,result:{status:'reviewing',receipt}}));
 });

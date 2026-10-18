@@ -3,8 +3,19 @@ import fs from 'node:fs';import path from 'node:path';import {createHash} from '
 import type {TmeAsset,TmeDraft,TmeIdentity,TmeRemote} from '../../shared/tme';
 import type {TmeBrowserPort,UploadRole,Reconciled} from './coordinator';
 import {TME_PAGE_CONTRACT,TME_FORM_LABELS,type TmePageContract} from './page-contract';
+import {TmePageOverlayGuard} from './page-overlays';
 export class PlaywrightTmePort implements TmeBrowserPort{
  private current?:TmeDraft;
+ private overlayGuard?:TmePageOverlayGuard;
+ private async overlayScope(){
+  const subject=await this.text(this.contract.subject);
+  if(!subject)throw Error('LOGIN_REQUIRED');
+  if(this.current?.identity&&subject!==this.current.identity.subject)throw Error('ACCOUNT_CHANGED');
+  const materials:unknown[]=[];
+  for(const label of Object.values(TME_FORM_LABELS)){const field=this.field(label).filter({visible:true});const count=await field.count();if(count>1)throw Error('PAGE_CONTRACT_CHANGED');materials.push([label,count,count?await field.inputValue():null]);}
+  for(const selector of Object.values(this.contract.uploads)){if(!selector)throw Error('PAGE_CONTRACT_UNVERIFIED');const marker=this.page.locator(selector);const count=await marker.count();if(count>1)throw Error('PAGE_CONTRACT_CHANGED');materials.push([selector,count,count?await marker.getAttribute('data-remote-id'):null,count?await marker.getAttribute('data-filename'):null,count?await marker.getAttribute('data-bytes'):null]);}
+  return{subject,binding:JSON.stringify([this.device,this.session,this.contract.version]),materials:createHash('sha256').update(JSON.stringify(materials)).digest('hex')};
+ }
  constructor(private page:Page,private device:string,private session:string,private contract:TmePageContract=TME_PAGE_CONTRACT){}
  private async exactlyOne(locator:Locator){if(await locator.count()!==1)throw Error('PAGE_CONTRACT_CHANGED');return locator;}
  private field(name:string){return this.page.getByLabel(name,{exact:true});}
@@ -13,6 +24,10 @@ export class PlaywrightTmePort implements TmeBrowserPort{
   this.current=draft||this.current;
   if(new URL(this.page.url()).origin!==this.contract.origin)return{identity:null,contractVerified:false,blockedReason:'PAGE_ORIGIN_CHANGED',source:this.contract.source};
   if(!this.contract.verified)return{identity:null,contractVerified:false,blockedReason:'PAGE_CONTRACT_UNVERIFIED',source:this.contract.source};
+  if(this.contract.source==='browser'){
+   try{this.overlayGuard??=new TmePageOverlayGuard(this.page,()=>this.overlayScope());await this.overlayGuard.run();}
+   catch(error){return{identity:null,contractVerified:true,blockedReason:error instanceof Error?error.message:'PAGE_OVERLAY_UNKNOWN',source:this.contract.source};}
+  }
   if(await this.page.getByText(/验证码|安全验证|操作频繁/).filter({visible:true}).count())return{identity:null,contractVerified:true,blockedReason:'HUMAN_VERIFICATION_REQUIRED',source:this.contract.source};
   const identity:TmeIdentity={subject:await this.text(this.contract.subject),displayName:await this.text(this.contract.displayName),device:this.device,session:this.session,source:this.contract.source};
   if(!identity.subject)return{identity:null,contractVerified:true,blockedReason:'LOGIN_REQUIRED',source:this.contract.source};

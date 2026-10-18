@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID,createHash} from 'node:crypto';
 import {z} from 'zod';
+import {waitForStableManualCover} from './cover-readback';
 import {inspectPcmWav} from '../../shared/pcm-wav';
 import {tmeAiSubjectHash,TmeAiPrepareIdentitySchema,TmeAiPrepareBindingSchema,TmeAiPrepareSnapshotSchema,TmeAiPreparePublicSchemas,type TmeAiPrepareSnapshot} from '../../shared/tme-ai-prepare';
 const hash=(x:any)=>createHash('sha256').update(typeof x==='string'||Buffer.isBuffer(x)?x:JSON.stringify(x)).digest('hex');
@@ -42,12 +43,21 @@ export function verifyNativeMetadata(raw:any,g:any,lyricsText:string){
  }
  return{lyricsHash:hash(f.lyrics),metadataHash:hash(m)};
 }
-type Options={root:string;rpc:(method:string,input?:any)=>Promise<any>;port:Pick<TmeAiNativePort,'request'>;available:()=>boolean;generation:()=>number;nativeHostHash?:()=>string};
+type Options={root:string;rpc:(method:string,input?:any)=>Promise<any>;port:Pick<TmeAiNativePort,'request'>;available:()=>boolean;generation:()=>number;nativeHostHash?:()=>string;readbackTimeoutMs?:number;resolveScope?:(workId:string|undefined,createDerivative:boolean)=>Promise<any>};
 export function createTmeAiPrepareBroker(o:Options){
- let busy=false,inspection:any=null;
+ let busy=false,inspection:any=null,pendingConsent:any=null;
+ const consentScope=(s:any)=>hash({workId:s.workId,accountId:s.accountId,sourceAudio:s.sourceAudio,upload:s.upload,cover:s.cover,lyricsHash:s.lyricsHash,metadata:s.metadata});
+ let inFlightCoverRead:Promise<any>|null=null;
  const rpc=async(action:string,input:any={})=>{const r=await o.rpc('internal.tmeAiPrepare.'+action,input);if(!r.ok)throw Error(r.error.code);return r.value};
+ const observeCover=async(g:any,guard:()=>void)=>({snapshot:await waitForStableManualCover({
+  read:async()=>{
+   const pending=o.port.request('observe',{binding:g.binding,artistName:g.metadata.artistName});inFlightCoverRead=pending;
+   try{return (await pending).snapshot}finally{if(inFlightCoverRead===pending)inFlightCoverRead=null}
+  },guard,timeoutMs:o.readbackTimeoutMs,
+ })});
  const diagnostic=(opId:string,e:unknown)=>{if((e as any)?.nativeDiagnostic){const dir=path.join(o.root,'evidence','tme-ai');fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(path.join(dir,opId+'-native-error.json'),JSON.stringify({at:new Date().toISOString(),diagnostic:(e as any).nativeDiagnostic},null,2))}};
- const scope=(workId?:string)=>{
+ const scope=async(workId?:string,createDerivative=false)=>{
+  if(o.resolveScope)return o.resolveScope(workId,createDerivative);
   const dir=path.join(o.root,'authorizations','tme-ai');
   const files=workId?[workId+'.json']:(fs.existsSync(dir)?fs.readdirSync(dir).filter(x=>/^[a-f0-9-]{36}\.json$/.test(x)):[]);
   if(files.length!==1)throw Error('LOCAL_APPROVED_A_SCOPE_REQUIRED');
@@ -63,7 +73,7 @@ export function createTmeAiPrepareBroker(o:Options){
  async function run(id:string,expectedRevision:number,guard:()=>void){
   let ctx=await rpc('context',{id});if(ctx.job.revision!==expectedRevision)throw Error('REVISION_CONFLICT');
   if(ctx.job.state!=='ready')return rpc('contextPublic',{id});
-  const s=scope(ctx.job.workId),g=ctx.grant.input;
+  const s=await scope(ctx.job.workId),g=ctx.grant.input;
   const expectedAudioDuration=inspectPcmWav(g.upload.path).displayDuration;
   for(let i=0;i<6&&ctx.job.state==='ready';i++){
    guard();const {raw,snap}=await inspect(s,g.binding);guard();
@@ -73,7 +83,7 @@ export function createTmeAiPrepareBroker(o:Options){
    const claim=await rpc('claim',{id,expectedRevision:ctx.job.revision,step:ctx.job.step,before});guard();
    let result:any;
    try{
-    const native=await o.port.request('step',{binding:g.binding,artistName:g.metadata.artistName,step:ctx.job.step,metadata:g.metadata,lyricsText:ctx.lyricsText,audioPath:g.upload.path,expectedAudioDuration,coverPath:ctx.coverPath});guard();
+    const native=await o.port.request('step',{binding:g.binding,artistName:g.metadata.artistName,step:ctx.job.step,metadata:g.metadata,lyricsText:ctx.lyricsText,audioPath:g.upload.path,expectedAudioSha256:g.upload.sha256,expectedCoverSha256:g.cover.sha256,expectedAudioDuration,coverPath:ctx.coverPath});guard();
     const read=native.snapshot,verified={...previous},step=ctx.job.step;
     if(step==='upload_audio'){
      if(!read.form?.text.includes(path.basename(g.upload.path))||!read.form.text.includes(expectedAudioDuration)||read.form.title!==g.metadata.title)throw Error('AUDIO_READBACK_REQUIRED');
@@ -117,16 +127,18 @@ export function createTmeAiPrepareBroker(o:Options){
   try{
    if(action==='reconcile'){
     const i=TmeAiPreparePublicSchemas.context.parse(input),ctx=await rpc('context',i),op=ctx.operations.find((x:any)=>x.id===ctx.job.operationId),g=ctx.grant.input;
-    if(ctx.job.state==='reconcile_required'&&ctx.job.reason==='NATIVE_CONTROL_CONTRACT_FAILED'&&ctx.job.step==='set_cover'&&op?.cropResume){
-     const native=await o.port.request('observe',{binding:g.binding,artistName:g.metadata.artistName});guard();
-     if(native.snapshot.coverState?.manualSelected&&!native.snapshot.coverState.generatorBanner&&!native.snapshot.form?.text.includes('调整图片')){
+    if(ctx.job.state==='reconcile_required'&&['NATIVE_CONTROL_CONTRACT_FAILED','MANUAL_COVER_ACCEPTANCE_REQUIRED'].includes(ctx.job.reason)&&ctx.job.step==='set_cover'&&op?.cropResume){
+     const native=await observeCover(g,guard);
+     // Native manualSelected already excludes visible crop controls; lyrics are not UI evidence.
+     if(native.snapshot.coverState?.manualSelected===true&&native.snapshot.coverState.generatorBanner===false){
       const previous=[...ctx.operations].reverse().find((x:any)=>x.state==='complete')?.result?.snapshot?.verified??{};
       const verified={...previous,...verifyNativeMetadata(native.snapshot,g,ctx.lyricsText),coverSha:g.cover.sha256};
       await rpc('reconcileAppliedCover',{id:i.id,operationId:op.id,snapshot:nativeSnapshot(native.snapshot,verified),coverState:native.snapshot.coverState,cropAbsent:true});
      }
-    }else if(ctx.job.state==='reconcile_required'&&ctx.job.reason==='NATIVE_CONTROL_CONTRACT_FAILED'&&ctx.job.step==='save_album'){
-     const native=await o.port.request('observe',{binding:g.binding,artistName:g.metadata.artistName});guard();
-     if(native.snapshot.coverState?.manualSelected&&!native.snapshot.coverState.generatorBanner&&!native.snapshot.form?.text.includes('调整图片')){
+    }else if(ctx.job.state==='reconcile_required'&&['NATIVE_CONTROL_CONTRACT_FAILED','MANUAL_COVER_ACCEPTANCE_REQUIRED'].includes(ctx.job.reason)&&ctx.job.step==='save_album'){
+     const native=await observeCover(g,guard);
+     // Native manualSelected already excludes visible crop controls; lyrics are not UI evidence.
+     if(native.snapshot.coverState?.manualSelected===true&&native.snapshot.coverState.generatorBanner===false){
       const previous=[...ctx.operations].reverse().find((x:any)=>x.state==='complete')?.result?.snapshot?.verified??{};
       const verified={...previous,...verifyNativeMetadata(native.snapshot,g,ctx.lyricsText),coverSha:g.cover.sha256};
       await rpc('reconcileAlbumSnapshot',{id:i.id,operationId:op.id,snapshot:nativeSnapshot(native.snapshot,verified),coverState:native.snapshot.coverState,cropAbsent:true});
@@ -141,19 +153,34 @@ export function createTmeAiPrepareBroker(o:Options){
     return rpc('contextPublic',i);
    }
    if(action==='inspect'){
-    const i=z.strictObject({workId:z.uuid().optional()}).parse(input),s=scope(i.workId),x=await inspect(s);guard();
-    return{identity:{subjectType:x.snap.identity.subjectType,maskedKugouId:'***'+x.snap.identity.kugouId.slice(-4),qqDisplayName:x.snap.identity.qqDisplayName,artistName:x.snap.identity.artistName,observedAt:x.snap.observedAt},binding:x.snap.binding,page:{mode:x.raw.mode,route:x.raw.route},registered:(await rpc('listPublic')).grants.some((g:any)=>g.workId===s.workId)};
+    const i=z.strictObject({workId:z.uuid().optional()}).parse(input),s=await scope(i.workId),x=await inspect(s);guard();
+    pendingConsent={nonce:randomUUID(),workId:s.workId,scopeHash:consentScope(s),subjectHash:x.snap.identity.subjectHash,bindingHash:hash(x.snap.binding),createdAt:Date.now()};
+    return{authorizationNonce:pendingConsent.nonce,identity:{subjectType:x.snap.identity.subjectType,maskedKugouId:'***'+x.snap.identity.kugouId.slice(-4),qqDisplayName:x.snap.identity.qqDisplayName,artistName:x.snap.identity.artistName,observedAt:x.snap.observedAt},binding:x.snap.binding,page:{mode:x.raw.mode,route:x.raw.route},registered:(await rpc('listPublic')).grants.some((g:any)=>g.workId===s.workId)};
    }
    if(action==='register'){
-    const i=z.strictObject({workId:z.uuid(),consent:z.literal(true)}).parse(input),s=scope(i.workId);
-    const prior=(await rpc('listPublic')).grants.find((g:any)=>g.workId===i.workId);if(prior)return prior;
+    const i=z.strictObject({workId:z.uuid(),consent:z.literal(true),authorizationNonce:z.uuid().optional()}).parse(input);
+    const reviewed=pendingConsent;pendingConsent=null;
+    if(o.resolveScope&&(!reviewed||reviewed.nonce!==i.authorizationNonce||reviewed.workId!==i.workId||Date.now()-reviewed.createdAt>300000))throw Error('PREPARATION_CONSENT_REVIEW_REQUIRED');
+    const s=await scope(i.workId,true);
+    const prior=(await rpc('listPublic')).grants.find((g:any)=>g.workId===i.workId);
+    if(prior?.suspended)throw Error('RESTORED_REQUIRES_REVIEW');
     const x=await inspect(s);guard();
-    const grant=await rpc('registerGrant',{id:randomUUID(),workId:s.workId,identity:x.snap.identity,binding:x.snap.binding,sourceAudio:s.sourceAudio,upload:s.upload,cover:s.cover,lyricsHash:s.lyricsHash,metadata:s.metadata,consent:true});
+    if(o.resolveScope&&(reviewed.scopeHash!==consentScope(s)||reviewed.subjectHash!==x.snap.identity.subjectHash||reviewed.bindingHash!==hash(x.snap.binding)))throw Error('PREPARATION_CONSENT_SCOPE_CHANGED');
+    const material={workId:s.workId,sourceAudio:s.sourceAudio,upload:s.upload,cover:s.cover,lyricsHash:s.lyricsHash,metadata:s.metadata};
+    if(prior){
+     const existing=await rpc('grantContext',{id:prior.id}),g=existing.input;
+     if(existing.suspended)throw Error('RESTORED_REQUIRES_REVIEW');
+     if(!g||hash({workId:g.workId,sourceAudio:g.sourceAudio,upload:g.upload,cover:g.cover,lyricsHash:g.lyricsHash,metadata:g.metadata})!==hash(material)||g.identity.subjectHash!==x.snap.identity.subjectHash||hash(g.binding)!==hash(x.snap.binding))throw Error('PREPARATION_GRANT_STALE');
+     return prior;
+    }
+    const grantInput={id:randomUUID(),...material,identity:x.snap.identity,binding:x.snap.binding,consent:true};
+    if(o.resolveScope&&!s.accountId)throw Error('ACCOUNT_SCOPE_REQUIRED');
+    const grant=await rpc(o.resolveScope?'registerScopedGrant':'registerGrant',o.resolveScope?{grant:grantInput,accountId:s.accountId}:grantInput);
     return(await rpc('listPublic')).grants.find((g:any)=>g.id===grant.id);
    }
    if(action==='start'){
     const i=TmeAiPreparePublicSchemas.start.parse(input),list=await rpc('listPublic'),g=list.grants.find((x:any)=>x.id===i.grantId);if(!g)throw Error('NOT_FOUND');
-    const x=await inspect(scope(g.workId));guard();const job=await rpc('start',{grantId:i.grantId,expectedRevision:i.expectedRevision,identity:x.snap.identity,binding:x.snap.binding});return rpc('contextPublic',{id:job.id});
+    const x=await inspect(await scope(g.workId));guard();const job=await rpc('start',{grantId:i.grantId,expectedRevision:i.expectedRevision,identity:x.snap.identity,binding:x.snap.binding});return rpc('contextPublic',{id:job.id});
    }
    if(action==='resumePicker'){
     const i=TmeAiPreparePublicSchemas.run.parse(input),ctx=await rpc('context',{id:i.id}),g=ctx.grant.input;
@@ -179,7 +206,7 @@ export function createTmeAiPrepareBroker(o:Options){
     const current=await rpc('contextPublic',{id:i.id});return await run(i.id,current.job.revision,guard);
    }
    if(action==='resumeCrop'){
-    const i=TmeAiPreparePublicSchemas.run.parse(input),ctx=await rpc('context',{id:i.id}),g=ctx.grant.input,s=scope(ctx.job.workId),op=ctx.operations.find((x:any)=>x.id===ctx.job.operationId),recovery=s.cropRecovery;
+    const i=TmeAiPreparePublicSchemas.run.parse(input),ctx=await rpc('context',{id:i.id}),g=ctx.grant.input,s=await scope(ctx.job.workId),op=ctx.operations.find((x:any)=>x.id===ctx.job.operationId),recovery=s.cropRecovery;
     if(ctx.job.revision!==i.expectedRevision)throw Error('REVISION_CONFLICT');
     if(ctx.job.state!=='reconcile_required'||ctx.job.reason!=='CROP_DIALOG_SCOPE_REQUIRED'||!op?.pickerResume||!recovery||recovery.operationId!==op.id||recovery.jobId!==i.id||recovery.provenance!=='phase_contract_reconstruction'||recovery.hostSourceHash!==o.nativeHostHash?.())throw Error('CROP_RECONSTRUCTION_SCOPE_REQUIRED');
     const observed=await o.port.request('inspect_crop',{binding:g.binding,artistName:g.metadata.artistName});guard();
@@ -201,6 +228,11 @@ export function createTmeAiPrepareBroker(o:Options){
    }
    if(action==='run'){const i=TmeAiPreparePublicSchemas.run.parse(input);return await run(i.id,i.expectedRevision,guard)}
    throw Error('ACTION_NOT_ALLOWED');
-  }finally{busy=false}
+  }finally{
+   // A timed-out observe can still be restoring its bound native tab. Keep the lock
+   // until that exact request settles; never terminate another task's process.
+   const pending=inFlightCoverRead;
+   if(pending)void pending.then(()=>{busy=false},()=>{busy=false});else busy=false;
+  }
  }};
 }

@@ -185,7 +185,7 @@ before(async () => {
   origin = "http://127.0.0.1:" + server.address().port;
   browser = await chromium.launch({
     executablePath:
-      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+      process.env.CHROME_PATH ?? ["/usr/bin/chromium", "/usr/bin/google-chrome", "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"].find(p => fs.existsSync(p)),
     headless: true,
     args: ["--disable-gpu"],
   });

@@ -90,9 +90,9 @@ test('crop continuation fails closed for missing verifier, wrong selection, grou
  x.service.resumeInterruptedCrop(p.input);const restarted=new w.TmeAiPrepareService(x.repo,x.options);
  assert.throws(()=>restarted.resumeInterruptedCrop(p.input),/CROP_RESUME_ALREADY_USED/);assert.equal(restarted.context(p.j.id).job.state,'reconcile_required');
 });
-function appliedCoverAfterLostReadback(x){
+function appliedCoverAfterLostReadback(x,reason='NATIVE_CONTROL_CONTRACT_FAILED'){
  const p=interruptedCrop(x);x.options.verifyResumeCrop=()=>true;x.service.resumeInterruptedCrop(p.input);
- x.service.interrupt({id:p.j.id,operationId:p.c.operation.id,reason:'NATIVE_CONTROL_CONTRACT_FAILED'});
+ x.service.interrupt({id:p.j.id,operationId:p.c.operation.id,reason});
  return{...p,input:{id:p.j.id,operationId:p.c.operation.id,snapshot:x.snapshot(),coverState:{manualSelected:true,generatorBanner:false},cropAbsent:true}};
 }
 test('fresh read-only cover reconciliation advances without any new claim and preserves all interrupted history',t=>{
@@ -108,10 +108,10 @@ test('read-only cover reconciliation refuses unproven material, active crop, cha
  x.invalidate();assert.throws(()=>x.service.reconcileAppliedCover(p.input),/FIXTURE_ASSETS_CHANGED/);assert.equal(x.repo.get('operations',p.c.operation.id).state,'unknown');
  const y=setup(t),q=interruptedCover(y);assert.throws(()=>y.service.reconcileAppliedCover({...p.input,id:q.j.id,operationId:q.c.operation.id,snapshot:y.snapshot()}),/COVER_RECONCILIATION_SCOPE/);
 });
-function interruptedAlbum(x){
+function interruptedAlbum(x,reason='NATIVE_CONTROL_CONTRACT_FAILED'){
  let j=x.start();
  for(const step of ['locate_intake','upload_audio','fill_metadata','set_cover']){const c=x.service.claim({id:j.id,expectedRevision:j.revision,step,before:x.snapshot()});j=x.service.record({id:j.id,operationId:c.operation.id,result:{status:'applied',snapshot:x.snapshot()}})}
- const c=x.service.claim({id:j.id,expectedRevision:j.revision,step:'save_album',before:x.snapshot()});x.service.interrupt({id:j.id,operationId:c.operation.id,reason:'NATIVE_CONTROL_CONTRACT_FAILED'});
+ const c=x.service.claim({id:j.id,expectedRevision:j.revision,step:'save_album',before:x.snapshot()});x.service.interrupt({id:j.id,operationId:c.operation.id,reason});
  const snapshot=x.snapshot();delete snapshot.verified.albumSaved;
  return{j,c,input:{id:j.id,operationId:c.operation.id,snapshot,coverState:{manualSelected:true,generatorBanner:false},cropAbsent:true}};
 }
@@ -245,4 +245,12 @@ test('lost native windows can interrupt only the current operation without inven
  assert.deepEqual(x.service.interrupt(request),saved);assert.throws(()=>x.service.interrupt({...request,reason:'OTHER_REASON'}),/INTERRUPT_CONFLICT/);
  assert.throws(()=>x.service.record({id:j.id,operationId:c.operation.id,result:{status:'applied',snapshot:x.snapshot()}}),/RECONCILIATION_REQUIRED/);
  assert.equal(w.TmeAiPreparePublicSchemas.interrupt,undefined);assert.equal(x.repo.all('operations').length,1);
+});
+
+test('scoped crop and album timeouts reconcile read-only while unrelated unknown outcomes remain blocked',t=>{
+ for(const [prepare,method,next] of [[appliedCoverAfterLostReadback,'reconcileAppliedCover','save_album'],[interruptedAlbum,'reconcileAlbumSnapshot','advance_to_terms']]){
+  const x=setup(t),p=prepare(x,'MANUAL_COVER_ACCEPTANCE_REQUIRED'),before=x.repo.all('operations').length;
+  const result=x.service[method](p.input);assert.equal(result.state,'ready');assert.equal(result.step,next);assert.equal(x.repo.all('operations').length,before);
+  const y=setup(t),q=prepare(y,'NATIVE_OUTCOME_UNKNOWN');assert.throws(()=>y.service[method](q.input),/RECONCILIATION_SCOPE/);
+ }
 });

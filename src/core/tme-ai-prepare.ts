@@ -149,7 +149,7 @@ export class TmeAiPrepareService {
    if(new Date(i.snapshot.observedAt).getTime()<new Date(op.completedAt??op.interruptedAt??op.createdAt).getTime())throw Error('PICKER_RESUME_STALE');
    // Chromium may host its owned native dialog in a different browser process.
    // Main proves that process is Chrome/Edge; the stable ownership boundary is GW_OWNER.
-   if(i.dialog.owner!==grant.input.binding.handle||i.dialog.handle===i.dialog.owner)throw Error('PICKER_OWNER_SCOPE');
+   if(!('handle' in grant.input.binding)||i.dialog.owner!==grant.input.binding.handle||i.dialog.handle===i.dialog.owner)throw Error('PICKER_OWNER_SCOPE');
    if(!this.options.verifyResumePicker)throw Error('PICKER_VERIFIER_REQUIRED');
    const checked=this.options.verifyResumePicker(TmeAiPrepareGrantSchema.parse(grant.input),i.dialog);
    if(checked===false)throw Error('PICKER_DIRECTORY_SCOPE');
@@ -192,11 +192,11 @@ export class TmeAiPrepareService {
  reconcileAppliedCover(raw:unknown){
   const i=z.strictObject({id:z.uuid(),operationId:z.uuid(),snapshot:TmeAiPrepareSnapshotSchema,coverState:z.strictObject({manualSelected:z.literal(true),generatorBanner:z.literal(false)}),cropAbsent:z.literal(true)}).parse(raw);
   return this.repo.transaction(()=>{
-   const job=this.get('job',i.id),op=this.repo.get('operations',i.operationId),grant=this.get('grant',job.grantId),reason='NATIVE_CONTROL_CONTRACT_FAILED',reconciliationHash=hash(i);
+   const job=this.get('job',i.id),op=this.repo.get('operations',i.operationId),grant=this.get('grant',job.grantId),reason=job.reason,reconciliationHash=hash(i);
    if(op.kind!=='tme_ai_prepare'||op.jobId!==job.id||op.grantId!==grant.id)throw Error('OPERATION_SCOPE');
    if(op.readOnlyCoverReconciliation){if(op.readOnlyCoverReconciliation.reconciliationHash!==reconciliationHash)throw Error('READ_ONLY_COVER_RECONCILIATION_CONFLICT');return job}
    if(grant.suspended||job.reason==='RESTORED_REQUIRES_REVIEW')throw Error('RESTORED_REQUIRES_REVIEW');
-   if(!op.cropResume||!op.pickerResume||job.operationId!==op.id||job.state!=='reconcile_required'||op.state!=='unknown'||job.step!=='set_cover'||op.step!=='set_cover'||job.reason!==reason)throw Error('COVER_RECONCILIATION_SCOPE');
+   if(!op.cropResume||!op.pickerResume||job.operationId!==op.id||job.state!=='reconcile_required'||op.state!=='unknown'||job.step!=='set_cover'||op.step!=='set_cover'||!['NATIVE_CONTROL_CONTRACT_FAILED','MANUAL_COVER_ACCEPTANCE_REQUIRED'].includes(reason))throw Error('COVER_RECONCILIATION_SCOPE');
    if(!((op.result?.status==='unknown'&&op.result.reason===reason)||(op.interruptHash&&op.reason===reason)))throw Error('COVER_RECONCILIATION_SCOPE');
    this.snapshot(i.snapshot,grant);this.assets(grant);
    if(i.snapshot.mode!=='editor'||i.snapshot.visibleSubmitButton)throw Error('COVER_RECONCILIATION_PAGE_SCOPE');
@@ -213,11 +213,11 @@ export class TmeAiPrepareService {
  reconcileAlbumSnapshot(raw:unknown){
   const i=z.strictObject({id:z.uuid(),operationId:z.uuid(),snapshot:TmeAiPrepareSnapshotSchema,coverState:z.strictObject({manualSelected:z.literal(true),generatorBanner:z.literal(false)}),cropAbsent:z.literal(true)}).parse(raw);
   return this.repo.transaction(()=>{
-   const job=this.get('job',i.id),op=this.repo.get('operations',i.operationId),grant=this.get('grant',job.grantId),reason='NATIVE_CONTROL_CONTRACT_FAILED',reconciliationHash=hash(i);
+   const job=this.get('job',i.id),op=this.repo.get('operations',i.operationId),grant=this.get('grant',job.grantId),reason=job.reason,reconciliationHash=hash(i);
    if(op.kind!=='tme_ai_prepare'||op.jobId!==job.id||op.grantId!==grant.id)throw Error('OPERATION_SCOPE');
    if(job.localAlbumSnapshot){if(job.localAlbumSnapshot.operationId!==op.id||job.localAlbumSnapshot.reconciliationHash!==reconciliationHash)throw Error('ALBUM_RECONCILIATION_CONFLICT');return job}
    if(grant.suspended||job.reason==='RESTORED_REQUIRES_REVIEW')throw Error('RESTORED_REQUIRES_REVIEW');
-   if(job.operationId!==op.id||job.state!=='reconcile_required'||op.state!=='unknown'||job.step!=='save_album'||op.step!=='save_album'||job.reason!==reason)throw Error('ALBUM_RECONCILIATION_SCOPE');
+   if(job.operationId!==op.id||job.state!=='reconcile_required'||op.state!=='unknown'||job.step!=='save_album'||op.step!=='save_album'||!['NATIVE_CONTROL_CONTRACT_FAILED','MANUAL_COVER_ACCEPTANCE_REQUIRED'].includes(reason))throw Error('ALBUM_RECONCILIATION_SCOPE');
    if(!((op.result?.status==='unknown'&&op.result.reason===reason)||(op.interruptHash&&op.reason===reason)))throw Error('ALBUM_RECONCILIATION_SCOPE');
    this.snapshot(i.snapshot,grant);this.assets(grant);
    if(i.snapshot.mode!=='editor'||i.snapshot.visibleSubmitButton)throw Error('ALBUM_RECONCILIATION_PAGE_SCOPE');

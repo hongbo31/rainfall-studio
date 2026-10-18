@@ -1,5 +1,4 @@
 import { spawnSync } from "node:child_process";
-import electron from "electron";
 import fs from "node:fs";
 import path from 'node:path';
 import {build} from 'esbuild';
@@ -13,7 +12,8 @@ const files = fs
   .readdirSync("tests/integration")
   .filter((x) => x.endsWith(".test.cjs"))
   .map((x) => "tests/integration/" + x);
-const r = spawnSync(electron, ["--test", ...files], {
+const executable = process.env.RAINFALL_TEST_RUNTIME === "node" ? process.execPath : (await import("electron")).default;
+const r = spawnSync(executable, ["--test", ...files], {
   stdio: "inherit",
   env: { ...process.env, ...bundleEnvironment, ELECTRON_RUN_AS_NODE: "1" },
 });
