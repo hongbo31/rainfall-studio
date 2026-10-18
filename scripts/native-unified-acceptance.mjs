@@ -11,7 +11,7 @@ const report={package:pkg.executable,sourceCommit:pkg.sourceCommit,dataRoot:fixt
 let app,page,run;
 const require=createRequire(import.meta.url);
 const call=async(method,input={})=>page.evaluate(async({method,input})=>{const r=await window.rainfall.call(method,input);if(!r.ok)throw Error(r.error.code+': '+r.error.message);return r.value;},{method,input});
-async function shot(name){const file=path.join(out,name+'.png');await page.screenshot({path:file,fullPage:true});report.screens.push(file);}
+async function shot(name){const file=path.join(out,name+'.png');await page.getByRole('region',{name:'发布进度'}).scrollIntoViewIfNeeded().catch(()=>{});await withTimeout(()=>app.evaluate(async({BrowserWindow},file)=>{const image=await BrowserWindow.getAllWindows()[0].webContents.capturePage();process.getBuiltinModule('node:fs').writeFileSync(file,image.toPNG());},file),10000,'NATIVE_CAPTURE_TIMEOUT');report.screens.push(file);}
 async function open(){
  run=await beginDesktopRun(pkg.executable,fixture.root);report.runs.push(run);
  app=await electron.launch({executablePath:pkg.executable,env:{...process.env,ELECTRON_RUN_AS_NODE:undefined,RAINFALL_DATA_ROOT:fixture.root,RAINFALL_MODE:'production'},timeout:30000});run.launcherPid=app.process().pid;
@@ -45,7 +45,8 @@ try{
  const full=(await call('snapshot')).publicationPipelineJobs.find(j=>j.workId===fixture.ids.complete);report.completeTaskId=full.id;
  assert.equal(full.dispatchedAt,undefined);report.checks.push('Complete selected work traverses Renderer IPC Core journal Main pump and stops before preparation consent');
  const progress=page.getByRole('region',{name:'发布进度'});const metadata=progress.locator('.publication-metadata-form');await metadata.locator('summary').click();
- await metadata.getByLabel('专辑介绍',{exact:true}).fill('本次原生隔离验收：只保存本地资料');await metadata.getByRole('button',{name:'保存投稿资料',exact:true}).click();
+ fs.writeFileSync(path.join(out,'metadata-dom.html'),await metadata.evaluate(el=>el.outerHTML));
+ await metadata.getByRole('textbox',{name:'专辑介绍',exact:true}).fill('本次原生隔离验收：只保存本地资料');await metadata.getByRole('button',{name:'保存资料',exact:true}).click();
  await expect.poll(async()=>(await call('snapshot')).works.find(w=>w.id===fixture.ids.complete)?.publicationMetadata.albumDescription).toBe('本次原生隔离验收：只保存本地资料');
  report.checks.push('Metadata form saves the selected work locally without authorizing upload');await shot('02-metadata-pending');
  const browserStatus=await page.evaluate(()=>window.rainfall.tmeAiPrepare('browserStatus',{}));report.browserStatus=browserStatus;assert.equal(browserStatus.value.connected,false);assert.equal(browserStatus.value.identityCalibrated,false);
@@ -70,5 +71,5 @@ try{
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);assert.deepEqual(report.errors,[]);assert.deepEqual(report.externalRequests,[]);
  report.checks.push('Actual visible native window: no horizontal overflow, renderer errors or external renderer requests');
  await close();report.passed=true;
-}catch(e){report.passed=false;report.error=String(e);if(page)await shot('failure').catch(()=>{});try{await close()}catch(closeError){report.cleanupError=String(closeError)}}
+}catch(e){report.passed=false;report.error=String(e);if(page){await page.content().then(html=>fs.writeFileSync(path.join(out,'failure.html'),html)).catch(()=>{});await shot('failure').catch(error=>{report.screenshotError=String(error)});}try{await close()}catch(closeError){report.cleanupError=String(closeError)}}
 finally{fs.writeFileSync(path.join(out,'report.json'),JSON.stringify(report,null,2));fs.writeFileSync('output/native-acceptance/latest-native-report.json',JSON.stringify({path:path.join(out,'report.json'),passed:report.passed,error:report.error},null,2));console.log(JSON.stringify({passed:report.passed,report:path.join(out,'report.json'),checks:report.checks,error:report.error}));if(!report.passed)process.exitCode=1;}

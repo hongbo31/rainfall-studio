@@ -7,6 +7,7 @@ const states=z.enum(['needs_configuration','needs_materials','queued','preparing
 const terminal=new Set(['reviewing','published','rejected']);
 const summaries:Record<string,string>={needs_configuration:'待配置',needs_materials:'待补材料',queued:'等待准备',preparing:'正在准备',awaiting_authorization:'待授权',awaiting_confirmation:'待确认发布',blocked:'需要处理',reconcile_required:'待核对结果',reviewing:'审核中',published:'已发布',rejected:'审核未通过'};
 export function publicationMaterialHash(m:Row){const {workRevision,terms,...content}=m;return hash(content)}
+export function publicationEffectiveMaterialHash(m:Row){const {defaults,...content}=m;return publicationMaterialHash(content)}
 type Options={verify:(task:Row)=>void;now?:()=>Date};
 /** Durable dispatch journal. Only Main may claim/update; renderer cannot inject observations. */
 export class UnifiedPublicationService{
@@ -32,15 +33,17 @@ export class UnifiedPublicationService{
   for(const r of requests){const provider=['qqmusic','kugou'].includes(r.target)?'tme':r.target;const key=hash([provider,r.accountId,this.sourceSha(r)??r.workId]);groups.set(key,[...(groups.get(key)??[]),r]);}
   return [...groups].map(([familyKey,items])=>{
    const r=items[0],targets=[...new Set(items.map(r=>r.target))].sort(),fingerprint=publicationMaterialHash(r.materialSnapshot);
+   const materialFingerprints=Object.fromEntries(items.map(item=>[item.target,publicationMaterialHash(item.materialSnapshot)]));
+   const conflictingMaterials=new Set(items.map(item=>publicationEffectiveMaterialHash(item.materialSnapshot))).size>1;
    const old=this.raw().find(t=>t.familyKey===familyKey);
    // Once a write was claimed, altered metadata cannot create a fresh upload intent.
    if(old?.dispatchedAt||old?.reason==='PROTECTED_PUBLISHED_WORK')return this.list().find(t=>t.id===old.id)!;
    const protectedWork=['把晚安留在门口','留一盏灯'].includes(r.title.normalize('NFKC').trim());
    const nonAi=r.materialSnapshot.ai==='none';
    const priorSubmit=this.priorSubmit(this.sourceSha(r));
-   let state:string=protectedWork?'blocked':priorSubmit?'reconcile_required':items.some(r=>r.state==='needs_configuration')?'needs_configuration':items.some(r=>r.state==='needs_materials')?'needs_materials':nonAi?'blocked':targets.every(t=>['qqmusic','kugou'].includes(t))?'queued':'blocked';
-   const reason=protectedWork?'PROTECTED_PUBLISHED_WORK':priorSubmit?'SUBMISSION_ALREADY_DISPATCHED':nonAi&&state==='blocked'?'AI_PREPARATION_NOT_APPLICABLE':state==='blocked'?'PLATFORM_EXECUTOR_UNAVAILABLE':null;
-   const task={id:old?.id??randomUUID(),revision:(old?.revision??0)+1,familyKey,workId:r.workId,title:r.title,targets,accountId:r.accountId,materialFingerprint:fingerprint,materialSnapshot:r.materialSnapshot,audioSha:this.sourceSha(r),state,summary:summaries[state],reason,createdAt:old?.createdAt??this.stamp(),updatedAt:this.stamp()};
+   let state:string=protectedWork?'blocked':priorSubmit?'reconcile_required':conflictingMaterials||items.some(r=>r.state==='needs_configuration')?'needs_configuration':items.some(r=>r.state==='needs_materials')?'needs_materials':nonAi?'blocked':targets.every(t=>['qqmusic','kugou'].includes(t))?'queued':'blocked';
+   const reason=protectedWork?'PROTECTED_PUBLISHED_WORK':priorSubmit?'SUBMISSION_ALREADY_DISPATCHED':conflictingMaterials?'TME_TARGET_MATERIALS_CONFLICT':nonAi&&state==='blocked'?'AI_PREPARATION_NOT_APPLICABLE':state==='blocked'?'PLATFORM_EXECUTOR_UNAVAILABLE':null;
+   const task={id:old?.id??randomUUID(),revision:(old?.revision??0)+1,familyKey,workId:r.workId,title:r.title,targets,accountId:r.accountId,materialFingerprint:fingerprint,materialFingerprints,materialSnapshot:r.materialSnapshot,audioSha:this.sourceSha(r),state,summary:summaries[state],reason,createdAt:old?.createdAt??this.stamp(),updatedAt:this.stamp()};
    return this.put(task);
   });
  })}

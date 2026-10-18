@@ -9,6 +9,7 @@ const commands=[
  ['prepare-broker',['scripts/test-tme-ai-broker.mjs']],
  ['submission',['scripts/test-tme-ai-submission.mjs']],
  ['materials',['scripts/test-publish-material-feedback.mjs']],
+ ['target-materials',['--test','tests/unified-target-materials.test.mjs']],
  ['browser-ui-contracts',['--test','tests/unified-publish-main.test.mjs','tests/tme-ai-cloud-session.test.mjs','tests/tme-ai-prepare-browser.test.mjs','tests/tme-ai-submission-browser.test.mjs','tests/publication-pipeline-render.test.mjs','tests/publication-metadata-form.test.mjs','tests/media-tool-paths.test.mjs']],
  ['cover-regression',['scripts/test-tme-cover-cloud.mjs']],
 ];

@@ -1,6 +1,6 @@
 import {z} from 'zod';
 import type {Studio} from './studio';
-import {UnifiedPublicationService,publicationMaterialHash} from './unified-publication';
+import {UnifiedPublicationService,publicationMaterialHash,publicationEffectiveMaterialHash} from './unified-publication';
 import {checkSimplePublication,publishSimple} from './simple-publication';
 import {listPlatformConfigurations} from './platform-config';
 import {verifyTmeAiPrepareAssets,verifyCurrentTmeAiScope} from './tme-ai-prepare-integration';
@@ -8,9 +8,13 @@ const cache=new WeakMap<Studio,{repo:Studio['repo'];service:UnifiedPublicationSe
 export function unifiedPublicationService(s:Studio){
  const old=cache.get(s);if(old?.repo===s.repo)return old.service;
  const service=new UnifiedPublicationService(s.repo,{now:s.now,verify:task=>{
-  const config=listPlatformConfigurations(s.repo).find(c=>c.target===task.targets[0]);if(!config)throw Error('PLATFORM_CONFIGURATION_REQUIRED');
-  const current=checkSimplePublication(s,s.get('works',task.workId),config.target,config,task.accountId);
-  if(['needs_configuration','needs_materials'].includes(current.state)||publicationMaterialHash(current.materialSnapshot)!==task.materialFingerprint)throw Error('PUBLICATION_MATERIALS_CHANGED');
+  const configs=listPlatformConfigurations(s.repo);
+  for(const target of task.targets){
+   const config=configs.find(c=>c.target===target);if(!config)throw Error('PLATFORM_CONFIGURATION_REQUIRED');
+   const current=checkSimplePublication(s,s.get('works',task.workId),config.target,config,task.accountId);
+   const expected=task.materialFingerprints?.[target]??(task.targets.length===1?task.materialFingerprint:undefined);
+   if(['needs_configuration','needs_materials'].includes(current.state)||(expected?publicationMaterialHash(current.materialSnapshot)!==expected:publicationEffectiveMaterialHash(current.materialSnapshot)!==publicationEffectiveMaterialHash(task.materialSnapshot)))throw Error('PUBLICATION_MATERIALS_CHANGED');
+  }
  }});cache.set(s,{repo:s.repo,service});return service;
 }
 export function executeUnifiedPublication(s:Studio,action:string,input:unknown={}){
@@ -42,7 +46,7 @@ export function executeUnifiedPublication(s:Studio,action:string,input:unknown={
 export function savePublicationMetadata(s:Studio,i:{workId:string;expectedRevision:number;metadata:Record<string,unknown>}){
  return s.repo.transaction(()=>{
   const work=s.get('works',i.workId);if(work.revision!==i.expectedRevision)throw Error('REVISION_CONFLICT');
-  if(work.title.normalize('NFKC').trim()==='把晚安留在门口')throw Error('PROTECTED_PUBLISHED_WORK');
+  if(['把晚安留在门口','留一盏灯'].includes(work.title.normalize('NFKC').trim()))throw Error('PROTECTED_PUBLISHED_WORK');
   const tasks=unifiedPublicationService(s).list().filter(t=>t.workId===work.id);
   if(tasks.some(t=>t.dispatchedAt)||s.all('operations').some(o=>o.workId===work.id&&['tme_ai_prepare','tme_ai_submission'].includes(o.kind)))throw Error('PUBLICATION_MATERIALS_LOCKED');
   if(String(i.metadata.generatedOn)>s.now().toISOString().slice(0,10))throw Error('GENERATED_DATE_INVALID');

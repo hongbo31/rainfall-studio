@@ -3,7 +3,7 @@ const fs=require('node:fs'),path=require('node:path');
 const sharp=require('sharp');
 const {Studio}=require('../build/core.cjs');
 (async()=>{
- const out=path.resolve('output/native-acceptance'),root=path.join(out,'fixture-data');
+ const out=path.resolve('output/native-acceptance'),root=path.join(out,'fixture-data-'+Date.now());
  if(fs.existsSync(root))throw Error('FRESH_FIXTURE_REQUIRED');
  fs.mkdirSync(path.join(out,'original-fixtures'),{recursive:true});
  const seconds=61,rate=44100,b=Buffer.alloc(44+seconds*rate*2);

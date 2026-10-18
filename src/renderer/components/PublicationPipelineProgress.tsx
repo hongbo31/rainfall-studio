@@ -22,6 +22,7 @@ const states: Record<string, string> = {
   rejected: "官方已驳回",
 };
 const actionableReasons: Record<string, string> = {
+  TME_TARGET_MATERIALS_CONFLICT: "QQ 与酷狗的投稿资料不同，请统一配置后重试。",
   WINDOWS_REQUIRED: "请在 Windows 客户端继续准备官网材料。",
   AI_PREPARATION_NOT_APPLICABLE: "此歌曲需走原创投稿，不能使用 AI 授权流程。",
   PLATFORM_EXECUTOR_UNAVAILABLE: "此平台尚未接通投稿。",
