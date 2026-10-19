@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { useStudio } from "../context";
 import type { PlanCenterRun, PlanCenterItem } from "../../shared/plan-center";
 import type { PlanAlbumOperation } from "../../shared/plan-albums";
+import { hasPlanAlbumAdapter } from "../../shared/plan-albums";
 import {
   AlbumCapabilities,
   AlbumCatalogEvidence,
@@ -49,7 +50,7 @@ export default function PlanAlbumOperations({
       call("planAlbums.status"),
       Promise.all(
         run.snapshot.publishTargets
-          .filter((t) => t.enabled && t.accountId)
+          .filter((t) => t.enabled && t.accountId && hasPlanAlbumAdapter(t.platform))
           .map(async (target) => {
             const identity = {
               platform: target.platform,
@@ -118,12 +119,13 @@ export default function PlanAlbumOperations({
             key = JSON.stringify([target.platform, target.accountId]),
             selectedAlbumId =
               target.album.mode === "existing" ? target.album.albumId : "",
-            loaded = targets[key];
+            loaded = targets[key], supported = hasPlanAlbumAdapter(target.platform);
           return (
             <article className="plan-album-target" key={key}>
               <h4>
                 {target.platform} · {target.accountId}
               </h4>
+              {!supported && <p role="status">此平台专辑适配器未实现，绑定、新建和追加已禁用。</p>}
               <p>
                 {target.album.mode === "new"
                   ? `新建：${target.album.title}`
@@ -139,6 +141,7 @@ export default function PlanAlbumOperations({
                         <button
                           key={entry.key}
                           disabled={
+                            !supported ||
                             busy ||
                             run.stopRequested ||
                             inFlight(target.platform, target.accountId) ||
@@ -163,6 +166,7 @@ export default function PlanAlbumOperations({
                 {target.album.mode === "new" && (
                   <button
                     disabled={
+                      !supported ||
                       busy ||
                       run.stopRequested ||
                       inFlight(target.platform, target.accountId) ||
@@ -181,6 +185,7 @@ export default function PlanAlbumOperations({
                   <button
                     key={item.id}
                     disabled={
+                      !supported ||
                       busy ||
                       run.stopRequested ||
                       inFlight(target.platform, target.accountId) ||
@@ -229,7 +234,7 @@ export default function PlanAlbumOperations({
           {op.publicationTaskId && <p>原发布任务：{op.publicationTaskId}</p>}
           {["prepared", "authorized"].includes(op.state) && (
             <button
-              disabled={busy || run.stopRequested || (op.kind === "append" && !op.itemId)}
+              disabled={busy || run.stopRequested || !hasPlanAlbumAdapter(op.scope.platform) || (op.kind === "append" && !op.itemId)}
               onClick={() =>
                 void perform(async () => {
                   setPreview(null);
@@ -247,7 +252,7 @@ export default function PlanAlbumOperations({
           )}
           {["prepared", "authorized"].includes(op.state) && (
             <button
-              disabled={busy || run.stopRequested}
+              disabled={busy || run.stopRequested || !hasPlanAlbumAdapter(op.scope.platform)}
               onClick={() =>
                 void act(async () => {
                   setPreview(
@@ -264,7 +269,7 @@ export default function PlanAlbumOperations({
           )}
           {["unknown", "dispatching"].includes(op.state) && (
             <button
-              disabled={busy}
+              disabled={busy || !hasPlanAlbumAdapter(op.scope.platform)}
               onClick={() =>
                 void perform(() =>
                   call("planAlbums.reconcile", { operationId: op.operationId }),
@@ -338,7 +343,7 @@ export default function PlanAlbumOperations({
               </button>
               <button
                 className="primary"
-                disabled={busy || !acknowledged || run.stopRequested}
+                disabled={busy || !acknowledged || run.stopRequested || !hasPlanAlbumAdapter(preview.operation.scope.platform)}
                 onClick={() =>
                   void perform(async () => {
                     const current = preview;

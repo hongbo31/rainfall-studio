@@ -1,3 +1,4 @@
+import {hasPlanAlbumAdapter} from '../shared/plan-albums';
 import type { Repository } from './database';
 import {planModelCatalog} from './plan-center-models';
 
@@ -16,11 +17,11 @@ export function planCatalog(repo: Repository) {
     {id:'qqmusic',label:'QQ 音乐',delivery:'audio',accountProviders:['qqmusic','tme']},
     {id:'kugou',label:'酷狗音乐',delivery:'audio',accountProviders:['kugou','tme']},
     {id:'douyin',label:'抖音',delivery:'video',accountProviders:['douyin']},
-  ].map(p => ({...p,
-    catalog:{...unavailable('OFFICIAL_ALBUM_CATALOG_UNAVAILABLE'),albums:[],source:'unavailable'},
-    albumCreate:unavailable('ALBUM_CREATE_UNAVAILABLE'),
-    albumAppend:unavailable('ALBUM_APPEND_UNAVAILABLE'),
-    publication:{...unavailable(p.delivery==='video'?'VIDEO_PUBLISH_INTEGRATION_UNAVAILABLE':p.accountProviders.includes('tme')?'EXISTING_ALBUM_WRITE_INTEGRATION_UNVERIFIED':'PLATFORM_EXECUTOR_UNAVAILABLE'),queueAvailable:true},
+  ].map(p => ({...p,albumAdapterImplemented:hasPlanAlbumAdapter(p.id),
+    catalog:{...unavailable(hasPlanAlbumAdapter(p.id)?'ACCOUNT_SCOPED_ALBUM_CATALOG_REQUIRED':'PLATFORM_ALBUM_ADAPTER_NOT_IMPLEMENTED'),albums:[],source:'unavailable'},
+    albumCreate:unavailable(hasPlanAlbumAdapter(p.id)?'ALBUM_CREATE_CONTRACT_UNCALIBRATED':'PLATFORM_ALBUM_ADAPTER_NOT_IMPLEMENTED'),
+    albumAppend:unavailable(hasPlanAlbumAdapter(p.id)?'EXISTING_ALBUM_WRITE_INTEGRATION_UNVERIFIED':'PLATFORM_ALBUM_ADAPTER_NOT_IMPLEMENTED'),
+    publication:{...unavailable(p.delivery==='video'?'VIDEO_PUBLISH_INTEGRATION_UNAVAILABLE':p.accountProviders.includes('tme')?'EXISTING_ALBUM_WRITE_INTEGRATION_UNVERIFIED':'PLATFORM_EXECUTOR_UNAVAILABLE'),queueAvailable:hasPlanAlbumAdapter(p.id)},
     // No guessed platform schema. A real adapter will return its required create fields.
     newAlbumFields:[],
   }));

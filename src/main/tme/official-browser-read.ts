@@ -1,6 +1,7 @@
 import type {Page, Response} from 'playwright-core';
 import {readOfficialProfileIdentity} from './browser-identity';
 import {tmeAiSubjectHash} from '../../shared/tme-ai-prepare';
+import {openBackgroundOfficialPage,observedJson,verifiedVisiblePage,visibleNext,advanceObserved,observeListResponses,type OfficialSourceCoverage,type OfficialVisibleRow} from './official-catalog-pagination';
 
 const origin='https://y.tencentmusic.com';
 const profileUrl=`${origin}/#/user/musician/edit`;
@@ -13,7 +14,7 @@ const maxResponseBytes=1_048_576;
 
 export type OfficialAccount={kugouId:string;qqDisplayName:string;artistName:string};
 export type OfficialPendingSong={id:string;name:string;albumId:string;albumName:string;status:'reviewing'|'rejected'|'published';observedAt:string};
-export type OfficialPendingSongs={rows:OfficialPendingSong[];observedAt:string;url:string};
+export type OfficialPendingSongs={rows:OfficialPendingSong[];observedAt:string;url:string;coverage:OfficialSourceCoverage};
 export type OfficialReleasedSong=OfficialPendingSong&{artistName:string;officialStatusText:string;platformStatusText:string;officialPublishedAtText:string};
 type VisibleSongRow={cells:string[];cellTitles?:string[][]};
 
@@ -65,7 +66,7 @@ async function readLoadedProfile(temporary:Page){
 /** Reads a fresh official profile without navigating, closing, or editing the draft page. */
 export async function readFreshOfficialAccount(page:Page,options:{expectedSubjectHash?:string}={}):Promise<OfficialAccount>{
  const primaryUrl=page.url(),artist=await liveArtist(page);
- const temporary=await page.context().newPage();
+ const temporary=await openBackgroundOfficialPage(page);
  try{
   const identity=await readLoadedProfile(temporary);
   if(identity.artistName!==artist||options.expectedSubjectHash!==undefined&&tmeAiSubjectHash(identity)!==options.expectedSubjectHash)throw Error('ACCOUNT_CHANGED');
@@ -126,48 +127,134 @@ function isPendingResponse(response:Response){
 }
 
 /** Observes the page's own list request; never makes an API request or submits a song. */
-export async function readOfficialPendingSongs(page:Page):Promise<OfficialPendingSongs>{
+export async function readOfficialPendingSongs(page:Page,options:{expectedSubjectHash?:string}={}):Promise<OfficialPendingSongs>{
  const primaryUrl=page.url(),artist=await liveArtist(page);
- const temporary=await page.context().newPage();
+ const temporary=await openBackgroundOfficialPage(page);
  try{
-  const profile=await readLoadedProfile(temporary);if(profile.artistName!==artist)throw Error('ACCOUNT_CHANGED');
-  const responsePromise=temporary.waitForResponse(isPendingResponse,{timeout});
-  // Handle navigation failure without leaving the outstanding response wait unhandled.
-  void responsePromise.catch(()=>{});
-  // Direct initial deep links can be redirected by the SPA before musician bootstrap completes.
-  await temporary.evaluate(hash=>{window.location.hash=hash},new URL(pendingUrl).hash);
-  const response=await responsePromise;
-  if(temporary.url()!==pendingUrl||response.status()!==200||response.fromServiceWorker()||response.request().frame().page()!==temporary)throw Error('BROWSER_PENDING_RESPONSE_UNVERIFIED');
-  const body=await response.text();
-  if(Buffer.byteLength(body,'utf8')>maxResponseBytes)throw Error('BROWSER_PENDING_RESPONSE_TOO_LARGE');
-  let payload:unknown;try{payload=JSON.parse(body);}catch{throw Error('BROWSER_PENDING_SONG_PAYLOAD_INVALID');}
-  const content=(payload as {data?:{content?:unknown}}|null)?.data?.content;
-  if(!Array.isArray(content)||content.length>maxRows)throw Error('BROWSER_PENDING_SONG_PAYLOAD_INVALID');
-  await temporary.waitForFunction(expected=>{
-   const visible=(el:Element)=>{if(!el.isConnected||!el.getClientRects().length)return false;for(let p:Element|null=el;p;p=p.parentElement){const s=getComputedStyle(p);if(s.display==='none'||s.visibility==='hidden'||s.visibility==='collapse'||Number(s.opacity)===0||p.getAttribute('aria-hidden')==='true')return false;}return true;};
-   const rows=Array.from(document.querySelectorAll('.el-table__body-wrapper tr')).filter(visible);
-   return expected>0?rows.length>0:Array.from(document.querySelectorAll('.el-table__empty-block')).some(visible);
-  },content.length,{timeout});
-  const visibleRows=await temporary.evaluate(()=>{
-   const visible=(el:Element)=>{if(!el.isConnected||!el.getClientRects().length)return false;for(let p:Element|null=el;p;p=p.parentElement){const s=getComputedStyle(p);if(s.display==='none'||s.visibility==='hidden'||s.visibility==='collapse'||Number(s.opacity)===0||p.getAttribute('aria-hidden')==='true')return false;}return true;};
-   const text=(el:Element)=>(el as HTMLElement).innerText.trim().replace(/\s+/g,' ');
-   return Array.from(document.querySelectorAll('.el-table__body-wrapper tr')).filter(visible).map(row=>{
-    const cells=Array.from(row.querySelectorAll('td')).filter(visible);
-    return{cells:cells.map(text),cellTitles:cells.map(cell=>Array.from(cell.querySelectorAll('[title]')).filter(visible).map(el=>el.getAttribute('title')?.trim().replace(/\s+/g,' ')||'').filter(Boolean))};
-   });
+  const profile=await readLoadedProfile(temporary),subject=tmeAiSubjectHash(profile);if(profile.artistName!==artist||options.expectedSubjectHash!==undefined&&subject!==options.expectedSubjectHash)throw Error('ACCOUNT_CHANGED');
+  const guard=async()=>{if(temporary.url()!==pendingUrl||await liveArtist(temporary)!==artist)throw Error('ACCOUNT_CHANGED');await assertPrimary(page,primaryUrl,artist);};
+  const observed=observeListResponses(temporary,isPendingResponse),rows:OfficialPendingSong[]=[],seen=new Set<string>(),cursors=new Set<string>(),reasons:string[]=[];
+  let previousVisible:OfficialVisibleRow[]=[],pagesRead=0,complete=false,expectedCursor:string|undefined;
+  try{
+   await temporary.evaluate(hash=>{window.location.hash=hash},new URL(pendingUrl).hash);
+   for(;;){
+    const response=await observed.next();await guard();const payload=await observedJson(response,temporary,pendingUrl),content=payload?.data?.content;
+    if(payload?.code!=='0'||!Array.isArray(content)||content.length>maxRows)throw Error('BROWSER_PENDING_SONG_PAYLOAD_INVALID');
+    const request=response.request(),cursorParams=request.method()==='GET'?new URL(request.url()).searchParams:undefined,actualCursor=cursorParams?cursorParams.get('cursor'):request.postDataJSON()?.cursor;
+    if(cursorParams&&cursorParams.getAll('cursor').length>1)throw Error('BROWSER_CATALOG_CURSOR_SEQUENCE');
+    if(expectedCursor===undefined&&actualCursor!==undefined&&actualCursor!==null&&actualCursor!=='')throw Error('BROWSER_CATALOG_CURSOR_START_UNVERIFIED');
+    if(expectedCursor!==undefined&&actualCursor!==expectedCursor)throw Error('BROWSER_CATALOG_CURSOR_SEQUENCE');
+    const hasMore=payload.data.hasMore;if(hasMore!==undefined&&typeof hasMore!=='boolean')throw Error('BROWSER_CATALOG_CURSOR_INVALID');
+    if(hasMore!==undefined){
+     const request=response.request(),query=request.method()==='GET'?new URL(request.url()).searchParams:undefined;
+     if(query&&['name','showStatus','pageSize'].some(key=>query.getAll(key).length!==1))throw Error('BROWSER_CATALOG_FILTERED_SCOPE');
+     const params=query?Object.fromEntries(query):request.postDataJSON();if(params?.name!==''||String(params?.showStatus)!=='0')throw Error('BROWSER_CATALOG_FILTERED_SCOPE');if(!/^[1-9]\d*$/.test(String(params?.pageSize))||content.length>Number(params.pageSize))throw Error('BROWSER_CATALOG_REQUEST_PAGE_MISMATCH');
+    }
+    const observedAt=new Date().toISOString(),offset=rows.length;
+    const parsed=await verifiedVisiblePage(temporary,'.song-list',content.length===0,visible=>{
+     if(visible.length<offset+content.length||hasMore===false&&visible.length!==offset+content.length||JSON.stringify(visible.slice(0,offset))!==JSON.stringify(previousVisible))throw Error('BROWSER_PENDING_SONG_ROW_UNVERIFIED');
+     const parsed=parseOfficialPendingSongs(payload,visible.slice(offset,offset+content.length),observedAt);previousVisible=visible.slice(0,offset+content.length);return parsed;
+    },'暂无歌曲');
+    for(const row of parsed){if(seen.has(row.id))throw Error('BROWSER_CATALOG_DUPLICATE_ID');seen.add(row.id);rows.push(row);}pagesRead++;await guard();
+    if(hasMore===false){
+     if(rows.length){const marker=temporary.locator('.song-list .cursor-pagination-status').filter({visible:true});if(await marker.count()!==1||(await marker.innerText()).trim()!=='没有更多了'){reasons.push('BROWSER_CATALOG_CURSOR_TERMINATION_UNVERIFIED');break;}}
+     complete=true;break;
+    }
+    if(hasMore===undefined){reasons.push('BROWSER_CATALOG_CURSOR_TERMINATION_UNVERIFIED');break;}
+    const nextCursor=payload.data.nextCursor;if(typeof nextCursor!=='string'||!nextCursor||nextCursor.length>4000)throw Error('BROWSER_CATALOG_CURSOR_INVALID');
+    if(cursors.has(nextCursor))throw Error('BROWSER_CATALOG_CURSOR_CYCLE');cursors.add(nextCursor);expectedCursor=nextCursor;
+    if(!parsed.length)throw Error('BROWSER_CATALOG_EMPTY_NONTERMINAL_PAGE');
+    if(!observed.hasQueued()){
+     const table=temporary.locator('.song-list .el-table__body-wrapper').filter({visible:true});
+     const status=temporary.locator('.song-list .cursor-pagination-status').filter({visible:true});
+     if(await table.count()!==1||await status.count()!==1||(await status.innerText()).trim()!=='向下滚动加载更多'){reasons.push('BROWSER_CATALOG_SCROLL_CONTROL_UNVERIFIED');break;}
+     await guard();await table.evaluate(el=>{el.scrollTop=el.scrollHeight;});
+    }
+   }
+  }finally{observed.close();}
+  // Same visible artist can represent another account; re-read the full binding at completion.
+  const finalProfile=await readLoadedProfile(temporary);if(tmeAiSubjectHash(finalProfile)!==subject)throw Error('ACCOUNT_CHANGED');await assertPrimary(page,primaryUrl,artist);
+  return{rows,observedAt:rows.at(-1)?.observedAt??new Date().toISOString(),url:pendingUrl,coverage:{source:'official-pending-song-reference',pagesRead,rowCount:rows.length,complete,reasons}};
+ }finally{await temporary.close();}
+}
+
+export type OfficialAlbumDirectoryRow={id:string;name:string;artistName:string;songCount:number;publication:'published'|'unpublished';observedAt:string};
+export type OfficialAlbumDirectory={rows:OfficialAlbumDirectoryRow[];observedAt:string;url:string;coverage:OfficialSourceCoverage;sourceCoverage:(OfficialSourceCoverage&{publication:'published'|'unpublished';totalCount:number})[]};
+
+/** Names, IDs and pagination metadata are the observed official original-album contract.
+ * Status enum numbers are deliberately not mapped to submission or publication receipts. */
+export function parseOfficialAlbumDirectoryPage(payload:unknown,visible:OfficialVisibleRow[],publication:'published'|'unpublished',artist:string,observedAt:string):OfficialAlbumDirectoryRow[]{
+ const value=payload as any;
+ if(value?.code!=='0'||!Array.isArray(value.data?.content)||value.data.content.length>1000||!Number.isFinite(Date.parse(observedAt)))throw Error('BROWSER_ALBUM_PAYLOAD_INVALID');
+ const matched=new Set<number>(),seen=new Set<string>();
+ const rows=value.data.content.map((record:any)=>{
+  if(!record||typeof record!=='object'||Array.isArray(record)||!Number.isSafeInteger(record.songnum)||record.songnum<0)throw Error('BROWSER_ALBUM_PAYLOAD_INVALID');
+  const id=positiveId(record.id),name=boundedText(record.name),artistName=record.singerName===undefined?artist:boundedText(record.singerName);
+  if(seen.has(id))throw Error('BROWSER_CATALOG_DUPLICATE_ID');seen.add(id);
+  if(publication==='published'&&(!Number.isSafeInteger(record.publishSongnum)||record.publishSongnum<0||!Number.isSafeInteger(record.unPublishSongnum)||record.unPublishSongnum<0))throw Error('BROWSER_ALBUM_PAYLOAD_INVALID');
+  const countLabel=publication==='published'?'已发布'+record.publishSongnum+(record.unPublishSongnum?',未发布'+record.unPublishSongnum:''):record.songnum?String(record.songnum):'-';
+  const matches=visible.flatMap((row,index)=>{
+   const nameIndex=row.columnLabels?.indexOf('专辑名称')??-1,countIndex=row.columnLabels?.indexOf('歌曲数')??-1;
+   if(nameIndex<0||countIndex<0||nameIndex===countIndex||row.columnLabels?.filter(l=>l==='专辑名称').length!==1||row.columnLabels?.filter(l=>l==='歌曲数').length!==1)return[];
+   return(row.cells[nameIndex]===name||row.cellTitles?.[nameIndex]?.includes(name))&&row.cells[countIndex]===countLabel?[index]:[];
   });
-  const observedAt=new Date().toISOString();
-  const rows=parseOfficialPendingSongs(payload,visibleRows,observedAt);
-  if(temporary.url()!==pendingUrl||await liveArtist(temporary)!==artist)throw Error('ACCOUNT_CHANGED');
-  await assertPrimary(page,primaryUrl,artist);
-  return{rows,observedAt,url:pendingUrl};
+  if(matches.length!==1||matched.has(matches[0]))throw Error('BROWSER_ALBUM_ROW_UNVERIFIED');matched.add(matches[0]);
+  return{id,name,artistName,songCount:record.songnum,publication,observedAt};
+ });
+ if(matched.size!==visible.length)throw Error('BROWSER_ALBUM_ROW_UNVERIFIED');return rows;
+}
+
+/** Reads both observed original-album sources, clicking only the official visible next
+ * control. It never calculates a request page/cursor, calls an API, or edits a user page. */
+export async function readOfficialAlbumDirectory(page:Page,options:{expectedSubjectHash?:string}={}):Promise<OfficialAlbumDirectory>{
+ const primaryUrl=page.url(),artist=await liveArtist(page),temporary=await openBackgroundOfficialPage(page);
+ try{
+  const profile=await readLoadedProfile(temporary),subject=tmeAiSubjectHash(profile);if(profile.artistName!==artist||options.expectedSubjectHash!==undefined&&subject!==options.expectedSubjectHash)throw Error('ACCOUNT_CHANGED');
+  const rows:OfficialAlbumDirectoryRow[]=[],sourceCoverage:OfficialAlbumDirectory['sourceCoverage']=[],seen=new Set<string>();
+  for(const publication of ['published','unpublished'] as const){
+   const path='/cd-gateway/musician/original/'+(publication==='published'?'pagePublishAlbum':'pageUnPublishAlbum');
+   const targetUrl=publication==='published'?`${origin}/#/user/manage/albumlist`:`${origin}/#/user/manage/albumlist?tab=unPublish&type=Album`;
+   const predicate=(response:Response)=>{try{const u=new URL(response.url());return u.origin===origin&&!u.username&&!u.password&&u.pathname===path&&response.request().method()==='GET';}catch{return false;}};
+   const guard=async()=>{
+    if(temporary.url()!==targetUrl||await liveArtist(temporary)!==artist)throw Error('ACCOUNT_CHANGED');
+    const selected=temporary.locator('#tab-'+(publication==='published'?'published':'unPublish')+'[role="tab"][aria-selected="true"]');
+    if(await selected.count()!==1||!await selected.isVisible()||!await selected.evaluate(el=>{for(let p:Element|null=el;p;p=p.parentElement){const s=getComputedStyle(p);if(s.display==='none'||s.visibility==='hidden'||s.visibility==='collapse'||Number(s.opacity)===0||p.getAttribute('aria-hidden')==='true')return false;}return true;}))throw Error('BROWSER_ALBUM_TAB_UNVERIFIED');
+    await assertPrimary(page,primaryUrl,artist);
+   };
+   let response:Response;
+   if(publication==='published')response=await advanceObserved(temporary,predicate,async()=>{await temporary.getByText('歌曲管理',{exact:true}).click({timeout});await temporary.getByText('原创作品',{exact:true}).click({timeout});});
+   else response=await advanceObserved(temporary,predicate,()=>temporary.getByText('未发布',{exact:true}).click({timeout}));
+   // The actual tab click starts its list request before committing the SPA's query route.
+   await temporary.waitForURL(targetUrl,{timeout});
+   let expectedPage=1,total:number|undefined,pageSize:number|undefined,count=0,pagesRead=0,complete=false;const reasons:string[]=[];
+   for(;;){
+    await guard();const payload=await observedJson(response,temporary,targetUrl),data=payload?.data;
+    if(payload?.code!=='0'||!data||!Array.isArray(data.content)||!Number.isSafeInteger(data.pageNo)||data.pageNo<1||!Number.isSafeInteger(data.pageSize)||data.pageSize<1||data.pageSize>1000||!Number.isSafeInteger(data.totalCount)||data.totalCount<0)throw Error('BROWSER_ALBUM_PAGINATION_INVALID');
+    const params=new URL(response.request().url()).searchParams;
+    if(params.getAll('name').length!==1||params.get('name')!==''||params.getAll('showStatus').length!==1||params.get('showStatus')!=='0')throw Error('BROWSER_CATALOG_FILTERED_SCOPE');
+    if(params.getAll('pageNo').length!==1||params.getAll('pageSize').length!==1||params.get('pageNo')!==String(data.pageNo)||params.get('pageSize')!==String(data.pageSize))throw Error('BROWSER_CATALOG_REQUEST_PAGE_MISMATCH');
+    if(data.pageNo!==expectedPage)throw Error('BROWSER_CATALOG_PAGE_SEQUENCE');
+    if(total!==undefined&&total!==data.totalCount||pageSize!==undefined&&pageSize!==data.pageSize)throw Error('BROWSER_CATALOG_TOTAL_CHANGED');total=data.totalCount;pageSize=data.pageSize;
+    if(data.content.length!==Math.min(pageSize!,Math.max(0,total!-count)))throw Error('BROWSER_CATALOG_PAGE_COUNT_INCONSISTENT');
+    const observedAt=new Date().toISOString();
+    const parsed=await verifiedVisiblePage(temporary,'.album-list',!data.content.length,visible=>parseOfficialAlbumDirectoryPage(payload,visible,publication,artist,observedAt));
+    for(const row of parsed){if(seen.has(row.id))throw Error('BROWSER_CATALOG_DUPLICATE_ID');seen.add(row.id);rows.push(row);}count+=parsed.length;pagesRead++;await guard();
+    if(count===total){if(await visibleNext(temporary))throw Error('BROWSER_CATALOG_TERMINATION_INCONSISTENT');complete=true;break;}
+    const next=await visibleNext(temporary);if(!next){reasons.push('BROWSER_CATALOG_NEXT_CONTROL_UNVERIFIED');break;}
+    await guard();response=await advanceObserved(temporary,predicate,()=>next.click({timeout}));expectedPage++;
+   }
+   sourceCoverage.push({source:'official-album-directory',publication,pagesRead,rowCount:count,complete,reasons,totalCount:total!});
+  }
+  const finalProfile=await readLoadedProfile(temporary);if(tmeAiSubjectHash(finalProfile)!==subject)throw Error('ACCOUNT_CHANGED');await assertPrimary(page,primaryUrl,artist);
+  const coverage:OfficialSourceCoverage={source:'official-album-directory',pagesRead:sourceCoverage.reduce((n,s)=>n+s.pagesRead,0),rowCount:rows.length,complete:sourceCoverage.every(s=>s.complete),reasons:[...new Set(sourceCoverage.flatMap(s=>s.reasons))]};
+  return{rows,observedAt:new Date().toISOString(),url:`${origin}/#/user/manage/albumlist`,coverage,sourceCoverage};
  }finally{await temporary.close();}
 }
 
 /** Already approved songs leave the pending list. Observe the known existing album's own list request. */
 export async function readOfficialReleasedSong(page:Page,expected:{id:string;name:string;albumId:string;albumName:string;artistName:string}):Promise<{row:OfficialReleasedSong;url:string}>{
  if(!/^[1-9]\d{4,19}$/.test(expected.id)||!/^[1-9]\d{0,19}$/.test(expected.albumId)||expected.id===expected.albumId)throw Error('SONG_RECORD_ID_REQUIRED');
- const primaryUrl=page.url(),artist=await liveArtist(page),temporary=await page.context().newPage();
+ const primaryUrl=page.url(),artist=await liveArtist(page),temporary=await openBackgroundOfficialPage(page);
  try{
   const profile=await readLoadedProfile(temporary);if(profile.artistName!==artist||artist!==expected.artistName)throw Error('ACCOUNT_CHANGED');
   // Use the observed menu entry; initial direct album links can be reset by this SPA's router.

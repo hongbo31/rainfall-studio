@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { useStudio } from "../context";
 import type { PlanCenterPublishTarget } from "../../shared/plan-center";
 import type { PlanAlbumCatalog } from "../../shared/plan-albums";
+import { hasPlanAlbumAdapter } from "../../shared/plan-albums";
 
 export const albumSource = (value: {
   source?: string;
@@ -38,7 +39,7 @@ export function AlbumCatalogEvidence({
       {albumSource(catalog)} ·{" "}
       {completeness[catalog.completeness] ?? catalog.completeness}
       <br />
-      观察时间 {catalog.observedAt} · 有效期至 {catalog.expiresAt}
+      观察时间 {catalog.observedAt} · 有效期至 {catalog.expiresAt}{catalog.coverage&&<><br />{catalog.coverage.source==='official-album-directory'?'官方专辑目录':'待发布歌曲引用'} · 已读 {catalog.coverage.pagesRead} 页 / {catalog.coverage.rowCount} 条 · {catalog.coverage.complete?'该来源已遍历':'该来源未完整遍历'}</>}
     </p>
   );
 }
@@ -98,6 +99,7 @@ export default function PlanAlbumFields({
   busy: boolean;
 }) {
   const { call } = useStudio();
+  const supported = hasPlanAlbumAdapter(target.platform);
   const [loaded, setLoaded] = useState<{
       key: string;
       catalogs: PlanAlbumCatalog[];
@@ -114,7 +116,7 @@ export default function PlanAlbumFields({
   useEffect(() => {
     const ticket = ++request.current;
     setError("");
-    if (!target.accountId) {
+    if (!target.accountId || !supported) {
       setLoaded(null);
       setLoading(false);
       return;
@@ -145,6 +147,7 @@ export default function PlanAlbumFields({
     };
   }, [key]);
   const refresh = async () => {
+    if (!supported) return;
     const ticket = ++request.current;
     setLoading(true);
     setError("");
@@ -179,7 +182,7 @@ export default function PlanAlbumFields({
           <select
             aria-label={`专辑方式 ${index + 1}`}
             value={target.album.mode}
-            disabled={busy}
+            disabled={busy || !supported}
             onChange={(e) =>
               update({
                 album:
@@ -200,7 +203,7 @@ export default function PlanAlbumFields({
               aria-label={`真实专辑列表 ${index + 1}`}
               required
               value={target.album.albumId}
-              disabled={busy || loading || !target.accountId}
+              disabled={busy || loading || !target.accountId || !supported}
               onChange={(e) =>
                 update({ album: { mode: "existing", albumId: e.target.value } })
               }
@@ -240,6 +243,7 @@ export default function PlanAlbumFields({
                 aria-label={`新专辑名称 ${index + 1}`}
                 required
                 maxLength={200}
+                disabled={busy || !supported}
                 value={target.album.title}
                 onChange={(e) =>
                   update({
@@ -253,6 +257,7 @@ export default function PlanAlbumFields({
               <textarea
                 aria-label={`新专辑描述 ${index + 1}`}
                 maxLength={2000}
+                disabled={busy || !supported}
                 value={target.album.description ?? ""}
                 onChange={(e) =>
                   update({
@@ -270,7 +275,7 @@ export default function PlanAlbumFields({
       <div className="plan-album-toolbar">
         <button
           type="button"
-          disabled={busy || loading || !target.accountId}
+          disabled={busy || loading || !target.accountId || !supported}
           onClick={() => void refresh()}
         >
           只读刷新专辑目录
@@ -288,6 +293,7 @@ export default function PlanAlbumFields({
         </p>
       )}
       <AlbumCapabilities value={capabilities} />
+      {!supported && <p role="status">此平台专辑适配器未实现，目录、新建和追加已禁用。</p>}
     </div>
   );
 }

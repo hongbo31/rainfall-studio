@@ -73,6 +73,7 @@ export type PlanCenterList = {plans:PlanCenterPlan[];runs:PlanCenterRun[];items:
 export { PlanCenterSaveSchema as PlanCenterSavePlanSchema, PlanCenterRunSchema as PlanCenterTriggerSchema };
 
 export const PlanCenterBindWorkSchema=z.strictObject({itemId:id,workId:z.uuid(),expectedWorkRevision:revision});
+export const PlanCenterPrepareCoverWorkSchema=z.strictObject({itemId:id,expectedFinalDraftId:id,expectedFinalPairHash:z.string().regex(/^[a-f0-9]{64}$/)});
 export const PlanCenterSelectVersionSchema=z.strictObject({itemId:id,version:z.enum(['A','B'])});
 
 export const PlanCenterConfirmMaterialsSchema=z.strictObject({itemId:id,expectedWorkRevision:revision,audioHash:z.string().regex(/^[a-f0-9]{64}$/),coverHash:z.string().regex(/^[a-f0-9]{64}$/),lyricsHash:z.string().regex(/^[a-f0-9]{64}$/),rightsStatement:z.string().trim().min(10).max(4000),confirmed:z.literal(true)});

@@ -1,11 +1,14 @@
 import {z} from 'zod';
 import {PlanCenterAlbumSelectionSchema} from './plan-center';
+export const planAlbumPlatforms=['qqmusic','kugou'] as const;
+export const hasPlanAlbumAdapter=(platform:string)=>planAlbumPlatforms.some(value=>value===platform);
 const id=z.string().trim().min(1).max(500),hash=z.string().regex(/^[a-f0-9]{64}$/),stamp=z.iso.datetime({offset:true});
 export const PlanAlbumSourceSchema=z.enum(['official','offline-fixture']);
 export const PlanAlbumTargetSchema=z.strictObject({platform:id,accountId:id});
 export const PlanAlbumScopeSchema=PlanAlbumTargetSchema.extend({accountFingerprint:id});
 export const PlanAlbumEntrySchema=z.strictObject({key:id,id:id.nullable(),title:z.string().trim().min(1).max(500)});
-export const PlanAlbumCatalogRecordSchema=z.strictObject({scope:PlanAlbumScopeSchema,source:PlanAlbumSourceSchema,completeness:z.enum(['complete','partial','visible-candidates']),observedAt:stamp,expiresAt:stamp,evidenceHash:hash,entries:z.array(PlanAlbumEntrySchema).max(10000)}).refine(c=>Date.parse(c.expiresAt)>Date.parse(c.observedAt),'ALBUM_CATALOG_TIME_RANGE').refine(c=>new Set(c.entries.map(e=>e.key)).size===c.entries.length,'ALBUM_CATALOG_DUPLICATE_KEY');
+export const PlanAlbumCatalogCoverageSchema=z.strictObject({source:z.enum(['official-album-directory','official-pending-song-reference']),pagesRead:z.number().int().min(1).max(10000),rowCount:z.number().int().min(0).max(100000),complete:z.boolean(),reasons:z.array(z.string().max(500)).max(100)});
+export const PlanAlbumCatalogRecordSchema=z.strictObject({scope:PlanAlbumScopeSchema,source:PlanAlbumSourceSchema,completeness:z.enum(['complete','partial','visible-candidates']),coverage:PlanAlbumCatalogCoverageSchema.optional(),observedAt:stamp,expiresAt:stamp,evidenceHash:hash,entries:z.array(PlanAlbumEntrySchema).max(10000)}).refine(c=>Date.parse(c.expiresAt)>Date.parse(c.observedAt),'ALBUM_CATALOG_TIME_RANGE').refine(c=>new Set(c.entries.map(e=>e.key)).size===c.entries.length,'ALBUM_CATALOG_DUPLICATE_KEY');
 export const PlanAlbumCatalogSchema=PlanAlbumCatalogRecordSchema.safeExtend({id,onlineVerified:z.boolean()});
 export const PlanAlbumRunTargetSchema=PlanAlbumTargetSchema.extend({runId:id});
 export const PlanAlbumSelectSchema=PlanAlbumRunTargetSchema.extend({catalogId:id,entryKey:id});

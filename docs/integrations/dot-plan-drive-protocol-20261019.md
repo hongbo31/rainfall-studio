@@ -2,6 +2,8 @@
 
 核对基线：2026-10-19，仓库 HEAD `d7d90d2`。本文件可单独交给父会话实现外部 producer。**请求投影 v2 是本地文件协议，不是 dot 触发 API**；实际 dot 执行、云端读取与投递由父会话协调。本文不授权生成音乐、发布作品或设置日程。
 
+封面工作室的“导出 dot 请求 JSON”属于独立的 CoverHandoff 手工交接协议，不是本文的 PlanDot 请求投影 v2 或 Drive directory delivery v1。其请求、结果清单、接收和显式选图由工作室入口处理，不能将工作室 JSON 直接放入下述 P/requests 或 P/incoming。歌词改写后的本地封面恢复复用该工作室流程，不修改已保存的 R，也不重发原计划请求。
+
 ## 1. 两个方向与固定目录
 
 `P` 是已由可信本地配置选择的同步项目目录，`I = <dataRoot>/<mode>/inbox-v1`。输入 JSON 不能指定或改变这些路径。
@@ -160,7 +162,7 @@ READY.json（大小写按此文件名）只有：
 { "deliveryId": "dot-example-delivery-001", "manifestSha256": "<manifest.json原始字节SHA256>" }
 ```
 
-所有尖括号均应替换为实际小写 64 位 hex；bytes/尺寸填真实值。一个 text item 必须有且仅有一个同 externalItemId+revision 的 cover，images 1–20，不能重复文件名（大小写不敏感）或封面身份。封面只能 PNG/JPEG/WebP 静态图片；文件名精确为 `cover-<sha256>.png|jpg|webp`，JPEG 必须 .jpg。每张 1–20 MiB、单轴≤10,000、总像素≤25,000,000；尺寸正整数。接收器验证 SHA/大小/MIME/尺寸并完整解码，拒绝动画与损坏图片。manifest≤64 KiB、READY≤4 KiB。目标工作区别名长 1–80。即使请求 outputs.cover=false，**当前 directory delivery v1 仍强制每项一个封面**；文本单独交付只能走私有文本入口，不能把只有 text.json 的目录放进 Drive incoming。
+所有尖括号均应替换为实际小写 64 位 hex；bytes/尺寸填真实值。一个 text item 必须有且仅有一个同 externalItemId+revision 的 cover，images 1–20，不能重复文件名（大小写不敏感）或封面身份。封面只能 PNG/JPEG/WebP 静态图片；文件名精确为 `cover-<sha256>.png|jpg|webp`，JPEG 必须 .jpg。每张 1 字节至 20 MiB、单轴≤10,000、总像素≤25,000,000；尺寸正整数。接收器验证 SHA/大小/MIME/尺寸并完整解码，拒绝动画与损坏图片。manifest≤64 KiB、READY≤4 KiB。目标工作区别名长 1–80。即使请求 outputs.cover=false，**当前 directory delivery v1 仍强制每项一个封面**；文本单独交付只能走私有文本入口，不能把只有 text.json 的目录放进 Drive incoming。
 
 写入规则：先在非最终目录或唯一 .partial 文件准备全部最终字节，依次提交 text、封面、manifest，最后 READY；最终目录名等于 deliveryId。同步到达可能乱序，READY 存在也不代表完整。已提交包保持不可变，重传必须保持 ID、内容与 hashes；不要原地修补已接受的 deliveryId。修正被永久拒绝的包由父会话协调新 deliveryId/batchId；若同 item identity 内容改变，也需新的合法版本/请求。
 

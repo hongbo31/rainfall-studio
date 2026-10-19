@@ -44,6 +44,7 @@ function Fixture() {
         <p>真实组件的无头浏览器验证 · 线上未验证</p>
         {error && <p role="alert">{error}</p>}
         <section className="plan-editor">
+          <button type="button" onClick={()=>setTarget({...target,platform:'netease'})}>Fixture unsupported platform</button>
           <PlanAlbumFields
             target={target}
             index={0}

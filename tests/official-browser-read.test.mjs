@@ -39,13 +39,13 @@ async function fixture(t,options={}){
   document.body.insertAdjacentHTML('beforeend','<button>歌曲管理</button><button id="original-works">原创作品</button>');document.querySelector('#original-works').onclick=()=>location.hash='#/user/manage/albumlist';
  }else if(location.hash.includes('/songlist/')){
   document.body.innerHTML=${JSON.stringify(artistHtml('Test Artist'))}+${JSON.stringify('<h1>'+record.albumName+'</h1>')};
-  fetch('${releasedApi}').then(r=>r.json()).then(()=>document.body.insertAdjacentHTML('beforeend',${JSON.stringify(`<div class="el-table__body-wrapper"><table><tbody>${options.releasedRowsHtml??rowHtml(record.name,record.albumName,'审核通过')}</tbody></table></div>`)}));
+  fetch('${releasedApi}').then(r=>r.json()).then(()=>document.body.insertAdjacentHTML('beforeend',${JSON.stringify(`<div class="song-list"><div class="el-table__body-wrapper"><table><tbody>${options.releasedRowsHtml??rowHtml(record.name,record.albumName,'审核通过')}</tbody></table></div></div>`)}));
  }else if(location.hash==='#/user/manage/albumlist'){
-  document.body.innerHTML=${JSON.stringify(artistHtml('Test Artist')+`<div class="el-table__body-wrapper"><table><tbody><tr><td><span>${record.albumName}</span><span>已发布</span></td></tr></tbody></table></div>`)};
+  document.body.innerHTML=${JSON.stringify(artistHtml('Test Artist')+`<div class="song-list"><div class="el-table__body-wrapper"><table><tbody><tr><td><span>${record.albumName}</span><span>已发布</span></td></tr></tbody></table></div></div>`)};
  }else if(location.hash.includes('/albumlist')){
   document.body.innerHTML=${JSON.stringify(artistHtml(options.pendingArtist||'Test Artist'))};
   fetch('${api}',options.readMethod==='GET'?{method:'GET'}:{method:'POST',headers:{'content-type':'application/json'},body:'{}'}).then(r=>r.json()).then(()=>{
-   document.body.insertAdjacentHTML('beforeend',${JSON.stringify(`<div class="el-table__body-wrapper"><table><tbody>${options.rowsHtml??rowHtml()}</tbody></table></div>`)});
+   document.body.insertAdjacentHTML('beforeend',${JSON.stringify(`<div class="song-list"><div class="el-table__body-wrapper"><table><tbody>${options.rowsHtml??rowHtml()}</tbody></table></div></div>`)});
   });
  }else{
   document.body.innerHTML=${JSON.stringify(artistHtml('Test Artist')+'<input id="draft" value="keep this draft"><button id="submit">Submit must never be clicked</button>')};
@@ -149,7 +149,8 @@ test('foreign primary origin is refused before opening a temporary page',async t
 test('navigation failures close the owned temporary page',async()=>{
  let closed=0;let primaryClosed=0;
  const temporary={goto:async()=>{throw Error('navigation failed');},close:async()=>{closed++;},waitForResponse:async()=>{throw Error('response unavailable');}};
- const page={url:()=>primaryUrl,evaluate:async()=>['Test Artist'],context:()=>({newPage:async()=>temporary}),close:()=>{primaryClosed++;}};
+ const context={browser:()=>({newBrowserCDPSession:async()=>({send:async(method,args)=>{assert.equal(method,'Target.createTarget');assert.equal(args.background,true);assert.equal(args.browserContextId,'fixture-context');return{targetId:'owned'};},detach:async()=>{}})}),pages:()=>[page,temporary],newCDPSession:async target=>({send:async()=>({targetInfo:{targetId:target===page?'primary':'owned',browserContextId:'fixture-context'}}),detach:async()=>{}})};
+ const page={url:()=>primaryUrl,evaluate:async()=>['Test Artist'],context:()=>context,close:()=>{primaryClosed++;}};
  await assert.rejects(readFreshOfficialAccount(page),/navigation failed/);
  await assert.rejects(readOfficialPendingSongs(page),/navigation failed/);
  assert.equal(closed,2);assert.equal(primaryClosed,0);

@@ -2,7 +2,7 @@ import {z} from 'zod';
 import type {Studio} from './studio';
 import {PlanAlbumService,type PlanAlbumOptions} from './plan-albums';
 import {validate} from '../shared/schemas';
-import {PlanAlbumOperationIdSchema,PlanAlbumTargetSchema} from '../shared/plan-albums';
+import {hasPlanAlbumAdapter,PlanAlbumOperationIdSchema,PlanAlbumTargetSchema} from '../shared/plan-albums';
 import {planPublicationMaterialFingerprint,planPublicationStatus,syncPlanPublications,planPublicationBindingEvidence} from './plan-center-publication';
 import {unifiedPublicationService} from './unified-publication-integration';
 import {digest} from './plan-center/storage';
@@ -17,6 +17,7 @@ function publicOperation<T extends {receipt?:unknown;authorizationHash?:unknown}
 export function executePlanAlbums(s:Studio,action:string,input:unknown={}){
  if(s.mode!=='production')throw Error('PRODUCTION_REQUIRED');
  const p=validate('planAlbums.'+action,input) as any,service=s.planAlbumService();
+ if(['select','prepareCreate','prepareAppend'].includes(action)&&!hasPlanAlbumAdapter(p.platform))throw Error('PLATFORM_ALBUM_ADAPTER_NOT_IMPLEMENTED');
  if(action==='status'){const status=service.status();return{...status,operations:status.operations.map(publicOperation)}}
  if(action==='catalog'){try{return service.catalog(p)}catch(error){if(error instanceof Error&&error.message==='ALBUM_ACCOUNT_IDENTITY_REQUIRED')return null;throw error}}
  if(action==='select')return service.selectBinding(p);

@@ -34,6 +34,7 @@ import { selectInboxMusicInput, selectedInboxMusicInput } from "./inbox/music-in
 import { parseTextProviderProfile } from "../shared/text-providers";
 import { TmeDraftService } from './tme-drafts';
 import { CoverHandoff } from './cover-handoff';
+import {assertPlanCoverWork} from './plan-cover-work';
 import {LyricService,candidateLyricOrigin,type LyricOrigin} from './lyrics';
 import {publicationPayload} from './publication-payload';
 import {listTmeObservations, recordTmeObservation} from './tme-observations';
@@ -588,6 +589,9 @@ export class Studio {
         return r;
       }
       case "work.selectAsset": {
+        return this.repo.transaction(()=>{
+        const coverBinding=v.role==='cover'?assertPlanCoverWork(this,v.workId):null;
+        if(coverBinding)this.coverHandoff().verifiedSelectedReceipt(v.workId,v.assetId);
         const w = this.get("works", v.workId);
         const a = this.get("assets", v.assetId);
         this.locate(a.id);
@@ -603,6 +607,7 @@ export class Studio {
         if (v.role === 'audio_A') w.lyricsConfirmation = null;
         this.save("works", w);
         return w;
+        });
       }
       case "series.save": {
         for (const id of v.workIds) this.get("works", id);
@@ -1181,8 +1186,9 @@ export class Studio {
   rollover(op: string) {
     return resources.rollover(this, op);
   }
-  importFile(source: string, role: string, workId?: string) {
-    return assets.importFile(this, source, role, workId);
+  async importFile(source: string, role: string, workId?: string, beforePersist?:()=>void) {
+    if(workId&&role==='cover'&&assertPlanCoverWork(this,workId))throw Error('COVER_HANDOFF_REQUIRED');
+    return assets.importFile(this, source, role, workId,beforePersist);
   }
   locate(id: string) {
     return assets.locate(this, id);

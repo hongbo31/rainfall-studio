@@ -1,11 +1,11 @@
 import {tmeAiSubjectHash} from '../shared/tme-ai-prepare';
-import {PlanAlbumTargetSchema,PlanAlbumOperationIdSchema,PlanAlbumAuthorizeSchema,type PlanAlbumScope,type PlanAlbumOperation,type PlanAlbumResult} from '../shared/plan-albums';
+import {hasPlanAlbumAdapter,PlanAlbumTargetSchema,PlanAlbumOperationIdSchema,PlanAlbumAuthorizeSchema,type PlanAlbumScope,type PlanAlbumOperation,type PlanAlbumResult} from '../shared/plan-albums';
 import type {createTmeAlbumBrowserTransport,TmeAlbumBrowserAccount,TmeAlbumCreateClaim,TmeAlbumCreateResult} from './tme/album-browser';
 
 type Transport=ReturnType<typeof createTmeAlbumBrowserTransport>;
 type Session={transport:Transport;account:()=>Promise<TmeAlbumBrowserAccount>};
 type Options={rpc:(method:string,input?:any)=>Promise<any>;available:()=>boolean;generation:()=>number;getSession:(scope:PlanAlbumScope)=>Session|undefined;now?:()=>Date;onAppend?:(taskId:string)=>Promise<unknown>|void;reconcileAppend?:(taskId:string)=>Promise<unknown>};
-const supported=(platform:string)=>['qqmusic','kugou'].includes(platform);
+const supported=hasPlanAlbumAdapter;
 const code=(e:unknown)=>e instanceof Error&&/^[A-Z0-9_]+$/.test(e.message)?e.message:'ALBUM_TRANSPORT_OUTCOME_UNKNOWN';
 /** Main owns the calibrated transport. Renderer inputs never supply evidence, selectors,
  * account fingerprints or result receipts. The durable Core claim precedes every create. */
@@ -20,7 +20,7 @@ export function createPlanAlbumBroker(o:Options){
   const implemented=supported(s.platform),session=implemented&&!identityReason?o.getSession(s):undefined,c=session?.transport.capability();
   const connection=[...(identityReason?[identityReason]:[]),...(session?[]:['CLOUD_BROWSER_SESSION_REQUIRED'])],unsupported=['PLATFORM_ALBUM_ADAPTER_NOT_IMPLEMENTED'];
   const part=(kind:'query'|'select'|'create'|'append'|'reconcile')=>({implemented,available:implemented&&!!session&&c?.[kind]?.available===true,reasons:implemented?[...new Set([...(c?.[kind]?.reasons??(kind==='create'||kind==='reconcile'?['ALBUM_CREATE_CONTRACT_UNCALIBRATED']:kind==='append'?['EXISTING_ALBUM_WRITE_INTEGRATION_UNVERIFIED']:[])),...connection])]:unsupported});
-  return{...s,...(identityReason?{accountFingerprint:undefined}:{}),sessionConnected:!!session,source:c?.source??'official',query:{...part('query'),completeness:'partial'},select:{...part('select'),bindingRequiresRemoteId:true},create:{...part('create'),missing:c?.create?.missing??['create route and required controls','remote album ID and original-operation result','production calibration evidence']},append:{...part('append'),requiresExistingPreparation:true,requiresRightsAndTerms:true},reconcile:part('reconcile')};
+  return{...s,...(identityReason?{accountFingerprint:undefined}:{}),sessionConnected:!!session,source:c?.source??'official',query:{...part('query'),paginationImplemented:true,coverage:'published-and-unpublished-albums',completeness:'reported-by-query-result'},select:{...part('select'),bindingRequiresRemoteId:true},create:{...part('create'),missing:c?.create?.missing??['create route and required controls','remote album ID and original-operation result','production calibration evidence']},append:{...part('append'),requiresExistingPreparation:true,requiresRightsAndTerms:true},reconcile:part('reconcile')};
  }
  function sessionFor(s:PlanAlbumScope,kind:'query'|'create'|'append'|'reconcile'){
   const c=capabilities(s),part=c[kind];if(!part.available)throw Error(part.reasons[0]??'ALBUM_TRANSPORT_UNAVAILABLE');return o.getSession(s)!;
@@ -90,10 +90,10 @@ export function createPlanAlbumBroker(o:Options){
   try{
    if(action==='refresh'){
     const s=await scope(input),session=sessionFor(s,'query');await observed(session,s);current(generation);
-    const c=await session.transport.catalog({includeOfficialReferences:true});current(generation);
+    const c=await session.transport.catalog({includeOfficialReferences:true,includeOfficialDirectory:true});current(generation);
     if(c.scope.subjectHash!==s.accountFingerprint)throw Error('ALBUM_CATALOG_ACCOUNT_SCOPE');
     const observedAt=Date.parse(c.observedAt),now=(o.now?.()??new Date()).getTime();if(!Number.isFinite(observedAt)||observedAt>now+5000||now-observedAt>120000)throw Error('ALBUM_CATALOG_STALE');
-    return raw('internal.planAlbums.recordCatalog',{scope:s,source:c.source,completeness:c.completeness,observedAt:c.observedAt,expiresAt:new Date(observedAt+15*60*1000).toISOString(),evidenceHash:c.evidenceHash,entries:c.entries.map(e=>({key:e.candidateKey,id:e.remoteAlbumId??null,title:e.title}))});
+    return raw('internal.planAlbums.recordCatalog',{scope:s,source:c.source,completeness:c.completeness,...(c.coverage?{coverage:c.coverage}:{}),observedAt:c.observedAt,expiresAt:new Date(observedAt+15*60*1000).toISOString(),evidenceHash:c.evidenceHash,entries:c.entries.map(e=>({key:e.candidateKey,id:e.remoteAlbumId??null,title:e.title}))});
    }
    return action==='confirm'?await confirm(input,generation):await reconcile(input,generation);
   }finally{busy=false;}

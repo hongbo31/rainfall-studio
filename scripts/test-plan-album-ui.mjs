@@ -372,6 +372,15 @@ try {
     path: path.join(out, "05-capability-gaps.png"),
     fullPage: true,
   });
+  await page.getByRole('button',{name:'Fixture unsupported platform',exact:true}).click();
+  await expect(page.getByLabel('专辑方式 1',{exact:true})).toBeDisabled();
+  await expect(albums).toBeDisabled();
+  await expect(page.getByRole('button',{name:'只读刷新专辑目录',exact:true})).toBeDisabled();
+  await expect(page.getByText('此平台专辑适配器未实现，目录、新建和追加已禁用。',{exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:'绑定已选专辑 ID',exact:true})).toHaveCount(0);
+  await expect(page.getByRole('button',{name:'准备追加第 1 首',exact:true})).toBeDisabled();
+  checks.push('A saved unsupported platform explicitly disables directory refresh, album selection and create-mode controls');
+  await page.screenshot({path:path.join(out,'06-unsupported-disabled.png'),fullPage:true});
   assert.deepEqual(errors, []);
   assert(
     requests.every((url) => url.startsWith("https://album-fixture.invalid/")),

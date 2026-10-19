@@ -1,5 +1,13 @@
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import path from 'node:path';import {randomUUID,createHash} from 'node:crypto';import {createRequire} from 'node:module';
 const api=createRequire(import.meta.url)(process.env.RAINFALL_PLAN_ALBUM_INTEGRATION_BUNDLE);
+test('unsupported platform album actions reject before creating any operation',async t=>{
+ const x=setup(t);
+ for(const platform of ['netease','qishui','douyin'])for(const action of ['prepareCreate','prepareAppend','select']){
+  const input={...x.input,platform,...(action==='prepareAppend'?{itemId:x.item.id}:action==='select'?{catalogId:'none',entryKey:'none'}:{})};
+  await assert.rejects(x.s.call('planAlbums.'+action,input),/PLATFORM_ALBUM_ADAPTER_NOT_IMPLEMENTED/);
+ }
+ assert.equal(x.s.planAlbumService().status().operations.length,0);
+});
 function setup(t,{fixture=false,album={mode:'new',title:'Isolated album'}}={}){
  let at='2026-10-19T10:00:00Z';const s=new api.Studio(path.resolve('output/test-runs/album-integration-'+randomUUID()),'production',{now:()=>new Date(at),...(fixture?{albumServiceFactory:studio=>api.createPlanAlbumService(studio,{allowFixture:true})}:{})});t.after(()=>s.close());
  const account=s.save('accounts',{id:randomUUID(),provider:'tme',remoteSubject:'a'.repeat(64),name:'Offline account'}),artist=s.all('artists')[0],center=s.planCenterService();

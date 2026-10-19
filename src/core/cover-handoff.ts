@@ -6,6 +6,7 @@ import type { Studio } from "./studio";
 import { hash } from "./database";
 import { digest } from "./assets";
 import { inboxHash } from "./inbox/service";
+import {assertPlanCoverWork} from './plan-cover-work';
 import {
   CoverRequestSchema,
   CoverReceiptSchema,
@@ -45,11 +46,33 @@ export class CoverHandoff {
     if (inboxHash(this.context(r.workId)) !== r.contextHash)
       throw Error("COVER_CONTEXT_CHANGED");
   }
+  verifiedSelectedReceipt(workId:string,assetId?:string){
+    const binding=assertPlanCoverWork(this.s,workId),work=this.s.get('works',workId),selected=assetId??work.assets?.cover;
+    if(!selected)throw Error('COVER_REQUIRED');
+    const asset=this.s.get('assets',selected);
+    if(asset.kind!=='image')throw Error('ASSET_ROLE');
+    if(binding?.sourceCoverSha256===asset.sha256)throw Error('COVER_REFRESH_REQUIRED');
+    const candidates=this.rows('cover-receipt').map(r=>r.receipt).filter(r=>r.workId===workId&&r.assetId===selected&&r.image?.sha256===asset.sha256);
+    if(!candidates.length)throw Error('COVER_RECEIPT_REQUIRED');
+    const contextHash=inboxHash(this.context(workId));
+    // Keep proof stable for repeated same-context imports; stale contexts cannot mask a valid receipt.
+    const receipt=candidates.find(r=>{const request=this.s.repo.maybe('settings','cover-request:'+r.requestId)?.request;return request?.workId===workId&&request.contextHash===contextHash;});
+    if(!receipt)throw Error('COVER_CONTEXT_CHANGED');
+    const request=this.get(receipt.requestId);
+    if(request.workId!==workId)throw Error('COVER_SCOPE_MISMATCH');
+    this.assertContext(request);this.s.locate(asset.id);
+    return{receipt,request,asset};
+  }
   get(id: string) {
     return this.s.get("settings", "cover-request:" + id).request;
   }
   list(workId?: string) {
+    let planRecovery: {locked:boolean;reason?:string}|undefined;
+    if(workId&&this.s.repo.all('settings').some(r=>r.id.startsWith('plan-cover-work:')&&r.value?.workId===workId)){
+      try{assertPlanCoverWork(this.s,workId);planRecovery={locked:false};}catch(error){planRecovery={locked:true,reason:error instanceof Error?error.message:'FINAL_MATERIAL_CHANGED'};}
+    }
     return {
+      ...(planRecovery?{planRecovery}:{}),
       provider: {
         id: "image-api",
         state: "unconfigured",
@@ -69,6 +92,7 @@ export class CoverHandoff {
       context = this.context(i.workId),
       requestHash = inboxHash(i);
     return this.s.repo.transaction(() => {
+      assertPlanCoverWork(this.s,i.workId);
       const previous = this.s.repo.maybe(
         "settings",
         "cover-request:" + i.requestId,
@@ -144,6 +168,7 @@ export class CoverHandoff {
     requestId: string,
     kind: "manifest" | "image",
   ) {
+    assertPlanCoverWork(this.s,workId);
     const request = this.get(requestId);
     if (request.workId !== workId) throw Error("COVER_SCOPE_MISMATCH");
     this.assertContext(request);
@@ -218,9 +243,12 @@ export class CoverHandoff {
       this.s.locate(old.receipt.assetId);
       return old.receipt;
     }
-    const asset = await this.s.importFile(file, "cover");
+    assertPlanCoverWork(this.s,workId);
+    const guarded=!!this.s.repo.all('settings').find(r=>r.id.startsWith('plan-cover-work:')&&r.value?.workId===workId);
+    const asset = await this.s.importFile(file, "cover",undefined,guarded?()=>{assertPlanCoverWork(this.s,workId);this.assertContext(request);}:undefined);
     if (asset.sha256 !== sha256) throw Error("SOURCE_CHANGED");
     return this.s.repo.transaction(() => {
+      assertPlanCoverWork(this.s,workId);
       this.assertContext(request);
       this.s.locate(asset.id);
       const concurrent = this.s.repo.maybe("settings", key);

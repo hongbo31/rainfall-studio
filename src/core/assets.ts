@@ -70,6 +70,7 @@ export async function importFile(
   source: string,
   role: string,
   workId?: string,
+  beforePersist?:()=>void,
 ) {
   if (
     source.startsWith("\\\\") ||
@@ -137,6 +138,7 @@ export async function importFile(
           ? "audio/mp4"
           : "audio/" + ext;
   }
+  const persist=()=>{
   const sha256 = digest(real);
   let asset = s.all("assets").find((a) => a.sha256 === sha256);
   if (!asset) {
@@ -182,6 +184,9 @@ export async function importFile(
     s.refreshRunForWork(workId);
   }
   return asset;
+  };
+  // Guarded plan-cover imports recheck under the write lock after all image awaits.
+  return beforePersist?s.repo.transaction(()=>{beforePersist();return persist();}):persist();
 }
 export function locate(s: Studio, id: string) {
   const a = s.get("assets", id);

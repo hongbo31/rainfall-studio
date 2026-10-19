@@ -1,3 +1,4 @@
+import {hasPlanAlbumAdapter} from '../shared/plan-albums';
 import type {Studio} from './studio';
 import type {PlanCenterItem,PlanCenterRun} from '../shared/plan-center';
 import {PlanPublicationLinkSchema,PlanPublicationAlbumBindingSchema,type PlanPublicationLink,type PlanPublicationCapabilities} from '../shared/plan-publication';
@@ -80,6 +81,7 @@ export function syncPlanPublications(s:Studio):PlanPublicationLink[]{
     const fingerprint=planPublicationMaterialFingerprint(s,run,item);
     if(link.workId&&link.workId!==item.workId||link.materialFingerprint&&link.materialFingerprint!==fingerprint||item.materialFingerprint&&item.materialFingerprint!==fingerprint)throw Error('PLAN_PUBLICATION_MATERIALS_CHANGED');
     if(!link.materialFingerprint)link={...link,workId:item.workId,materialFingerprint:fingerprint};
+    if(!hasPlanAlbumAdapter(target.platform))throw Error('PLATFORM_ALBUM_ADAPTER_NOT_IMPLEMENTED');
     const binding=albums?.bindingForRun({runId:run.id,platform:target.platform,accountId:target.accountId})??null;
     const albumOps=albums?.status().operations??[],append=albumOps.find(o=>o.kind==='append'&&o.runId===run.id&&o.itemId===item.id&&o.scope.accountId===target.accountId&&(['qqmusic','kugou'].includes(target.platform)?['qqmusic','kugou'].includes(o.scope.platform):o.scope.platform===target.platform)&&o.selectionHash===digest(target.album)&&o.materialFingerprint===fingerprint);
     const create=albumOps.find(o=>o.kind==='create'&&o.planId===run.planId&&o.scope.accountId===target.accountId&&o.selectionHash===digest(target.album));

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import {PlanCenterPrepareCoverWorkSchema} from './plan-center';
 import { saveApiProfileSchema } from "./api-profiles";
 import { GenerateTurnSchema, TextConfigurationSchema } from "./creation";
 import { MusicRequestSchema } from "./music";
@@ -237,7 +238,7 @@ export function validate(method: string, input: unknown) {
     'planCenter.list':z.strictObject({}),'planCenter.catalog':z.strictObject({}),
     'planCenter.status':z.strictObject({}),'planCenter.dotStatus':z.strictObject({}),'planCenter.exportDotRequests':z.strictObject({}),
     'planCenter.musicStatus':z.strictObject({}),'planCenter.publicationStatus':z.strictObject({}),
-    'planCenter.bindWork':PlanCenterBindWorkSchema,'planCenter.selectVersion':PlanCenterSelectVersionSchema,
+    'planCenter.bindWork':PlanCenterBindWorkSchema,'planCenter.prepareCoverWork':PlanCenterPrepareCoverWorkSchema,'planCenter.selectVersion':PlanCenterSelectVersionSchema,
     'planCenter.confirmMaterials':PlanCenterConfirmMaterialsSchema,'planCenter.materialPreview':PlanCenterIdSchema,
     'planCenter.refreshModels':z.strictObject({profileId:z.uuid(),expectedRevision:z.number().int().positive()}),
     'planCenter.save':PlanCenterSaveSchema,'planCenter.toggle':PlanCenterToggleSchema,

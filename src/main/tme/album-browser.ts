@@ -2,7 +2,8 @@ import {createHash} from 'node:crypto';
 import type {Locator,Page} from 'playwright-core';
 import {TmeAiPrepareBindingSchema,tmeAiSubjectHash} from '../../shared/tme-ai-prepare';
 import {TME_AI_INTAKE_FIELDS as intake} from './ai-intake-fields';
-import {readOfficialPendingSongs} from './official-browser-read';
+import {readOfficialPendingSongs,readOfficialAlbumDirectory} from './official-browser-read';
+import type {OfficialSourceCoverage} from './official-catalog-pagination';
 
 type Source='official'|'offline-fixture';
 type Binding={transport:'cloud-playwright';sessionId:string;pageId:string;started:string};
@@ -30,7 +31,7 @@ export type TmeAlbumBrowserOptions={
  account:()=>Promise<TmeAlbumBrowserAccount>;
  now?:()=>Date;isolatedFixture?:boolean;createContract?:TmeAlbumCreateContract|null;
 };
-export type TmeAlbumBrowserEntry={candidateKey:string;remoteAlbumId?:string;title:string;artistName:string;identityLevel:'title_artist_only'|'remote_album_id';provenance:'visible-intake-candidate'|'official-pending-song-reference';source:Source};
+export type TmeAlbumBrowserEntry={candidateKey:string;remoteAlbumId?:string;title:string;artistName:string;identityLevel:'title_artist_only'|'remote_album_id';provenance:'visible-intake-candidate'|'official-pending-song-reference'|'official-album-directory';source:Source};
 export type TmeAlbumCreateResult={status:'succeeded'|'unknown'|'blocked';reason?:string;remoteAlbumId?:string;title?:string;operationId?:string;idempotencyKey?:string;subjectHash?:string;observedAt?:string;evidenceHash?:string;source:Source;onlineVerified:boolean};
 
 const sha=(v:unknown)=>createHash('sha256').update(typeof v==='string'?v:JSON.stringify(v)).digest('hex');
@@ -67,7 +68,7 @@ export function createTmeAlbumBrowserTransport(o:TmeAlbumBrowserOptions){
  const stamp=()=> (o.now?.()??new Date()).toISOString();
  const blocked=(why:string):TmeAlbumCreateResult=>({status:'blocked',reason:why,source,onlineVerified:false});
  const unknown=(why:string):TmeAlbumCreateResult=>({status:'unknown',reason:why,source,onlineVerified:false});
- const capability=()=>({transport:'cloud-playwright' as const,source,query:{available:true,reasons:[],completeness:'partial' as const},select:{available:true,reasons:[],bindingRequiresRemoteId:true},create:{available:!reason,reasons:reason?[reason]:[],missing:reason?[...missing]:[]},reconcile:{available:!reason,reasons:reason?[reason]:[]},append:{available:o.isolatedFixture===true,reasons:o.isolatedFixture===true?[]:['EXISTING_ALBUM_WRITE_INTEGRATION_UNVERIFIED'],executor:'existing-tme-ai-preparation-and-submission',requiresExistingPreparation:true,requiresRightsAndTerms:true}});
+ const capability=()=>({transport:'cloud-playwright' as const,source,query:{available:true,reasons:[],paginationImplemented:true,coverage:'published-and-unpublished-albums' as const},select:{available:true,reasons:[],bindingRequiresRemoteId:true},create:{available:!reason,reasons:reason?[reason]:[],missing:reason?[...missing]:[]},reconcile:{available:!reason,reasons:reason?[reason]:[]},append:{available:o.isolatedFixture===true,reasons:o.isolatedFixture===true?[]:['EXISTING_ALBUM_WRITE_INTEGRATION_UNVERIFIED'],executor:'existing-tme-ai-preparation-and-submission',requiresExistingPreparation:true,requiresRightsAndTerms:true}});
  async function one(locator:Locator){
   if(await locator.count()!==1||!await locator.isVisible()||!await locator.evaluate(el=>{
    for(let parent:Element|null=el;parent;parent=parent.parentElement){const s=getComputedStyle(parent);if(s.display==='none'||s.visibility==='hidden'||s.visibility==='collapse'||Number(s.opacity)===0||parent.getAttribute('aria-hidden')==='true')return false;}return true;
@@ -103,17 +104,25 @@ export function createTmeAlbumBrowserTransport(o:TmeAlbumBrowserOptions){
   }
   return entries;
  }
- async function catalog(input:{includeOfficialReferences?:boolean}={}){
+ async function catalog(input:{includeOfficialReferences?:boolean;includeOfficialDirectory?:boolean}={}){
   const a=await account(),entries=await visibleEntries(a);
+  let coverage:OfficialSourceCoverage|undefined;
+  let sourceCoverage:unknown[]=[];
+  if(input.includeOfficialDirectory===true){
+   const directory=await readOfficialAlbumDirectory(page,{expectedSubjectHash:a.subjectHash});coverage=directory.coverage;sourceCoverage=directory.sourceCoverage;
+   for(const row of directory.rows)entries.push({candidateKey:sha({subjectHash:a.subjectHash,remoteAlbumId:row.id}),remoteAlbumId:row.id,title:row.name,artistName:row.artistName,identityLevel:'remote_album_id',provenance:'official-album-directory',source});
+  }
   if(input.includeOfficialReferences===true){
-   const references=await readOfficialPendingSongs(page);
+   const references=await readOfficialPendingSongs(page,{expectedSubjectHash:a.subjectHash});if(!coverage)coverage=references.coverage;sourceCoverage.push(references.coverage);
    for(const row of references.rows){
     if(entries.some(e=>e.remoteAlbumId===row.albumId)){if(entries.some(e=>e.remoteAlbumId===row.albumId&&e.title!==row.albumName))throw Error('ALBUM_REFERENCE_CONFLICT');continue;}
     entries.push({candidateKey:sha({subjectHash:a.subjectHash,remoteAlbumId:row.albumId}),remoteAlbumId:row.albumId,title:row.albumName,artistName:a.identity.artistName,identityLevel:'remote_album_id',provenance:'official-pending-song-reference',source});
    }
   }
   await account({subjectHash:a.subjectHash,binding:a.binding});const observedAt=stamp(),scope={subjectHash:a.subjectHash,binding:a.binding};
-  return{entries,scope,observedAt,evidenceHash:sha({entries,scope,observedAt}),source,onlineVerified:source==='official',completeness:'partial' as const,reasons:entries.length?[]:['VISIBLE_ALBUM_CANDIDATES_NOT_OPEN']};
+  const completeness=coverage?.source==='official-album-directory'&&coverage.complete?'complete' as const:'partial' as const;
+  const reasons=[...new Set([...(coverage?.reasons??[]),...(!entries.length&&completeness!=='complete'?['VISIBLE_ALBUM_CANDIDATES_NOT_OPEN']:[])])];
+  return{entries,scope,observedAt,evidenceHash:sha({entries,scope,observedAt,coverage,sourceCoverage}),source,onlineVerified:source==='official',completeness,reasons,coverage,sourceCoverage};
  }
  async function select(input:{candidateKey:string;title:string;artistName:string;expectedSubjectHash:string;expectedBinding:Binding}){
   const expected={subjectHash:input.expectedSubjectHash,binding:input.expectedBinding,artistName:input.artistName},a=await account(expected),entries=await visibleEntries(a),matches=entries.filter(e=>e.candidateKey===input.candidateKey);

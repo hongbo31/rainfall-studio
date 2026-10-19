@@ -1,6 +1,7 @@
 import {z} from 'zod';
 import type {Studio} from './studio';
 import {PlanCenterService} from './plan-center';
+import {preparePlanCoverWork,assertPlanCoverWork} from './plan-cover-work';
 import {planCatalog} from './plan-center-catalog';
 import {syncPlanDot,planDotStatus,exportPlanDotRequests,exportPlanDotBridge} from './plan-center-dot';
 import {syncPlanPublications,planPublicationStatus,planPublicationCapabilities} from './plan-center-publication';
@@ -10,6 +11,17 @@ import {tickPlanMusic} from './plan-center-music-stages';
 import {PlanCenterSaveSchema,PlanCenterToggleSchema,PlanCenterIdSchema,PlanCenterRunSchema,PlanCenterStopSchema,PlanCenterRetrySchema} from '../shared/plan-center';
 import type {PlanCenterStageAttempt} from '../shared/plan-center';
 const isAttempt=(value:unknown):value is PlanCenterStageAttempt=>!!value&&typeof (value as any).id==='string';
+function localAttempt(s:Studio,runId:string,itemId:string,stage:'cover'|'materials',next:{state:string;attemptId?:string},execute:(attempt:PlanCenterStageAttempt)=>void){
+ return s.repo.transaction(()=>{
+  const service=s.planCenterService(),rows=service.list(),run=rows.runs.find(r=>r.id===runId),item=rows.items.find(i=>i.id===itemId);
+  if(!run||!item||item.runId!==run.id||run.stopRequested||['completed','stopped','failed'].includes(run.state))return null;
+  const current=service.next({runId,itemId});if(!current||current.stage!==stage||current.state!==next.state)return null;
+  const attempt=next.state==='ready'?service.claim({runId,itemId,stage}):rows.stageAttempts.filter(a=>a.itemId===itemId&&a.stage===stage).at(-1);
+  if(!isAttempt(attempt)||attempt.state!=='dispatching'||attempt.runId!==runId||attempt.itemId!==itemId||attempt.stage!==stage||(next.state!=='ready'&&(attempt.id!==next.attemptId||current.attemptId!==attempt.id)))return null;
+  try{execute(attempt);}catch(error){service.record({attemptId:attempt.id,status:'failed',reason:error instanceof Error&&/^[A-Z0-9_]+$/.test(error.message)?error.message:'LOCAL_STAGE_FAILED'});}
+  return attempt;
+ });
+}
 
 export function createPlanCenterService(s:Studio){
  const service=new PlanCenterService(s.repo,{now:s.now,capabilities:{
@@ -40,6 +52,7 @@ export function executePlanCenter(s:Studio,method:string,raw:unknown){
   case 'planCenter.exportDotRequests':empty.parse(raw);return exportPlanDotRequests(s);
   case 'planCenter.publicationStatus':empty.parse(raw);return planPublicationStatus(s);
   case 'planCenter.bindWork':return bindPlanWork(s,raw);
+  case 'planCenter.prepareCoverWork':return preparePlanCoverWork(s,raw);
   case 'planCenter.selectVersion':return selectPlanVersion(s,raw);
   case 'planCenter.confirmMaterials':return confirmPlanMaterials(s,raw);
   case 'planCenter.materialPreview':return planMaterialPreview(s,PlanCenterIdSchema.parse(raw).id);
@@ -128,13 +141,17 @@ export function tickPlanCenter(s:Studio){
        if(attempt.state==='dispatching'||attempt.state==='waiting')service.record({attemptId:attempt.id,status:'failed',evidenceId:evaluation.id,reason:evaluation.reasons.join(','),result});
      }
     }catch(e:any){if(attempt.state==='dispatching')service.record({attemptId:attempt.id,status:'failed',reason:/^[A-Z0-9_]+$/.test(e.message)?e.message:'TEXT_CONFIGURATION_REQUIRED'});}
-   }else if(next.stage==='cover'&&next.state==='ready'&&(imported||boundItem.workId)){
+   }else if(next.stage==='cover'&&['ready','dispatching'].includes(next.state)&&(imported||boundItem.workId)){
     const score=service.list().stageAttempts.filter(a=>a.itemId===item.id&&a.stage==='text_score'&&a.state==='succeeded').at(-1);
-    const attempt=service.claim({runId:run.id,itemId:item.id,stage:'cover'});
-    if(!isAttempt(attempt))continue;
+    localAttempt(s,run.id,item.id,'cover',next,attempt=>{
     const boundWork=boundItem.workId?s.repo.maybe('works',boundItem.workId):null;
     const boundCover=boundWork?.assets?.cover?s.repo.maybe('assets',boundWork.assets.cover):null;
-    if(boundCover){try{s.locate(boundCover.id);service.record({attemptId:attempt.id,status:'succeeded',evidenceId:boundCover.id,result:{assetId:boundCover.id,sha256:boundCover.sha256,source:'user-bound-existing-work'}});continue;}catch{service.record({attemptId:attempt.id,status:'failed',reason:'COVER_MISSING_OR_CORRUPT'});continue;}}
+    if(boundItem.workId&&s.repo.maybe('settings','plan-cover-work:'+boundItem.id)){
+     const binding=assertPlanCoverWork(s,boundItem.workId)!;
+     const proof=s.coverHandoff().verifiedSelectedReceipt(boundItem.workId);
+     service.record({attemptId:attempt.id,status:'succeeded',evidenceId:proof.receipt.id,result:{assetId:proof.asset.id,sha256:proof.asset.sha256,requestId:proof.request.id,receiptId:proof.receipt.id,contextHash:proof.request.contextHash,finalPairHash:binding.finalPairHash,source:'user-import-final-cover',generationVerified:false}});return;
+    }
+    if(boundCover){try{s.locate(boundCover.id);service.record({attemptId:attempt.id,status:'succeeded',evidenceId:boundCover.id,result:{assetId:boundCover.id,sha256:boundCover.sha256,source:'user-bound-existing-work'}});return;}catch{service.record({attemptId:attempt.id,status:'failed',reason:'COVER_MISSING_OR_CORRUPT'});return;}}
     const asset=imported?.cover?.assetId?s.repo.maybe('assets',imported.cover.assetId):null;
     if(score?.result?.rewriteCount)service.record({attemptId:attempt.id,status:'failed',reason:'COVER_REFRESH_REQUIRED'});
     else if(asset&&asset.sha256===imported?.cover?.sha256){
@@ -142,10 +159,19 @@ export function tickPlanCenter(s:Studio){
      catch(e){service.record({attemptId:attempt.id,status:'failed',reason:e instanceof Error?e.message:'COVER_REQUIRED'});}
     }
     else service.record({attemptId:attempt.id,status:'failed',reason:'COVER_REQUIRED'});
-   }else if(next.stage==='materials'&&next.state==='ready'){
+    });
+   }else if(next.stage==='materials'&&['ready','dispatching'].includes(next.state)){
     if(run.snapshot.outputs.music||run.snapshot.authorization.publish){const material=syncPlanMaterials(s,run,service.list().items.find(i=>i.id===item.id)!);if(!material.ready)continue;}
-    const attempt=service.claim({runId:run.id,itemId:item.id,stage:'materials'});
-    if(isAttempt(attempt))service.record({attemptId:attempt.id,status:'succeeded',evidenceId:'local-materials:'+attempt.id,result:{prepared:true,submitted:false}});
+    localAttempt(s,run.id,item.id,'materials',next,attempt=>{
+     const current=service.list().items.find(i=>i.id===item.id)!;
+     if(current.workId&&s.repo.maybe('settings','plan-cover-work:'+current.id)){
+      const binding=assertPlanCoverWork(s,current.workId)!,proof=s.coverHandoff().verifiedSelectedReceipt(current.workId);
+      const cover=service.list().stageAttempts.filter(a=>a.itemId===item.id&&a.stage==='cover'&&a.state==='succeeded').at(-1);
+      const completed=cover?.result;
+      if(!completed||completed.assetId!==proof.asset.id||completed.sha256!==proof.asset.sha256||completed.receiptId!==proof.receipt.id||completed.contextHash!==proof.request.contextHash||completed.finalPairHash!==binding.finalPairHash)throw Error('COVER_MATERIAL_CHANGED');
+     }
+     service.record({attemptId:attempt.id,status:'succeeded',evidenceId:'local-materials:'+attempt.id,result:{prepared:true,submitted:false}});
+    });
    }else if(!run.stopRequested&&next.state!=='dispatching'&&next.state!=='unknown'){
     // Persist a capability/configuration blocker, rather than an unexplained perpetual pending state.
     service.claim({runId:run.id,itemId:item.id,stage:next.stage});

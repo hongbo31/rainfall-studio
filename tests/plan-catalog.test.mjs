@@ -10,3 +10,8 @@ test('Installed third-party/Pule adapter models show contract support without in
 test('real platform album catalogs are unavailable instead of populated with fixtures or manual IDs',()=>{
  const c=planCatalog(repo);assert.equal(c.platforms.length,5);for(const p of c.platforms){assert.equal(p.catalog.available,false);assert.deepEqual(p.catalog.albums,[]);assert.equal(p.albumCreate.available,false);assert.equal(p.albumAppend.available,false)}assert.equal(c.platforms.find(p=>p.id==='douyin').delivery,'video');
 });
+test('unimplemented platform album adapters are explicitly disabled while TME remains selectable',()=>{
+ const c=planCatalog(repo);
+ for(const id of ['netease','qishui','douyin']){const p=c.platforms.find(p=>p.id===id);assert.equal(p.albumAdapterImplemented,false);assert.equal(p.publication.queueAvailable,false);assert.equal(p.catalog.reason,'PLATFORM_ALBUM_ADAPTER_NOT_IMPLEMENTED');}
+ for(const id of ['qqmusic','kugou'])assert.equal(c.platforms.find(p=>p.id===id).albumAdapterImplemented,true);
+});

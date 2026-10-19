@@ -3,6 +3,9 @@
 @import "./desktop.css" layer(desktop);
 @import "./simple-publishing.css" layer(workflows);
 
+/* The plan theme has an unlayered muted rule. Keep this card's help text readable. */
+.cover-handoff .muted { color: #284866; }
+
 @layer system {
   :root {
     --font-ui:
@@ -22,6 +25,17 @@
   }
   body {
     font: 400 var(--text-body)/1.6 var(--font-ui);
+  }
+  .cover-handoff {
+    background: #f4f6ff;
+    border-color: #c6d5f0;
+    color: #193c65;
+  }
+  .cover-handoff :is(h3, p, details, label, .handoff-receipt span) {
+    color: #284866;
+  }
+  .cover-handoff .handoff-receipt {
+    border-color: #c6d5f0;
   }
   b,
   strong {

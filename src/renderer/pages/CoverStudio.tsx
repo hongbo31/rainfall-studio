@@ -42,6 +42,7 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
   const request = handoff.requests.find(
     (r: any) => r.id === requestId && r.workId === id,
   );
+  const planLocked=!!handoff.planRecovery?.locked;
   return (
     <>
       <PageHead title="封面工作室" />
@@ -130,6 +131,8 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
                 </label>
               )}
               <div className="cover-handoff" data-testid="cover-handoff">
+                {planLocked&&<p role="status">{handoff.planRecovery.reason==='STOP_REQUESTED'?'本次计划已停止，封面更新已锁定。':'计划最终材料已变化或执行已结束，封面更新已锁定。'}</p>}
+                {!!handoff.planRecovery&&!planLocked&&<p className="muted">按当前最终歌词接收并选择封面后，返回计划重试封面阶段。</p>}
                 <h3>导入图片</h3>
                 <p>
                   {handoff.receipts.length
@@ -138,7 +141,7 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
                 </p>
                 <button
                   className="primary"
-                  disabled={busy}
+                  disabled={busy||planLocked}
                   onClick={async () => {
                     setBusy(true);
                     try {
@@ -204,10 +207,12 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
                           );
                           await load();
                         }}
+                        disabled={planLocked}
                       >
                         导入结果清单
                       </button>
                       <button
+                        disabled={planLocked}
                         onClick={async () => {
                           await importAsset("coverResultImage", id, requestId);
                           await load();
@@ -233,7 +238,7 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
                           : "外部清单来源声明"}
                       </span>
                       <button
-                        disabled={work.assets.cover === r.assetId}
+                        disabled={planLocked||work.assets.cover === r.assetId}
                         onClick={() =>
                           call("work.selectAsset", {
                             workId: id,
@@ -249,7 +254,7 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
                     </div>
                   ))}
               </div>
-              <button onClick={() => importAsset("cover", id)}>
+              <button disabled={!!handoff.planRecovery} title={handoff.planRecovery?'请通过当前封面交接请求接收真实图片':undefined} onClick={() => importAsset("cover", id)}>
                 ＋ 导入本地封面
               </button>
               <HelpNote label="本地导入格式">
