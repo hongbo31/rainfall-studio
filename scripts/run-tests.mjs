@@ -23,6 +23,8 @@ const bundleEnvironment = {};
 for (const [entry, outfile] of [
   ["src/core/index.ts", "build/core.cjs"],
   ["src/main/api-credentials.ts", "build/api-credentials.cjs"],
+  ["src/main/credentials.ts", "build/vault.cjs"],
+  ["src/main/live-music.ts", "build/live-music.cjs"],
 ])
   await build({
     entryPoints: [entry],
