@@ -39,6 +39,19 @@ export async function readDeliveryPackage(
   const expected = new Set(
     textPackage.items.map((item) => item.externalItemId + ":" + item.revision),
   );
+  if (manifest.deliveryVersion === 2 && textPackage.schemaVersion !== 2)
+    throw Error("DELIVERY_REQUEST_ECHO_REQUIRED");
+  // A v1 wrapper must not broaden the scope of a request-aware text v2 item.
+  if (textPackage.schemaVersion === 2) {
+    expected.clear();
+    for (const item of textPackage.items) {
+      const outputs = item.requestEcho.outputs;
+      if (manifest.deliveryVersion === 2 && (!outputs.lyrics || outputs.music))
+        throw Error("DELIVERY_OUTPUTS_UNSUPPORTED");
+      if (outputs.cover)
+        expected.add(item.externalItemId + ":" + item.revision);
+    }
+  }
   if (
     manifest.images.length !== expected.size ||
     manifest.images.some(

@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto';
 import type {Locator,Page} from 'playwright-core';
 import {TmeAiPrepareBindingSchema,tmeAiSubjectHash} from '../../shared/tme-ai-prepare';
 import {TME_AI_INTAKE_FIELDS as intake} from './ai-intake-fields';
-import {readOfficialPendingSongs,readOfficialAlbumDirectory} from './official-browser-read';
+import {readOfficialPendingSongs,readOfficialAlbumDirectory,readOfficialSelectedAlbum} from './official-browser-read';
 import type {OfficialSourceCoverage} from './official-catalog-pagination';
 
 type Source='official'|'offline-fixture';
@@ -11,7 +11,7 @@ type Identity={kugouId:string;qqDisplayName:string;artistName:string};
 export type TmeAlbumBrowserAccount={identity:Identity;binding:Binding;observedAt?:string};
 type ValueReader={selector:string;attribute?:string};
 /** Main-only calibration. No renderer-supplied selector, route or contract is accepted by the broker.
- * A client correlation field and its independently observed result are required; a title is not
+ * Remote evidence of the original operation is required; a title is not
  * original-operation evidence. No corresponding production UI has been calibrated yet. */
 export type TmeAlbumCreateContract={
  version:string;source:Source;origin:string;createUrl:string;resultUrls:string[];
@@ -19,7 +19,7 @@ export type TmeAlbumCreateContract={
  identityMarkers:Array<{selector:string;identityKey:'artistName'|'subjectHash'|'kugouId'|'qqDisplayName'}>;
  fields:Array<{key:'title'|'artistName'|'description'|'idempotencyKey';selector:string;required:boolean}>;
  createControl:string;
- result:{container:string;albumId:ValueReader;title:ValueReader;idempotencyKey:ValueReader};
+ result:{container:string;albumId:ValueReader;title:ValueReader;idempotencyKey?:ValueReader};
 };
 export type TmeAlbumCreateClaim={
  operationId:string;idempotencyKey:string;requestHash:string;state:'dispatching'|'unknown';
@@ -51,8 +51,8 @@ function contractReason(c:TmeAlbumCreateContract|null,fixture:boolean){
   if(!c.resultUrls.length||routes.some(route=>{const u=new URL(route);return u.origin!==c.origin||!!u.username||!!u.password;}))throw Error();
   if(!['official','offline-fixture'].includes(c.source)||!text(c.version)||!shaPattern.test(c.evidenceHash)||!Number.isFinite(Date.parse(c.calibratedAt)))throw Error();
   if(!c.identityMarkers?.length||!c.identityMarkers.some(m=>m.identityKey==='artistName')||c.identityMarkers.some(m=>!text(m.selector)||!['artistName','subjectHash','kugouId','qqDisplayName'].includes(m.identityKey)))throw Error();
-  if(!c.fields?.length||!c.fields.some(f=>f.key==='title'&&f.required)||!c.fields.some(f=>f.key==='idempotencyKey'&&f.required)||new Set(c.fields.map(f=>f.key)).size!==c.fields.length||c.fields.some(f=>!['title','artistName','description','idempotencyKey'].includes(f.key)||!text(f.selector)||typeof f.required!=='boolean'))throw Error();
-  if(!text(c.createControl)||!text(c.result?.container)||[c.result.albumId,c.result.title,c.result.idempotencyKey].some(r=>!text(r?.selector)||r.attribute!==undefined&&!text(r.attribute)))throw Error();
+  if(!c.fields?.length||!c.fields.some(f=>f.key==='title'&&f.required)||new Set(c.fields.map(f=>f.key)).size!==c.fields.length||c.fields.some(f=>!['title','artistName','description','idempotencyKey'].includes(f.key)||!text(f.selector)||typeof f.required!=='boolean'))throw Error();
+  if(!text(c.createControl)||!text(c.result?.container)||[c.result.albumId,c.result.title,...(c.result.idempotencyKey?[c.result.idempotencyKey]:[])].some(r=>!text(r?.selector)||r.attribute!==undefined&&!text(r.attribute)))throw Error();
  }catch{return'ALBUM_CREATE_CONTRACT_INVALID';}
  return null;
 }
@@ -135,7 +135,9 @@ export function createTmeAlbumBrowserTransport(o:TmeAlbumBrowserOptions){
   const candidate=await one(page.locator(intake.albumOptions).filter({has:page.locator('.album-name').filter({hasText:exactText(input.title)})}).filter({has:page.locator('.singer-name').filter({hasText:exactText(input.artistName)})}));
   await candidate.click({timeout:10000,noWaitAfter:true});
   const selected=await one(page.locator(intake.selectedAlbum));if(normalized(await selected.innerText())!==input.title)throw Error('ALBUM_READBACK_REQUIRED');await account(expected);
-  return{...matches[0],observedAt:stamp(),onlineVerified:source==='official'};
+  const official=o.isolatedFixture===true?null:await readOfficialSelectedAlbum(page);
+  if(o.isolatedFixture!==true&&(!official||official.title!==input.title||official.artistName!==input.artistName))throw Error('ALBUM_READBACK_REQUIRED');
+  return{...matches[0],...(official?{remoteAlbumId:official.albumId,identityLevel:'remote_album_id' as const}:{}),observedAt:stamp(),onlineVerified:source==='official'};
  }
  function claim(input:TmeAlbumCreateClaim,write:boolean){
   if(!input||!text(input.operationId,200)||!text(input.idempotencyKey,200)||!shaPattern.test(input.requestHash)||!shaPattern.test(input.subjectHash)||!text(input.title,200)||!text(input.artistName,200)||input.description!==undefined&&(typeof input.description!=='string'||input.description.trim()!==input.description||input.description.length>20000)||!['dispatching','unknown'].includes(input.state)||!Number.isFinite(Date.parse(input.createdAt)))throw Error('ALBUM_CREATE_CLAIM_REQUIRED');
@@ -146,9 +148,14 @@ export function createTmeAlbumBrowserTransport(o:TmeAlbumBrowserOptions){
  const expected=(input:TmeAlbumCreateClaim)=>({subjectHash:input.subjectHash,binding:input.binding,artistName:input.artistName});
  async function value(root:Locator,reader:ValueReader){const locator=await one(root.locator(reader.selector));return normalized(reader.attribute?(await locator.getAttribute(reader.attribute)??''):await locator.innerText());}
  async function readOriginalResult(input:TmeAlbumCreateClaim):Promise<TmeAlbumCreateResult>{
-  await account(expected(input),'result');const rows=page.locator(c!.result.container),matches:Locator[]=[];
+  await account(expected(input),'result');
+  // The durable local idempotency key prevents local retries. The platform need
+  // not expose it. Without independent original-operation evidence, preserve the
+  // unknown result for manual review; title uniqueness is insufficient.
+  if(!c!.result.idempotencyKey)return unknown('ALBUM_ORIGINAL_OPERATION_EVIDENCE_REQUIRED');
+  const rows=page.locator(c!.result.container),matches:Locator[]=[];
   if(await rows.count()>100)return unknown('ALBUM_RESULT_AMBIGUOUS');
-  for(let i=0;i<await rows.count();i++){const row=rows.nth(i);if(await row.isVisible()&&await value(row,c!.result.idempotencyKey)===input.idempotencyKey)matches.push(row);}
+  for(let i=0;i<await rows.count();i++){const row=rows.nth(i);if(await row.isVisible()&&await value(row,c!.result.idempotencyKey!)===input.idempotencyKey)matches.push(row);}
   if(matches.length!==1)return unknown(matches.length?'ALBUM_RESULT_AMBIGUOUS':'ALBUM_ORIGINAL_RESULT_NOT_FOUND');
   const remoteAlbumId=await value(matches[0],c!.result.albumId),title=await value(matches[0],c!.result.title);
   if(!/^[a-zA-Z0-9_-]{1,100}$/.test(remoteAlbumId)||remoteAlbumId===title)return unknown('ALBUM_RESULT_ID_INVALID');

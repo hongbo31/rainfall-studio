@@ -6,7 +6,7 @@ import {TmeAiPrepareBindingSchema,TmeAiPrepareMetadataSchema,TmeAiPrepareSnapsho
 import {TmeAiSubmissionReceiptSchema} from '../../shared/tme-ai-submission';
 import {nativeSnapshot} from './ai-prepare';
 import {fillExistingTmeAiIntakeFields,TME_AI_INTAKE_FIELDS as fields} from './ai-intake-fields';
-import {readOfficialPendingSongs} from './official-browser-read';
+import {readOfficialPendingSongs,readOfficialSelectedAlbum} from './official-browser-read';
 
 const route=fields.route,origin='https://y.tencentmusic.com';
 const documentSha='d23d784fd9da1a9a3e0d8caec6ba264d4b89febc6dde91045c3ae90897df98e4';
@@ -97,13 +97,14 @@ function session(o:Options){
    await one(page.locator('.album-search:visible .selected:visible .album img:visible'));
    if(await page.locator('input[type="file"][accept*="image"]').count())throw Error('EXISTING_ALBUM_COVER_NOT_READ_ONLY');
    const contract=o.isolatedFixture===true&&o.albumIdReadback?.source==='fixture'?o.albumIdReadback:undefined;
-   const observed=contract?await contract.readSelectedAlbum(page):undefined;
+   const production=o.isolatedFixture===true?null:await readOfficialSelectedAlbum(page);
+   const observed=contract?await contract.readSelectedAlbum(page):production?{...production,subjectHash:a.who.subjectHash}:undefined;
    if(observed&&(observed.title!==album||typeof observed.albumId!=='string'||!observed.albumId.trim()||observed.subjectHash!==a.who.subjectHash))throw Error('EXISTING_ALBUM_READBACK_REQUIRED');
    raw.existingAlbum={title:album,...(observed?{albumId:observed.albumId}:{}),coverInherited:true,coverReadOnly:true};raw.coverState={manualSelected:false,generatorBanner:false,cropVisible:false,inherited:true,readOnly:true};
   }
   await account(input);return raw;
  }
- function metadata(input:any){if(input.existingAlbum?.albumId&&!(o.isolatedFixture===true&&o.albumIdReadback?.source==='fixture'))throw Error('ALBUM_ID_READBACK_CONTRACT_REQUIRED');const m=TmeAiPrepareMetadataSchema.parse(input.metadata);if(m.albumMode!=='existing'||m.version!=='完整版'||m.releaseMode!=='审核通过即发布')throw Error('EXISTING_ALBUM_MODE_REQUIRED');if(['把晚安留在门口','留一盏灯'].includes(m.title.normalize('NFKC')))throw Error('INTAKE_WORK_SCOPE');if(input.artistName&&input.artistName!==m.artistName)throw Error('ARTIST_IDENTITY_SCOPE');if(typeof input.lyricsText!=='string')throw Error('LYRICS_REQUIRED');return m}
+ function metadata(input:any){if(input.existingAlbum?.albumId&&o.isolatedFixture===true&&o.albumIdReadback?.source!=='fixture')throw Error('ALBUM_ID_READBACK_CONTRACT_REQUIRED');const m=TmeAiPrepareMetadataSchema.parse(input.metadata);if(m.albumMode!=='existing'||m.version!=='完整版'||m.releaseMode!=='审核通过即发布')throw Error('EXISTING_ALBUM_MODE_REQUIRED');if(['把晚安留在门口','留一盏灯'].includes(m.title.normalize('NFKC')))throw Error('INTAKE_WORK_SCOPE');if(input.artistName&&input.artistName!==m.artistName)throw Error('ARTIST_IDENTITY_SCOPE');if(typeof input.lyricsText!=='string')throw Error('LYRICS_REQUIRED');return m}
  function verify(raw:any,input:any){const m=metadata(input);for(const k of ['title','artistName','albumTitle','lyricist','composer','ownLyrics','ownComposition','aiTool','generatedOn','allowCover','genre','language','version','releaseMode'] as const)if(raw.form?.[k]!==m[k])throw Error('METADATA_READBACK_REQUIRED');if(raw.form?.lyrics!==input.lyricsText)throw Error('METADATA_READBACK_REQUIRED');if(raw.existingAlbum?.title!==m.albumTitle||input.existingAlbum?.albumId&&raw.existingAlbum?.albumId!==input.existingAlbum.albumId)throw Error('EXISTING_ALBUM_READBACK_REQUIRED')}
  return{page,stamp,capability,guard,one,account,checkbox,radio,checked,observe,metadata,verify,acceptedDocument};
 }

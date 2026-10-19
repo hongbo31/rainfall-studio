@@ -108,7 +108,7 @@ test("dot delivery contract and verifier exist", () => {
   );
 });
 
-test("strict manifest and READY accept only the delivery v1 envelope", () => {
+test("strict manifest and READY dispatch v1/v2 and reject unknown envelopes", () => {
   assert(contract.DeliveryManifestSchema, "DELIVERY_CONTRACT_MISSING");
   assert.deepEqual(
     contract.DeliveryManifestSchema.parse(manifest()),
@@ -130,7 +130,7 @@ test("strict manifest and READY accept only the delivery v1 envelope", () => {
   );
   for (const value of [
     { ...manifest(), extra: true },
-    { ...manifest(), deliveryVersion: 2 },
+    { ...manifest(), deliveryVersion: 3 },
     { ...manifest(), createdAt: "2026-10-18" },
     { ...manifest(), deliveryId: "../x" },
     { ...manifest(), targetWorkspaceRef: "" },
@@ -155,6 +155,12 @@ test("strict manifest and READY accept only the delivery v1 envelope", () => {
     },
   ])
     rejectSchema(value);
+  const lyricsOnly = { ...manifest(), deliveryVersion: 2, images: [] };
+  assert.deepEqual(
+    contract.DeliveryManifestSchema.parse(lyricsOnly),
+    lyricsOnly,
+  );
+  rejectSchema({ ...lyricsOnly, extra: true });
 });
 
 test("manifest rejects unsafe paths and mismatched content addressed filenames", () => {

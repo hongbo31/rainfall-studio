@@ -122,6 +122,7 @@ export class DotDeliveryReceiver {
       id,
       this.options.store.channel.workspaceRef,
     );
+    this.options.store.validatePackage(manifest, textPackage);
     const images = verifiedImages.map(({ descriptor, verified, bytes }) => {
       const { width, height, ...facts } = verified;
       return {

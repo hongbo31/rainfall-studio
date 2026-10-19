@@ -149,3 +149,10 @@ test('a field altered during the final account guard rejects before the create c
  const changing=createTransport({...x.options,account:async()=>{if(++reads===6)await x.page.locator('#title').fill('Altered after field readback');return x.accountState;}});
  await assert.rejects(changing.create(x.claim),/ALBUM_FIELD_READBACK_REQUIRED/);assert.equal(await x.page.locator('#title').inputValue(),'Altered after field readback');assert.equal((await x.clicks()).creates,0);
 });
+
+test('platform creation contract does not require a client idempotency form field, and title-only results stay unknown',async t=>{
+ const x=await fixture(t);const c=structuredClone(contract);c.fields=c.fields.filter(f=>f.key!=='idempotencyKey');delete c.result.idempotencyKey;
+ const transport=createTransport({...x.options,createContract:c});assert.equal(transport.capability().create.available,true);
+ const result=await transport.create(x.claim);assert.equal(result.status,'unknown');assert.equal(result.reason,'ALBUM_ORIGINAL_OPERATION_EVIDENCE_REQUIRED');assert.equal((await x.clicks()).creates,1);
+ assert.equal((await createTransport({...x.options,createContract:c}).reconcile({...x.claim,state:'unknown'})).status,'unknown');assert.equal((await x.clicks()).creates,1);
+});

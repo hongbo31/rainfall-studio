@@ -60,7 +60,9 @@ if(planCenter){
  fs.writeFileSync(path.join(dest,'README.txt'),'Rainfall Studio '+pkg.version+' unified plan center Windows portable candidate.\r\nSource: '+commit+'\r\nIsolated preview data root: '+data+'\r\nNo GUI was launched. Do not replace the formal desktop pointer with this candidate. No real music generation, terms acceptance or publishing was performed.\r\nThe plan is connected to existing managed YourMusic generation/query/download, A/B materials, dot request manifests and the unified publication queue. Validation used isolated fixture transports. Current account availability, dot external execution, real album catalog/create/append and online acceptance remain unverified or blocked. Third-party YourMusic/Suno routing is not an official Suno API connection.\r\nLaunch only after separate user authorization: RainfallStudioCandidate.exe. No installer, credentials or startup task is included.\r\n');
 }
 if(albumService){
- Object.assign(manifest,{albumServiceImplemented:true,albumCatalogCompleteness:'complete-when-both-directory-sources-traversed',albumPaginationImplemented:true,albumCreateAlgorithmImplemented:true,albumAppendUsesOriginalPipeline:true,productionAlbumCreateContractCalibrated:false,productionAlbumAppendContractCalibrated:false,offlineFixtureResultsAreOnlineVerified:false,actualDriveRequestsPathVerified:false,libraryDeliveryVerified:false});
+ const driveProofFile=path.resolve('output/drive-v2-acceptance-20261019/cloud-request-readback.json');
+ const driveReadbackVerified=fs.existsSync(driveProofFile)&&JSON.parse(fs.readFileSync(driveProofFile,'utf8')).passed===true;
+ Object.assign(manifest,{albumServiceImplemented:true,albumCatalogCompleteness:'complete-when-both-directory-sources-traversed',albumPaginationImplemented:true,albumCreateAlgorithmImplemented:true,albumAppendUsesOriginalPipeline:true,productionAlbumCreateContractCalibrated:false,productionAlbumAppendContractCalibrated:false,productionSelectedAlbumReaderImplemented:true,productionPositiveSelectedAlbumVerified:false,dotDirectoryDeliveryVersions:[1,2],lyricsOnlyDirectoryDeliverySupported:true,offlineFixtureResultsAreOnlineVerified:false,actualDriveRequestsPathVerified:driveReadbackVerified,driveRequestVerificationScope:'one isolated acceptance workspace; cloud byte readback only, producer return pending',libraryDeliveryVerified:false});
  for(const [from,to] of [
   ['docs/superpowers/specs/2026-10-19-album-service-design.md','album-service-design.md'],
   ['docs/acceptance/2026-10-19-album-service-status.md','album-service-status.md'],
@@ -69,6 +71,11 @@ if(albumService){
   ['docs/acceptance/2026-10-19-end-to-end-checklist.md','end-to-end-checklist.md'],
   ['docs/acceptance/2026-10-19-login-session-reuse.md','login-session-reuse.md'],
   ['docs/superpowers/specs/2026-10-19-plan-cover-recovery.md','cover-recovery-design.md'],
+  ['docs/acceptance/2026-10-19-production-album-mapping.md','production-album-mapping.md'],
+  ['docs/acceptance/2026-10-19-native-minimum-operations.md','native-minimum-operations.md'],
+  ['docs/integrations/dot-delivery-v2-lyrics-only.md','dot-lyrics-only-protocol.md'],
+  ['docs/integrations/2026-10-19-drive-v2-real-request-handoff.md','drive-v2-real-request-handoff.md'],
+  ['docs/release/drive-v2-0.11.2.md','drive-v2-release.md'],
  ])fs.copyFileSync(from,path.join(dest,'docs',to));
  fs.writeFileSync(path.join(dest,'candidate-manifest.json'),JSON.stringify(manifest,null,2));
  fs.appendFileSync(path.join(dest,'README.txt'),'\r\nAlbum service '+pkg.version+': scoped catalog/bindings, durable create/append operations, explicit confirmation and original-key reconciliation are implemented. Read-only directory observations were checked in one existing logged-in session; write algorithms and multi-page cases were tested with intercepted fixtures. Published and unpublished album directories have guarded full pagination; pending-song references have guarded cursor pagination; production create/result contracts and production append write integration remain uncalibrated. Other platform album adapters are explicitly disabled. See docs/album-service-status.md and docs/dot-drive-protocol.md. No Library save is claimed.\r\n');

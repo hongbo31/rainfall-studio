@@ -1,5 +1,7 @@
 # dot 计划请求与 Google Drive 交付协议
 
+本轮后续补充：目录交付新增向后兼容的 `deliveryVersion:2`，可按真实保存请求交付仅歌词，见 [仅歌词交付协议](./dot-delivery-v2-lyrics-only.md)。以下 directory v1 的强制封面语义继续保留；任何可匹配已保存请求的交付均不得越过该请求的 outputs 范围。已创建并经云端逐字节读回的一条隔离真实请求、owner/通道/回传目录见 [真实请求交接](./2026-10-19-drive-v2-real-request-handoff.md)，不修改下文历史证据的时间与结论。
+
 核对基线：2026-10-19，仓库 HEAD `d7d90d2`。本文件可单独交给父会话实现外部 producer。**请求投影 v2 是本地文件协议，不是 dot 触发 API**；实际 dot 执行、云端读取与投递由父会话协调。本文不授权生成音乐、发布作品或设置日程。
 
 封面工作室的“导出 dot 请求 JSON”属于独立的 CoverHandoff 手工交接协议，不是本文的 PlanDot 请求投影 v2 或 Drive directory delivery v1。其请求、结果清单、接收和显式选图由工作室入口处理，不能将工作室 JSON 直接放入下述 P/requests 或 P/incoming。歌词改写后的本地封面恢复复用该工作室流程，不修改已保存的 R，也不重发原计划请求。

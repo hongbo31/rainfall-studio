@@ -137,6 +137,7 @@ export class DotDeliveryBridge {
       id,
       this.options.store.channel.workspaceRef,
     );
+    this.options.store.validatePackage(snapshot.manifest, snapshot.textPackage);
     if (this.stopped) return;
     directory(deliveries);
     const stagingRoot = path.join(this.options.inboxRoot, "bridge-staging");

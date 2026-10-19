@@ -1,0 +1,243 @@
+{
+  "at": "2026-10-19T07:01:54.529Z",
+  "operation": "readonly-album-production-mapping",
+  "backgroundTarget": true,
+  "formActions": 0,
+  "uploads": 0,
+  "agreementsAccepted": 0,
+  "submissions": 0,
+  "primaryPreserved": true,
+  "tabSetPreserved": true,
+  "dom": {
+    "route": "#/user/manage/aiChoose/add",
+    "albumSearchRoots": 2,
+    "visibleAlbumSearchRoots": 1,
+    "visibleSelectedTitles": 0,
+    "albumSearchStateShape": [
+      {
+        "selectedIsNull": true,
+        "hasAlbumInfoProp": true,
+        "mode": "origin"
+      }
+    ]
+  },
+  "selected": {
+    "state": "none",
+    "albumIdVerified": false,
+    "positiveProductionSelectionVerified": false
+  },
+  "loadedOfficialScripts": [
+    {
+      "path": "/ystatic/1420.d8a8271d.js",
+      "sha256": "ae59bdaaecf8a813f615e03b741a05485c1d1b08b6e99b37d0e1fce07254c0fc",
+      "selectedRecordMapping": true,
+      "propagatedAlbumInfoMapping": true,
+      "createModeMapping": true,
+      "wholeAlbumSubmissionMapping": false,
+      "draftAlbumResponseMapping": false,
+      "clientIdempotencyKeyMentioned": false
+    },
+    {
+      "path": "/ystatic/8213.e5594efc.js",
+      "sha256": "d3b3d3cc5547541e05aa1b7f44b037bedd5ed7f4b9cfc73d86debec395c4b9e1",
+      "selectedRecordMapping": false,
+      "propagatedAlbumInfoMapping": false,
+      "createModeMapping": true,
+      "wholeAlbumSubmissionMapping": true,
+      "draftAlbumResponseMapping": true,
+      "clientIdempotencyKeyMentioned": false
+    }
+  ],
+  "requests": [
+    {
+      "path": "/v2/v2/account/userInfo",
+      "method": "GET"
+    },
+    {
+      "path": "/openapi/musician/operation/growthSystem/getRightTreeConfig",
+      "method": "GET"
+    },
+    {
+      "path": "/openapi/musician/musicianAgent/agentVisible",
+      "method": "POST"
+    },
+    {
+      "path": "/v2/v2/platform/privilege/queryPrivilegeRule",
+      "method": "GET"
+    },
+    {
+      "path": "/v2/v2/account/getAccountBindList",
+      "method": "GET"
+    },
+    {
+      "path": "/openapi/musician/third/platform/account/query",
+      "method": "GET"
+    },
+    {
+      "path": "/cd-gateway/musician/queryConfiguration",
+      "method": "POST"
+    },
+    {
+      "path": "/openapi/musician/newForce/share-ratio/info",
+      "method": "GET"
+    },
+    {
+      "path": "/openapi/musician/newForce/mark",
+      "method": "GET"
+    },
+    {
+      "path": "/v2/gray/hit",
+      "method": "GET"
+    },
+    {
+      "path": "/openapi/musician/hitBlack/query",
+      "method": "GET"
+    },
+    {
+      "path": "/v2/message/getNum",
+      "method": "GET"
+    },
+    {
+      "path": "/v2/message/getNumByBizType",
+      "method": "GET"
+    },
+    {
+      "path": "/openapi/musician/queryConfiguration",
+      "method": "POST"
+    },
+    {
+      "path": "/openapi/musician/operation/growthSystem/queryUserRightAggrRes",
+      "method": "GET"
+    },
+    {
+      "path": "/openapi/musician/queryConfiguration",
+      "method": "POST"
+    },
+    {
+      "path": "/openapi/musician/operation/originHotCompose/getStaticDetail",
+      "method": "GET"
+    },
+    {
+      "path": "/openapi/musician/musicianAgent/agentVisible",
+      "method": "POST"
+    },
+    {
+      "path": "/v2/v2/signing/common/signingInfo",
+      "method": "GET"
+    },
+    {
+      "path": "/openapi/musician/signing/contract/chooseList",
+      "method": "POST"
+    },
+    {
+      "path": "/openapi/musician/signing/checkSignExclusive",
+      "method": "POST"
+    },
+    {
+      "path": "/v2/v2/user/getUserInfo",
+      "method": "GET"
+    },
+    {
+      "path": "/openapi/musician/selfControl/companyMapping/allConfigList",
+      "method": "GET"
+    },
+    {
+      "path": "/openapi/musician/operation/activity/access/query",
+      "method": "GET"
+    },
+    {
+      "path": "/openapi/musician/signing/supplement/listTodoSupplements",
+      "method": "GET"
+    },
+    {
+      "path": "/openapi/musician/signing/renew/songRenewTodoTip",
+      "method": "GET"
+    },
+    {
+      "path": "/openapi/musician/v2/logo/show/",
+      "method": "GET"
+    },
+    {
+      "path": "/openapi/musician/transmit/v2/v2/user/getUserIndexInfo",
+      "method": "GET"
+    },
+    {
+      "path": "/openapi/musician/transmit/v2/v2/user/studentInfo",
+      "method": "GET"
+    },
+    {
+      "path": "/openapi/musician/singer/showSingerTag",
+      "method": "GET"
+    },
+    {
+      "path": "/openapi/musician/signing/renew/listSongRenewGroupByAlbum",
+      "method": "GET"
+    },
+    {
+      "path": "/v2/v2/auth/list",
+      "method": "GET"
+    },
+    {
+      "path": "/openapi/musician/aiPush/poll",
+      "method": "GET"
+    },
+    {
+      "path": "/openapi/musician/signing/renew/renewalSceneSwitch",
+      "method": "GET"
+    },
+    {
+      "path": "/openapi/musician/production/query",
+      "method": "GET"
+    },
+    {
+      "path": "/cd-gateway/musician/intelligent/entrance",
+      "method": "GET"
+    },
+    {
+      "path": "/v2/v2/album/searchAlbums",
+      "method": "GET"
+    },
+    {
+      "path": "/openapi/musician/signing/contract/chooseList",
+      "method": "POST"
+    },
+    {
+      "path": "/openapi/musician/signing/contract/chooseList",
+      "method": "POST"
+    },
+    {
+      "path": "/openapi/musician/smartCover/ibs/getToken",
+      "method": "GET"
+    },
+    {
+      "path": "/openapi/musician/queryConfiguration",
+      "method": "POST"
+    },
+    {
+      "path": "/v2/v2/signing/extend/availableCount",
+      "method": "GET"
+    },
+    {
+      "path": "/v2/v2/auth/list",
+      "method": "GET"
+    },
+    {
+      "path": "/v2/v2/album/searchAlbums",
+      "method": "GET"
+    },
+    {
+      "path": "/openapi/musician/popup/query",
+      "method": "GET"
+    },
+    {
+      "path": "/cd-gateway/musician/bulletin/list",
+      "method": "GET"
+    },
+    {
+      "path": "/cd-gateway/musician/account/sms/auth",
+      "method": "GET"
+    }
+  ],
+  "onlineReadVerified": true,
+  "completedAt": "2026-10-19T07:01:58.766Z"
+}

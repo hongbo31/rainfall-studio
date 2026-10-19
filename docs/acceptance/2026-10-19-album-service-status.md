@@ -1,4 +1,4 @@
-# 专辑链路能力状态（2026-10-19，0.11.1-preview.1）
+# 专辑链路能力状态（2026-10-19，0.11.2-preview.1）
 
 项目：C:\Users\31559\Documents\Codex\2026-10-15\task\rainfall-studio-unified-acceptance-20261018。独立候选仓库；不安装、不替换正式入口、不写原业务数据库。仅对已登录会话执行获准的后台只读查询；没有新账号绑定、新建专辑、真实上传、接受条款、生成扣费或发布。
 
@@ -9,9 +9,9 @@
 | 账号隔离目录 | 平台/账号/远端身份指纹隔离；保存来源、完整性、页数、行数、观察/过期时间和证据哈希 | 身份变化或过期即拒绝写入授权 |
 | TME 完整专辑目录 | 官方已发布/未发布列表，通过真实下一页遍历；核对请求/响应页号、页大小、过滤条件、总数、可见表格、远端 ID；双源结束才 complete | 本机后台只读实测：已发布 3、未发布 0；多页使用隔离浏览器回归，不冒充多页线上验收 |
 | 待发布歌曲专辑引用 | 页面自身滚动加载、观察 cursor 响应；检查前进、重复、列表前缀 | 读完仍只是 partial 专辑目录；本机会话待发布歌曲 0 |
-| 精确选择与 ID 绑定 | 同账号新鲜目录中的稳定远端 ID 才可绑定；拒绝歧义 | 不从猜测属性或同标题推断 ID |
+| 精确选择与 ID 绑定 | 同账号新鲜目录中的稳定远端 ID 才可绑定；新增生产可见标题、官方 selected.id/name 与 albumInfo.id/name 一致回读 | 后台实测当前选择为 none；阳性回读待用户有现成选择时只读验收，不从猜测属性或同标题推断 ID |
 | 新建专辑 | Core/Main/浏览器算法、一次发送、持久 claim、原操作 key/独立结果回读、重启 unknown 已实现并隔离测试 | 生产创建合同为 null，明确关闭；真实写入未验收 |
-| 追加歌曲 | 原任务 metadata overlay、准备/权利条款/提交/回执链、专辑 ID 校验及 Core 写入授权边界已实现 | EXISTING_ALBUM_WRITE_INTEGRATION_UNVERIFIED 保持关闭；实际生产选中 ID 回读未实现 |
+| 追加歌曲 | 原任务 metadata overlay、准备/权利条款/提交/回执链、专辑 ID 校验及 Core 写入授权边界已实现；已接入真实官方选中 ID 读取函数 | EXISTING_ALBUM_WRITE_INTEGRATION_UNVERIFIED 保持关闭；实际生产阳性选中与贯通写入未验收 |
 | QQ/酷狗 TME 家族 | 同账号共享防重、冲突拒绝、后续运行复用 | 遵守相同写入门禁 |
 | 网易云/汽水/抖音专辑执行 | 未实现；计划表单明确禁用，Core 选择/创建/追加/队列入口拒绝 PLATFORM_ALBUM_ADAPTER_NOT_IMPLEMENTED | 抖音视频另行接入，不承诺无人值守全平台 |
 | 未知与重启 | 发送前持久 claim；unknown 只查原操作；未发送可重新准备并确认 | 无可信结果保持 unknown，不凭标题认定成功或重发 |
@@ -24,9 +24,9 @@
 
 这里是机器可验证的页面、动作和结果回读规则，不是法律或商业合同，也不等于“缺登录”。
 
-创建需要：合同版本、来源/源站、创建 URL、结果 URL、校准时间与证据哈希；唯一账号身份标记；标题、艺人、描述和幂等 key 等必填字段的稳定控件；创建按钮；独立结果容器、真实 albumId、标题、可再次读取的原操作 idempotencyKey。当前缺生产页面对应的可信取值及写入验收，生产常量为 null。平台若没有可验证的原操作关联，安全路径是人工创建后导入官方真实 ID，同标题不能替代。
+创建需要：合同版本、来源/源站、创建 URL、结果 URL、校准时间与证据哈希；唯一账号身份标记；平台实际存在的标题、艺人、描述等必填控件和创建按钮；原次保存响应及独立远端结果。平台不必提供本地幂等 key；它仍用于客户端持久防重。官方已加载脚本证实草稿保存响应取 data.albumId 并写入 form.id，但本轮没有执行保存来取得阳性回执。生产合同仍为 null。缺少原次响应或其他可唯一归属证据时保留 unknown/manual_review；同标题、最新一条或艺人加标题不能替代原操作证据。详见 2026-10-19-production-album-mapping.md。
 
-追加还缺：生产表单实际选中 albumId 的可信回读（当前接缝仅 fixture），文件选择/上传、metadata、下一步、远端保存、条款文档摘要与接受、提交和原回执的动作/回读映射及贯通写入验收。Windows UIA 另缺唯一账号身份合同。目录 ID 与账号指纹不能代替这些条件。
+追加的生产选中 albumId 读取已按官方组件状态实现并经隔离阳性/冲突测试，实际后台读到空选择。仍缺生产阳性选中、文件选择/上传、metadata、下一步、远端保存、条款文档摘要与接受、提交和原回执的动作/回读映射及贯通写入验收。Windows UIA 另缺唯一账号身份合同。目录 ID 与账号指纹不能代替这些条件。
 
 已登录账号只读检查可以解决目录/分页、身份、可见字段/按钮、已加载官方脚本、已有专辑 ID、可见选中状态和已有回执的证据。此次已完成目录和真实分页机制调查；进一步只读观察可以减少页面映射缺口。但只读不能证明创建副作用、上传保存、接受条款、提交成功、失联恢复和真实原操作关联。本阶段不执行这些生产写入，门禁继续关闭。
 
@@ -46,12 +46,12 @@ fixture 保留 offline-fixture、onlineVerified=false；旧回执带 source:offi
 
 旧 0.8.3 实际 Core 生成合成旧配置，再由新版迁移及独立进程重开：ID、配置和媒体 SHA 保留，schema 3 兼容；旧执行器移交统一计划并要求配置复核，不自动收费/投稿。此证据不是原业务数据库迁移验收。实际包的对应复验见 output/upgrade-compatibility-latest.json、output/upgrade-compatibility-reopen-latest.json 和 output/album-package-validation.json。
 
-正式入口仍为 0.8.3-preview.2，14 个受信程序文件哈希与启动脚本只读核对通过。原指针、脚本与快捷方式已备份到 output/desktop-upgrade-preflight-20261019；未读原库内容、未改正式入口。完整候选只是中间产物；当前无可见窗口阶段不能冒充同一桌面入口、原数据/播放/单实例的原生验收。逐项清单见 docs/acceptance/2026-10-19-end-to-end-checklist.md，精确提交、包和附件结果以同版交付报告为准。
+正式入口仍为 0.8.3-preview.2，14 个受信程序文件哈希与启动脚本只读核对通过。原指针、脚本与快捷方式已备份到 output/desktop-upgrade-preflight-20261019；本轮按新增授权只读查询原库的 inbox 绑定及 owner 字段，不读作品内容或凭据、不修改原库/正式计划/正式入口。完整候选只是中间产物；当前无可见窗口阶段不能冒充同一桌面入口、原数据/播放/单实例的原生验收。最小操作见 docs/acceptance/2026-10-19-native-minimum-operations.md，精确提交、包和附件结果以同版交付报告为准。
 
 ## dot / Drive
 
 完整协议见 docs/integrations/dot-plan-drive-protocol-20261019.md。2026-10-19 04:58:01 UTC 固定路径只读检查确认 G:\我的云端硬盘\Rainfall Studio\dot-delivery 的 incoming、receipts 存在，requests 不存在。
 
-入站/回执可供受信配置复用；未证明当前 v2 请求已投递、已被 producer 消费或存在 dot API。本阶段没创建 Drive 目录或请求。父会话须核对当前运行状态、同一云端目录与可信 owner，再接实际 producer；不能凭历史盘符猜另一台机器绑定。
+随后本轮已获明确授权创建隔离子项目 acceptance-v2-20261019，核验当前正式绑定后避开共享 incoming/requests，保存并导出一条真实歌词+封面、music=false/autopublish=false 请求。独立重开 unchanged；Google Drive 云端逐字节回读匹配 owner、通道、工作区、R 和哈希。完整真实请求与云端目录见 docs/integrations/2026-10-19-drive-v2-real-request-handoff.md。尚无 producer 回传，不能声称生成、收件、封面入库或云端回执闭环完成。未修改正式每日计划，没有音频或发布。目录交付新增向后兼容的 v2 仅歌词路径，不为歌词单选暗中增加封面；详见 dot-delivery-v2-lyrics-only.md。
 
 封面仍由明确标记的外部工作流导入，不假设免费 Codex 图像 API。Suno 公开官方生成 API 未核实，真实生成、发布及统计按各自状态展示。

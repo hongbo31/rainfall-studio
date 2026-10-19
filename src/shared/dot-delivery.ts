@@ -51,14 +51,21 @@ const DeliveryImageSchema = z
 
 export const DeliveryManifestSchema = z
   .strictObject({
-    deliveryVersion: z.literal(1),
+    deliveryVersion: z.union([z.literal(1), z.literal(2)]),
     deliveryId: InboxId,
     createdAt: at,
     targetWorkspaceRef: reference,
     text: z.strictObject({ file: z.literal("text.json"), sha256 }),
-    images: z.array(DeliveryImageSchema).min(1).max(20),
+    images: z.array(DeliveryImageSchema).max(20),
   })
   .superRefine((manifest, ctx) => {
+    // v1 always means text plus one cover per item. Only explicit v2 can omit covers.
+    if (manifest.deliveryVersion === 1 && manifest.images.length === 0)
+      ctx.addIssue({
+        code: "custom",
+        message: "DELIVERY_COVER_REQUIRED",
+        path: ["images"],
+      });
     const files = new Set<string>(["text.json", "manifest.json", "ready.json"]);
     const covers = new Set<string>();
     for (const [index, image] of manifest.images.entries()) {

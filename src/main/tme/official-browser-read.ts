@@ -281,3 +281,32 @@ export async function readOfficialReleasedSong(page:Page,expected:{id:string;nam
   const observedAt=new Date().toISOString();return{row:{id:expected.id,name:expected.name,albumId:expected.albumId,albumName:expected.albumName,artistName:expected.artistName,status:'published',officialStatusText:'审核通过',platformStatusText:record.platformPublishStatusStr.replace(/<br\s*\/?>/gi,'；'),officialPublishedAtText:String(record.publishTimeStr??''),observedAt},url};
  }finally{await temporary.close()}
 }
+
+/** Read-only production mapping observed in 1420.d8a8271d.js on 2026-10-19.
+ * The displayed selected.name and the component's selected.id must agree with the
+ * propagated albumInfo. A title, list position, DOM data-id or prefilling alone is
+ * never albumId evidence. Does not select, emit, save or submit anything. */
+export async function readOfficialSelectedAlbum(page:Page):Promise<{albumId:string;title:string;artistName:string;provenance:'official-selected-album-state'}|null>{
+ const route='https://y.tencentmusic.com/#/user/manage/aiChoose/add';
+ if(page.url()!==route)throw Error('ALBUM_INTAKE_ROUTE_REQUIRED');
+ const artistName=await liveArtist(page);
+ const selected=await page.evaluate(()=>{
+  const fail=()=>{throw Error('ALBUM_SELECTED_STATE_UNVERIFIED')};
+  const visible=(el:Element)=>{if(!el.isConnected||!el.getClientRects().length)return false;for(let p:Element|null=el;p;p=p.parentElement){const s=getComputedStyle(p);if(s.display==='none'||s.visibility==='hidden'||s.visibility==='collapse'||Number(s.opacity)===0||p.getAttribute('aria-hidden')==='true')return false;}return true;};
+  const roots=Array.from(document.querySelectorAll('.album-search')).filter(visible);
+  if(roots.length!==1)return fail();
+  const root=roots[0],vm=(root as Element&{__vue__?:any}).__vue__;
+  if(!vm||vm.$el!==root||vm.$props?.mode!=='origin')return fail();
+  const record=vm.$data?.selected,info=vm.$props?.albumInfo;
+  const titles=Array.from(root.querySelectorAll('.selected .album strong')).filter(visible);
+  if(record===null&&titles.length===0&&!info?.id&&info?.mode!=='exit')return null;
+  if(!record||!info||titles.length!==1||record.prefillFlag||info.prefillFlag||info.mode!=='exit')return fail();
+  const id=(value:unknown)=>{if(typeof value==='number'&&(!Number.isSafeInteger(value)||value<=0))return fail();const s=typeof value==='number'?String(value):value;if(typeof s!=='string'||!/^[1-9]\d{0,29}$/.test(s))return fail();return s;};
+  const albumId=id(record.id);if(id(info.id)!==albumId)return fail();
+  const title=(titles[0] as HTMLElement).innerText.trim().replace(/\s+/g,' ');
+  if(!title||title.length>200||typeof record.name!=='string'||typeof info.name!=='string'||record.name.trim().replace(/\s+/g,' ')!==title||info.name.trim().replace(/\s+/g,' ')!==title)return fail();
+  return{albumId,title};
+ });
+ if(page.url()!==route||await liveArtist(page)!==artistName)throw Error('ACCOUNT_CHANGED');
+ return selected?{...selected,artistName,provenance:'official-selected-album-state'}:null;
+}

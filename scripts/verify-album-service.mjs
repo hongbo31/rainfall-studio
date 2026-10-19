@@ -2,7 +2,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
-const out=path.resolve('output/album-integration/final-verification');fs.mkdirSync(out,{recursive:true});
+const outIndex=process.argv.indexOf('--output');
+const out=path.resolve(outIndex<0?'output/album-integration/final-verification':process.argv[outIndex+1]??'');
+if(!out.startsWith(path.resolve('output')+path.sep))throw Error('WORKSPACE_OUTPUT_REQUIRED');
+fs.mkdirSync(out,{recursive:true});
 const electron=path.resolve('node_modules/electron/dist/electron.exe');
 const checks=[
  ['unit',false,['--test','tests.mjs']],
@@ -17,6 +20,8 @@ const checks=[
  ['album-review-regressions',true,['scripts/test-plan-album-review-fixes.mjs']],
  ['album-main-broker',false,['scripts/test-plan-album-broker.mjs']],
  ['album-pagination',false,['--test','tests/album-pagination.test.mjs']],
+ ['album-selected-production-mapping',false,['--test','tests/official-selected-album.test.mjs']],
+ ['dot-lyrics-only-delivery',true,['--test','tests/dot-delivery-lyrics.test.mjs']],
  ['album-browser',true,['--test','tests/album-browser.test.mjs','tests/ai-existing-album-browser.test.mjs','tests/existing-album-core.test.mjs','tests/official-browser-read.test.mjs']],
  ['album-real-e2e',false,['scripts/test-plan-album-e2e.mjs']],
  ['album-main-legacy',false,['--test','tests/main-existing-album-prepare.test.mjs','tests/tme-intake-fields.test.mjs']],
