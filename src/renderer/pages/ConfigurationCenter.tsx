@@ -10,6 +10,7 @@ import TextConfiguration from "../components/TextConfiguration";
 import TextCandidates from "../components/TextCandidates";
 import DirectoryTaskSettings from "../components/DirectoryTaskSettings";
 import FirstSetup from "../components/FirstSetup";
+import ThemeSettings from "../components/ThemeSettings";
 import Accounts from "./Accounts";
 import PublicationDiagnostics from "./PublicationDiagnostics";
 
@@ -19,6 +20,7 @@ const categories = [
   ["inbox", "目录与收件"],
   ["artists", "艺人与预算"],
   ["diagnostics", "诊断与历史"],
+  ["appearance", "外观"],
 ] as const;
 function moveTab(event: React.KeyboardEvent<HTMLButtonElement>) {
   if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
@@ -88,7 +90,7 @@ export default function ConfigurationCenter({
         id={"category-panel-" + category}
         aria-labelledby={"category-" + category}
       >
-        {category === "platforms" ? (
+        {category === "appearance" ? <ThemeSettings /> : category === "platforms" ? (
           <>
             <div
               className="platform-tabs"

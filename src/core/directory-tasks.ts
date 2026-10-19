@@ -25,6 +25,7 @@ export class DirectoryTaskController{
  private checkRoot(root:string,expected?:DirectoryTaskSource['rootIdentity']){
   if(!path.isAbsolute(root)||root.startsWith('\\\\'))throw Error('DIRECTORY_SCOPE_REJECTED');
   const absolute=path.resolve(root),parts=path.parse(absolute);
+  if(!fs.existsSync(absolute))throw Error('DIRECTORY_ROOT_UNAVAILABLE');
   if(absolute===parts.root||within(absolute,this.options.dataRoot)||within(this.options.dataRoot,absolute))throw Error('DIRECTORY_SCOPE_REJECTED');
   const prohibited=[process.env.WINDIR,process.env.PROGRAMFILES,process.env['PROGRAMFILES(X86)'],process.env.PROGRAMDATA,process.env.LOCALAPPDATA,process.env.APPDATA,process.env.USERPROFILE?path.join(process.env.USERPROFILE,'.ssh'):undefined,process.env.USERPROFILE?path.join(process.env.USERPROFILE,'.aws'):undefined,process.env.USERPROFILE?path.join(process.env.USERPROFILE,'.codex'):undefined].filter(Boolean) as string[];
   if(prohibited.some(p=>within(absolute,p)||within(p,absolute)))throw Error('DIRECTORY_SCOPE_REJECTED');

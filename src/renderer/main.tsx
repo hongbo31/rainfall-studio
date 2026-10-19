@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 import "./ui-system.css";
 import "./plan-center.css";
+import "./themes.css";
+import { initializeTheme } from "./theme";
 import PlanCenter from "./pages/PlanCenter";
 import HelpHint from "./components/HelpHint";
 import { clientVersionLabel } from "./client-version";
@@ -21,6 +23,7 @@ import {
   type PublishSelection,
 } from "../shared/platform-config";
 import ChatCreation from "./pages/ChatCreation";
+initializeTheme();
 const pages = [
   ["plans", "◷", "计划中心"],
   ["chat", "♫", "创作中心"],
@@ -273,7 +276,7 @@ function App() {
         </header>
         <div id="content">
           {page === "plans" ? (
-            <PlanCenter />
+            <PlanCenter initialRunId={id} />
           ) : page === "chat" ? (
             <ChatCreation />
           ) : page === "overview" ? (

@@ -29,6 +29,7 @@ const stateNames: Record<string, string> = {
   stopped: "已停止",
 };
 const errorNames: Record<string, string> = {
+  DIRECTORY_ROOT_UNAVAILABLE: "目录已不可用，请恢复文件夹或更换目录。",
   REVISION_CONFLICT: "配置已变化，请刷新后重试。",
   DIRECTORY_PLAN_CHANGED: "计划已更新，请重新保存目录绑定。",
   DIRECTORY_SOURCE_PAUSED: "扫描已暂停，请先启用扫描。",
@@ -573,7 +574,7 @@ export default function DirectoryTaskSettings({
                                 <button
                                   type="button"
                                   title={entry.runId}
-                                  onClick={() => go("plans")}
+                                  onClick={() => go("plans", entry.runId)}
                                 >
                                   查看运行
                                 </button>
