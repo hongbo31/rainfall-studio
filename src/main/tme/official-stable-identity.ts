@@ -267,6 +267,11 @@ function same(a: StableIdentityView, b: StableIdentityView) {
   );
 }
 
+/** Main-only local recheck of already loaded official fields. No navigation or request. */
+export async function readLoadedOfficialStableIdentity(page:Page){
+  return validateView(await view(page));
+}
+
 /** Existing approved context only. Opens/closes one background read page, preserves the
  * user's original page, does not call an API directly and never creates a binding. */
 export async function readFreshOfficialStableIdentity(

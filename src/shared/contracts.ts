@@ -4,7 +4,7 @@ export type RpcResult =
   | { ok: false; error: { code: string; message: string } };
 export interface Bridge {
   tmeAiSubmission(action:'preflight'|'status'|'authorizeAndSubmit'|'reconcile',input?:unknown):Promise<RpcResult>;
-  tmeAiPrepare(action:'inspect'|'register'|'list'|'context'|'start'|'run'|'reconcile'|'resumePicker'|'resumeCrop',input?:unknown):Promise<RpcResult>;
+  tmeAiPrepare(action:'inspect'|'register'|'list'|'context'|'start'|'run'|'reconcile'|'resumePicker'|'resumeCrop'|'connectBrowser'|'browserStatus'|'disconnectBrowser',input?:unknown):Promise<RpcResult>;
   productionFlow(action:'savePlan'|'enable'|'disable'|'trigger'|'list'|'context'|'next'|'approve'|'retry'|'capability'|'useManualAssets',input?:unknown):Promise<RpcResult>;
   liveText(action:'prepare'|'run'|'list'|'context',input?:unknown):Promise<RpcResult>;
   liveMusic(action:'stage'|'submit'|'status'|'import'|'recover'|'retryDownloads',input?:unknown):Promise<RpcResult>;

@@ -43,6 +43,7 @@ import {createProductionFlowBroker,blockedTmePublicationPort} from './production
 import {createTmeAiPrepareBroker,TmeAiNativePort,nativeSnapshot} from './tme/ai-prepare';
 import {createTmeAiSubmissionBroker} from './tme/ai-submission';
 import {TmeAiCloudSessionManager} from './tme/ai-cloud-session';
+import {createAccountIdentityBroker} from './account-identity-broker';
 import {createUnifiedPublishBroker,createTmeAiTransportProvider} from './tme/unified-publish';
 import {externalReceiptBarrier,persistExternalReceiptBarrier,persistExternalReceiptStop} from './tme/external-receipt-barrier';
 import {installNativeDiagnostics} from './native-diagnostics';
@@ -141,6 +142,8 @@ const productionTransport=new WindowsUiaTransport(path.join(__dirname,'tme-uia-h
 const productionFlow=createProductionFlowBroker({credentials:apiCredentials,rpc:(method,input)=>rpc(method,input),available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,publication:blockedTmePublicationPort(productionTransport)});
 const tmeAiNative=new TmeAiNativePort(path.join(__dirname,'tme-ai-uia-host.ps1'));
 const tmeAiCloud=new TmeAiCloudSessionManager({enableExistingAlbum:true,available:()=>mode==='production'&&!switching&&!closing});
+const accountIdentity=createAccountIdentityBroker({session:tmeAiCloud,rpc:(method,input)=>rpc(method,input),available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration});
+tmeAiCloud.onIdentityInvalidated(()=>{try{child?.postMessage({kind:'account-identity-invalidated'})}catch{/* Old worker already stopped. */}});
 // Cloud sessions and calibrated browser contracts must be supplied by Main, never renderer flags.
 const tmeAiTransport=createTmeAiTransportProvider({platform:process.platform,cloudSession:()=>tmeAiCloud.submissionSession(),cloudExistingAlbumSession:()=>tmeAiCloud.existingAlbumSession(),readExternalReceipt:async(context)=>{const receipt=await tmeAiCloud.readExternalReceipt(context);persistExternalReceiptBarrier(root,receipt);return receipt},cloudPreparationSession:()=>tmeAiCloud.preparationSession(),native:tmeAiNative,nativeObserve:async(context)=>{
   const g=context.grant.input;
@@ -182,6 +185,10 @@ function startCore() {
     child.stdout?.on("data", (b) => console.log(b.toString()));
     child.stderr?.on("data", (b) => console.error(b.toString()));
     child.on("message", (m) => {
+      if(m.kind==='account-identity-request'){
+        const generation=coreGeneration,assertCurrent=()=>{if(child!==worker||generation!==coreGeneration)throw Error('STALE_CORE_GENERATION')};
+        void accountIdentity.provider(m,assertCurrent).then(value=>{if(child===worker&&generation===coreGeneration)worker.postMessage({kind:'account-identity-result',id:m.id,ok:true,value})},error=>{if(child===worker&&generation===coreGeneration){const code=error instanceof Error&&/^[A-Z0-9_]{1,100}$/.test(error.message)?error.message:'IDENTITY_READ_FAILED';worker.postMessage({kind:'account-identity-result',id:m.id,ok:false,error:{code}})}});return;
+      }
       if(m.kind==='music-provider'){
         const generation=coreGeneration;
         const assertCurrent=()=>{if(child!==worker||generation!==coreGeneration)throw Error('STALE_CORE_GENERATION')};
@@ -324,6 +331,7 @@ function handlers() {
     safe(async () => {
       trusted(e);
       const parsed = validate(method, input);
+      if(method.startsWith('accountIdentity.'))return{ok:true,value:await accountIdentity.ui(method.slice('accountIdentity.'.length),parsed)};
       if(method==='directoryTasks.chooseDirectory')return chooseDirectoryTaskSource(parsed,{
         capture:()=>({mode,generation:coreGeneration,epoch:importEpoch,available:!switching&&!closing}),
         choose:()=>dialog.showOpenDialog(window,{title:'选择任务请求目录',properties:['openDirectory']}),rpc,

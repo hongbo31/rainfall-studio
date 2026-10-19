@@ -30,8 +30,10 @@ export async function backup(s: Studio, destination: string) {
   fs.mkdirSync(dir, { recursive: true });
   try {
     const db = path.join(dir, "database.sqlite");
-    await s.db.backup(db);
-    const copy = new Repository(db);
+    // Node fs accepts long Windows paths, while SQLite needs the extended-length form.
+    const sqlitePath = path.toNamespacedPath(db);
+    await s.db.backup(sqlitePath);
+    const copy = new Repository(sqlitePath);
     copy.db.prepare("DELETE FROM approvals").run();
     copy.close();
     const files = [
@@ -196,7 +198,9 @@ export async function restore(s: Studio, source: string) {
         throw Error("BACKUP_HASH");
     }
     if (!names.has("database.sqlite")) throw Error("DATABASE_MISSING");
-    const candidate = new Repository(path.join(stage, "database.sqlite"));
+    const candidate = new Repository(
+      path.toNamespacedPath(path.join(stage, "database.sqlite")),
+    );
     try {
       assertRestoreSafe(s);
       const prepareEvidence=(row:Record<string,any>)=>/^tme-ai-prepare:(grant|job):/.test(row.id);

@@ -1,4 +1,4 @@
-import {AccountIdentityService} from './account-identity';
+import {AccountIdentityService,type AccountIdentityAdapter} from './account-identity';
 import {readGenerationConfig,saveGenerationConfig} from './generation-config';
 import {prepareManualCreation,listManualCreations} from './manual-creation';
 import {unifiedPublicationService,savePublicationMetadata} from "./unified-publication-integration";
@@ -73,7 +73,7 @@ export class Studio {
   closing = false;
   private identity?:AccountIdentityService;
   private identityRepo?:Repository;
-  accountIdentityService(){if(!this.identity||this.identityRepo!==this.repo){this.identity=new AccountIdentityService(this.repo,{now:this.now});this.identityRepo=this.repo;}return this.identity;}
+  accountIdentityService(){if(!this.identity||this.identityRepo!==this.repo){this.identity=new AccountIdentityService(this.repo,{now:this.now,adapters:this.mode==='production'&&this.options.accountIdentityAdapter?[this.options.accountIdentityAdapter]:[]});this.identityRepo=this.repo;}return this.identity;}
   private creative?: CreationService;
   private music?: MusicService;
   private daily?: DailyScheduler;
@@ -251,7 +251,7 @@ export class Studio {
   constructor(
     public root: string,
     public mode: Mode,
-    private options: { now?: () => Date;musicAdapter?:MusicAdapter;albumServiceFactory?:(studio:Studio)=>PlanAlbumService } = {},
+    private options: { now?: () => Date;musicAdapter?:MusicAdapter;accountIdentityAdapter?:AccountIdentityAdapter;albumServiceFactory?:(studio:Studio)=>PlanAlbumService } = {},
   ) {
     this.now = options.now || (() => new Date());
     this.lastTick = this.now();

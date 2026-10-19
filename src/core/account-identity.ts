@@ -12,6 +12,7 @@ import {
 export type AccountIdentityAdapter={
  provider:string;source:'official'|'offline-fixture';contractVersion:string;evidenceHash:string;
  read:(scope:Readonly<AccountIdentitySelection>)=>Promise<unknown>;
+ checkSession?:(sessionRef:string)=>Promise<boolean>;
 };
 type Options={environment?:'production'|'test';now?:()=>Date;adapters?:readonly AccountIdentityAdapter[]};
 type Login={state:AccountIdentityLoginState;observedAt?:string;sessionRef?:string};
@@ -24,7 +25,9 @@ export class AccountIdentityService{
  private readonly logins=new Map<string,Login>();
  private readonly busy=new Set<string>();
  private readonly adapters:readonly AccountIdentityAdapter[];
+ private epoch=0;
  constructor(private readonly repo:Repository,private readonly options:Options={}){this.adapters=[...(options.adapters??[])];}
+ invalidateSessions(){this.epoch++;this.logins.clear();}
  private now(){return this.options.now?.()??new Date();}
  private stamp(){return this.now().toISOString();}
  private rows():AccountIdentityBinding[]{return this.repo.all('settings').filter(r=>r.kind===kind&&r.id===prefix+r.value?.id).map(r=>AccountIdentityBindingSchema.parse(r.value));}
@@ -57,7 +60,8 @@ export class AccountIdentityService{
   this.busy.add(key);
   for(const prior of this.rows().filter(b=>b.accountId===selection.accountId&&b.provider===selection.provider))this.logins.set(prior.id,{state:'unchecked'});
   try{
-   const rawObservation=await adapter.read(Object.freeze({...selection}));
+   const epoch=this.epoch,rawObservation=await adapter.read(Object.freeze({...selection}));
+   if(epoch!==this.epoch)throw Error('IDENTITY_SESSION_CHANGED');
    // Re-read after await: revocation or mapping changes must not be overwritten.
    binding=this.current(selection);if(binding?.bindingState==='revoked')throw Error('BINDING_REVOKED');
    if(AccountIdentityExpiredSchema.safeParse(rawObservation).success){if(!binding)return{...selection,bindingState:'unbound' as const,loginState:'expired' as const,reason:'LOGIN_EXPIRED'};this.logins.set(binding.id,{state:'expired'});return this.public(binding,'LOGIN_EXPIRED');}
@@ -67,6 +71,7 @@ export class AccountIdentityService{
    const observation=AccountIdentityObservationSchema.parse(rawObservation);
    if(observation.provider!==selection.provider)throw Error('IDENTITY_ADAPTER_PROVIDER_SCOPE');
    if(!this.fresh(observation.observedAt))throw Error('IDENTITY_OBSERVATION_STALE');
+   for(const [id,login] of this.logins)if(login.sessionRef===observation.sessionRef)this.logins.set(id,{state:'unchecked'});
    if(binding&&!sameSubject(binding,observation)){this.logins.set(binding.id,{state:'identity_mismatch',observedAt:observation.observedAt});return this.public(binding,'LOGIN_IDENTITY_MISMATCH');}
    if(this.rows().some(b=>b.id!==binding?.id&&b.bindingState!=='revoked'&&sameSubject(b,observation)&&(b.artistId!==selection.artistId||b.accountId!==selection.accountId)))throw Error('IDENTITY_MAPPING_CONFLICT');
    if(!binding){const {status:_,sessionRef:__,...evidence}=observation;binding=this.put({...selection,...evidence,id:randomUUID(),revision:1,bindingState:'pending_verification',createdAt:this.stamp(),updatedAt:this.stamp()});}
@@ -79,10 +84,16 @@ export class AccountIdentityService{
   if(state!=='valid')throw Error(state==='expired'?'LOGIN_EXPIRED':state==='identity_mismatch'?'LOGIN_IDENTITY_MISMATCH':'LOGIN_CHECK_REQUIRED');
  }
  private async confirm(raw:unknown){
-  const input=AccountIdentityPublicActions.confirm.parse(raw),binding=this.get(input.id);
+  const input=AccountIdentityPublicActions.confirm.parse(raw);let binding=this.get(input.id);
   if(binding.bindingState==='revoked')throw Error('BINDING_REVOKED');
   if(binding.revision!==input.expectedRevision)throw Error('REVISION_CONFLICT');
   this.assertLocal(binding);this.requireLogin(binding);
+  const adapter=this.adapter(binding.provider),login=this.login(binding),epoch=this.epoch;
+  if(adapter?.checkSession){
+   let valid=false;try{valid=!!login.sessionRef&&(await adapter.checkSession(login.sessionRef))===true}catch{this.logins.set(binding.id,{state:'unchecked'});throw Error('LOGIN_CHECK_REQUIRED');}
+   if(!valid||epoch!==this.epoch){this.logins.set(binding.id,{state:'unchecked'});throw Error('LOGIN_CHECK_REQUIRED');}
+   binding=this.get(input.id);if(binding.bindingState==='revoked')throw Error('BINDING_REVOKED');if(binding.revision!==input.expectedRevision)throw Error('REVISION_CONFLICT');this.requireLogin(binding);
+  }
   if(binding.bindingState==='bound')return this.public(binding);
   return this.public(this.put({...binding,bindingState:'bound',revision:binding.revision+1,confirmedAt:this.stamp(),updatedAt:this.stamp()}));
  }

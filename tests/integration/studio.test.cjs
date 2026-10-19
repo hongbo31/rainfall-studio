@@ -141,8 +141,13 @@ test("unsent reservations roll at midnight while unknown retains risk", async ()
   assert.throws(() => s.rollover("unsent"));
   s.close();
 });
-test("daily scheduler does not duplicate, backfill or silently authorize paid generation", async () => {
+test("daily scheduler does not duplicate, backfill or silently authorize paid generation", async (t) => {
   const { s, time } = setup();
+  t.after(() => s.close());
+  // The legacy scheduler is available only after explicitly rolling back
+  // plan-center ownership. A default first tick migrates and pauses old plans.
+  const center = s.planCenterService();
+  assert.equal(center.rollbackMigration().state, "rolled_back");
   const a = await artist(s);
   const p = await s.call("plan.save", {
     artistId: a.id,
@@ -175,13 +180,68 @@ test("daily scheduler does not duplicate, backfill or silently authorize paid ge
     "no missed/closed catchup",
   );
   assert.equal(s.all("runs")[0].state, "waiting_external");
+  assert.equal(s.all("operations").length, 0, "schedule grants no paid operation");
+  assert.equal(s.externalRequests, 0, "schedule sends no external request");
   await assert.rejects(
     s.call("plan.save", {
       ...p,
       checkpoints: { ...p.checkpoints, publish: "automatic" },
     }),
   );
-  s.close();
+});
+test("daily scheduler first tick migrates legacy ownership without duplicate or paid dispatch", async (t) => {
+  const { s, time } = setup();
+  t.after(() => s.close());
+  const a = await artist(s);
+  const p = await s.call("plan.save", {
+    artistId: a.id,
+    title: "Legacy daily schedule",
+    story: "Offline migration regression",
+    timezone: "Etc/UTC",
+    time: "08:01",
+    enabled: true,
+    candidateLimit: 2,
+    finishedGoal: 1,
+    costLimit: 0,
+    overrides: {},
+    checkpoints: {
+      lyrics: "automatic",
+      candidate: "manual",
+      cover: "manual",
+      finished: "manual",
+      publish: "manual",
+    },
+  });
+  time("2026-10-15T08:01:10Z");
+  await s.tick();
+  const center = s.planCenterService();
+  const migrated = center.list();
+  const entry = migrated.migration.entries.find((x) => x.kind === "plans" && x.sourceId === p.id);
+  assert.equal(migrated.migration.state, "applied");
+  assert.equal(entry.original.enabled, true, "migration retains the previously enabled schedule");
+  assert.equal(s.get("plans", p.id).enabled, false, "legacy scheduler is paused after takeover");
+  assert.equal(s.get("plans", p.id).scheduleOwner, "plan-center");
+  assert.equal(s.get("settings", "plan-center:owner:plans:" + p.id).value.planId, entry.planId);
+  assert.ok(migrated.plans.find((x) => x.id === entry.planId).needsConfiguration.includes("LEGACY_CONFIGURATION_REVIEW_REQUIRED"));
+  assert.equal(migrated.runs.length, 0, "takeover starts at the current cursor without a missed legacy run");
+  await assert.rejects(s.call("plan.toggle", { id: p.id, enabled: true }), /PLAN_CENTER_OWNS_SCHEDULE/);
+  await assert.rejects(s.call("plan.run", { id: p.id }), /PLAN_CENTER_OWNS_SCHEDULE/);
+  await s.tick();
+  time("2026-10-18T08:03:00Z");
+  await s.tick();
+  assert.equal(s.all("runs").filter((x) => x.planId === p.id).length, 0, "owned legacy scheduler never dispatches or backfills");
+  const centerRun = center.list().runs[0];
+  assert.equal(center.list().runs.length, 1, "center retains its bounded latest occurrence policy");
+  assert.equal(centerRun.planId, entry.planId);
+  assert.equal(centerRun.state, "blocked", "unreviewed migrated occurrence cannot dispatch a stage");
+  assert.equal(center.next({ runId: centerRun.id }).state, "blocked");
+  assert.deepEqual(centerRun.snapshot.authorization, { text: false, music: false, publish: false });
+  await s.tick();
+  assert.equal(center.list().runs.length, 1, "repeated ticks retain the same blocked occurrence");
+  assert.equal(center.list().stageAttempts.length, 0);
+  assert.equal(center.list().publishAttempts.length, 0);
+  assert.equal(s.all("operations").length, 0, "migration grants no paid operation");
+  assert.equal(s.externalRequests, 0, "migration sends no external request");
 });
 test("DST resolves missing time forward and repeated time only once", () => {
   const { s } = setup();
