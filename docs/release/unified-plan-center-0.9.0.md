@@ -49,10 +49,13 @@ dot 素材通过确切通道、身份和 externalItemId 匹配，不用 Work 或
 | TypeScript | 通过 | `output/unified-plan-typecheck.log` |
 | Electron Main/preload/Core/React 构建 | 通过；现有大分块警告 | `output/unified-plan-desktop-build.log` |
 | 无头界面主流程 | 7 项通过 | `output/plan-center-headless-latest.json` |
+| 打包后 Core/原生依赖/数据路径 | 6 项通过 | `output/unified-plan-package-validation.json` |
 
 无头验收使用真实构建的 React、真实隔离 SQLite Core 和明确标注的合成测试账号。验证计划保存、并发编辑阻止陈旧确认、取消、两首独立歌曲、禁止重复点击、停止后计划仍启用、第三方模型不可用声明和手动模板没有时间输入。截图包括计划表单、执行确认、执行进度和通道能力，不是原生客户端窗口截图。
 
 独立复核先发现评分重试所有权、确认竞态、身份选择和历史/重试入口问题，修复后重跑 26+6+2 项未发现新增 P1/P2。随后补充两项真实备份恢复测试，覆盖旧快照不得抹除新执行证据及恢复后暂停/未知状态。
+
+打包检查仅将候选 EXE 以 `ELECTRON_RUN_AS_NODE=1` 模式作为后台运行时使用，没有加载 Main 或打开窗口。确认 248 个实际加载的依赖都在包内、SQLite/sharp 原生模块加载成功、两首独立主题跨关闭重开持久化、停止不禁用未来计划、没有外部操作或定时占位；预览数据路径按便携目录相对定位。初版验收脚本误用了旧 SQLite 的 build/Release 路径，已改为 SQLite 13 实际使用的 prebuilds 路径，并增加依赖不得逃逸到开发目录的断言。
 
 ## 启动与交付
 
