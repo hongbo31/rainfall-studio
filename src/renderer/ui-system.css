@@ -6,6 +6,37 @@
 /* The plan theme has an unlayered muted rule. Keep this card's help text readable. */
 .cover-handoff .muted { color: #284866; }
 
+/* Overview cards follow the light theme instead of retaining dark base surfaces. */
+.stats {
+  background: var(--panel);
+  color: var(--text);
+  border-color: var(--line);
+}
+.stats > div {
+  border-right-color: var(--line);
+}
+.stats em {
+  color: var(--muted);
+}
+.series {
+  background: #f5eef9;
+  color: #38283f;
+  border-color: #d9c9e3;
+}
+.series p {
+  color: #64536d;
+}
+.series button {
+  background: #ede2f5;
+  color: #4f365f;
+  border-color: #c8b4d6;
+}
+.series-art {
+  background: #eadcf2;
+  color: #60436e;
+  border-color: #c8b4d6;
+}
+
 @layer system {
   :root {
     --font-ui:
