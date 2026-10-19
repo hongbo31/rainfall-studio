@@ -4,6 +4,7 @@ import "./ui-system.css";
 import "./plan-center.css";
 import "./themes.css";
 import { initializeTheme } from "./theme";
+import ThemeToggle from "./components/ThemeToggle";
 import PlanCenter from "./pages/PlanCenter";
 import HelpHint from "./components/HelpHint";
 import { clientVersionLabel } from "./client-version";
@@ -233,6 +234,7 @@ function App() {
             <b>{title}</b>
           </div>
           <div className="header-right">
+            <ThemeToggle />
             <Badge>
               {data.mode === "simulation"
                 ? "模拟演练 · 不进行真实投稿"

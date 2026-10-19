@@ -61,10 +61,10 @@ export default function ConfigurationCenter({
         title="配置中心"
         action={<button onClick={() => go("publish")}>返回发布中心</button>}
       />
-      <FirstSetup
+      {category !== "appearance" && <FirstSetup
         onModels={() => setCategory("models")}
         onDirectories={() => setCategory("inbox")}
-      />
+      />}
       <div className="configuration-tabs" role="tablist" aria-label="配置分类">
         {categories.map(([id, title]) => (
           <button

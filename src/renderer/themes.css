@@ -2,7 +2,7 @@
 :root, :root[data-theme="original"] {
   color-scheme: dark;
   --bg: #101015; --panel: #1a1922; --surface-raised: #16141c;
-  --control: #27232f; --control-hover: #3c324b; --line: #82728f;
+  --control: #27232f; --control-hover: #3c324b; --line: #302c3a; --control-line: #82728f;
   --text: #eeeaf1; --muted: #b8adc3; --accent: #c5a4eb; --on-accent: #221630;
   --accent-soft: #302538; --success: #afe5ca; --success-soft: #1b352a;
   --warning: #f1d094; --warning-soft: #352b1c; --danger: #ffb6bc; --danger-soft: #3a242d;
@@ -14,7 +14,7 @@
 :root[data-theme="white"] {
   color-scheme: light;
   --bg: #f4f7fc; --panel: #fff; --surface-raised: #fff;
-  --control: #fff; --control-hover: #edf2fa; --line: #7c8da5;
+  --control: #fff; --control-hover: #edf2fa; --line: #dce3ee; --control-line: #7c8da5;
   --text: #17263d; --muted: #53647a; --accent: #2865da; --on-accent: #fff;
   --accent-soft: #eaf1ff; --success: #236347; --success-soft: #e8f5ee;
   --warning: #785517; --warning-soft: #fff3d8; --danger: #a52e3b; --danger-soft: #ffedf0;
@@ -43,3 +43,41 @@ a { color: var(--accent); }
 
 [hidden] { display: none !important; }
 nav button.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+
+/* Keep structural separators quiet; editable fields retain their contrast boundary. */
+input:not([type="checkbox"]):not([type="radio"]), select, textarea {
+  border-color: var(--control-line);
+}
+aside nav button { background: transparent; border-color: transparent; color: var(--muted); }
+aside nav button:hover:not(.active) { background: var(--control); border-color: transparent; }
+aside nav button.active { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
+aside .workspace, aside .aside-bottom { color: var(--muted); }
+
+.theme-toggle { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; position: relative; }
+.theme-toggle > span:first-child { margin: 0 5px 0 0; font-size: 12px; color: var(--muted); }
+.theme-toggle button { min-height: 32px; padding: 5px 9px; border-color: transparent; background: transparent; color: var(--muted); font-size: 13px; }
+.theme-toggle button:hover { background: var(--control-hover); border-color: transparent; }
+.theme-toggle button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
+.theme-save-error { position: absolute; top: 100%; right: 0; margin: 4px 0; padding: 6px 10px; background: var(--surface-raised); color: var(--warning); z-index: 10; }
+header .header-right { flex-wrap: wrap; }
+header .header-right > select { width: 144px; }
+header .header-right > .badge { border-color: transparent; background: transparent; }
+@media (max-width: 1100px) { header .header-right > .badge { display: none; } }
+
+/* These are navigation tabs and form sections, not additional cards. */
+.configuration-tabs { gap: 22px; padding-bottom: 0; border-bottom: 1px solid var(--line); }
+.configuration-tabs button { background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: var(--muted); padding: 10px 0; }
+.configuration-tabs button[aria-selected="true"] { background: transparent; color: var(--accent); border-bottom-color: var(--accent); }
+.platform-tabs button { background: transparent; border-color: transparent; color: var(--muted); }
+.platform-tabs button[aria-selected="true"] { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.configuration-center :is(.platform-configuration, .theme-settings).panel { border: 0; background: transparent; box-shadow: none; padding: 0; margin-top: 24px; }
+.platform-configuration .platform-fields { border: 0; padding: 0; margin: 0; }
+.platform-configuration .section-title { margin-top: 0; }
+.platform-configuration .badge { background: transparent; border-color: transparent; padding-inline: 0; }
+.configuration-center .first-setup { background: transparent; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; padding: 0 0 20px; margin-bottom: 20px; box-shadow: none; }
+.first-setup .first-setup-steps button { background: transparent; border-color: transparent; color: var(--accent); padding-inline: 4px; }
+.first-setup .first-setup-steps li > div > span { color: var(--muted); }
+.first-setup .first-setup-number { background: transparent; color: var(--muted); width: 18px; }
+.theme-options label { background: transparent; border-color: transparent; }
+.theme-options label:has(input:checked) { border-color: transparent; }
+.plan-center { max-width: none; margin-inline: 0; }
