@@ -12,6 +12,8 @@ const blank = {
   language: "中文",
   mood: "温柔",
   duration: 180,
+  instruments: "钢琴、弦乐",
+  seriesStory: "",
 };
 export default function Accounts({
   showApi = true,
@@ -69,11 +71,13 @@ export default function Accounts({
               ["language", "语言"],
               ["mood", "情绪"],
               ["coverStyle", "封面风格"],
+              ["instruments", "主要乐器"],
+              ["seriesStory", "系列长期故事线"],
             ].map(([key, title]) => (
               <label key={key}>
                 {title}
                 <input
-                  value={defaults[key]}
+                  value={defaults[key]??""}
                   onChange={(e) =>
                     setDefaults({ ...defaults, [key]: e.target.value })
                   }
@@ -103,7 +107,7 @@ export default function Accounts({
                 {title}
                 <input
                   type="number"
-                  value={defaults[key]}
+                  value={defaults[key]??""}
                   onChange={(e) =>
                     setDefaults({ ...defaults, [key]: Number(e.target.value) })
                   }
@@ -312,7 +316,7 @@ export default function Accounts({
           保存本地预算
         </button>
         <HelpHint label="预算说明">
-          成本与候选上限、计划成品目标、每平台账号提交配额分别计数。未知消耗保留预占；审核驳回不退已提交次数。真实付费生成未接入，保存预算不会授予扣费权。
+          成本与候选上限、计划成品目标、每平台账号提交配额分别计数。未知消耗保留预占；审核驳回不退已提交次数。保存本地预算不会授予扣费权；生成任务单独核对提供商价格与本次授权。
         </HelpHint>
         {data.resources.submissions.map((r: any) => (
           <div className="row" key={r.id}>

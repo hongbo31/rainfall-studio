@@ -1,3 +1,4 @@
+import {readGenerationConfig,freezeRoute} from './generation-config';
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -34,7 +35,7 @@ export class CoverHandoff {
     return {
       workId,
       title: w.title,
-      artist: a.name,
+      artist: w.artistSnapshot?.name??a.name,
       lyrics: w.lyrics,
       story: w.story,
       genre: w.config.genre,
@@ -102,6 +103,13 @@ export class CoverHandoff {
           throw Error("IDEMPOTENCY_CONFLICT");
         return previous.request;
       }
+      const planBinding=assertPlanCoverWork(this.s,i.workId);
+      const planRows=this.s.planCenterService().list(),owner=planRows.items.find(item=>item.workId===i.workId);
+      const planRun=planRows.runs.find(r=>r.id===(planBinding?.runId??owner?.runId));
+      if(planRun&&planRun.snapshot.artistId!==this.s.get('works',i.workId).artistId)throw Error('ARTIST_MISMATCH');
+      const generationRoute=planRun?.snapshot.routeSnapshot?.image??(readGenerationConfig(this.s.repo).roles.image?freezeRoute(this.s.repo,'image',{source:'default'}):undefined);
+      if(generationRoute?.capability==='unavailable')throw Error(generationRoute.reason??'IMAGE_ADAPTER_UNAVAILABLE');
+      if(generationRoute){const p=this.s.repo.maybe('settings','api-profile:'+generationRoute.profileId);if(!p||p.kind!=='image'||p.revision!==generationRoute.profileRevision||p.providerId!==generationRoute.providerId)throw Error('ROUTE_PROFILE_CHANGED');}
       let workspace = this.s.repo.maybe("settings", "cover-workspace");
       if (!workspace)
         workspace = this.s.save("settings", {
@@ -121,6 +129,7 @@ export class CoverHandoff {
         prompt,
         brief: i.brief,
         imagePolicy: COVER_IMAGE_POLICY,
+        ...(generationRoute?{generationRoute}:{}),
         provider: "dot_handoff",
         state: "awaiting_result",
         createdAt: this.s.now().toISOString(),

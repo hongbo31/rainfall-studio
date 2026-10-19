@@ -1,37 +1,54 @@
 import { z } from "zod";
 
-export const apiProfileInputSchema = z
+export const textProviderBaseUrls = Object.freeze({deepseek:'https://api.deepseek.com',doubao:'https://ark.cn-beijing.volces.com/api/v3'});
+export const TextPricingSchema = z.strictObject({
+  currency:z.enum(['USD','CNY']), modelId:z.string().trim().min(1).max(200),
+  inputMicrosPerMillionTokens:z.number().int().nonnegative().max(1_000_000_000_000),
+  outputMicrosPerMillionTokens:z.number().int().positive().max(1_000_000_000_000),
+  source:z.string().trim().min(1).max(2000),version:z.string().trim().min(1).max(200),
+  responseModelIds:z.array(z.string().trim().min(1).max(200)).min(1).max(20),
+});
+export type TextPricing = z.infer<typeof TextPricingSchema>;
+
+const apiProfileMetadataSchema = z
   .strictObject({
     id: z.uuid(),
-    kind: z.enum(["text", "music"]),
+    kind: z.enum(["text", "image", "music"]),
     providerId: z.enum([
       "text_pending",
       "deepseek",
+      "doubao",
       "codex_cli",
       "claude_code",
       "yourmusic",
       "suno",
       "miaoxiang",
+      "image_pending", "dot_image", "local_image",
     ]),
     label: z.string().trim().min(1).max(100),
     modelId: z.string().trim().min(1).max(200).nullable(),
+    baseUrl:z.string().max(2000).nullable().optional(),
+    textPricing:TextPricingSchema.nullable().optional(),
     executionEnabled: z.literal(false),
   })
   .refine(
-    (p) =>
-      (p.kind === "text") ===
-      ["text_pending", "deepseek", "codex_cli", "claude_code"].includes(
-        p.providerId,
-      ),
+    (p) => p.kind === (["text_pending","deepseek","doubao","codex_cli","claude_code"].includes(p.providerId)?'text':['image_pending','dot_image','local_image'].includes(p.providerId)?'image':'music'),
     {
       message: "PROFILE_KIND_MISMATCH",
     },
-  );
-export const apiProfileSchema = apiProfileInputSchema.safeExtend({
+  ).superRefine((p,ctx)=>{
+    const fixed=textProviderBaseUrls[p.providerId as keyof typeof textProviderBaseUrls]??null;
+    if(p.baseUrl!==undefined&&p.baseUrl!==fixed)ctx.addIssue({code:'custom',message:'TEXT_ENDPOINT_REJECTED',path:['baseUrl']});
+    if(p.textPricing&&(p.kind!=='text'||!fixed||p.textPricing.modelId!==p.modelId||p.textPricing.currency!==(p.providerId==='doubao'?'CNY':'USD')))
+      ctx.addIssue({code:'custom',message:'TEXT_PRICE_SCOPE',path:['textPricing']});
+  });
+const normalizeProfile=<T extends {providerId:string;baseUrl?:string|null}>(p:T)=>({...p,...(p.providerId in textProviderBaseUrls?{baseUrl:textProviderBaseUrls[p.providerId as keyof typeof textProviderBaseUrls]}:{})});
+export const apiProfileInputSchema=apiProfileMetadataSchema.transform(normalizeProfile);
+export const apiProfileSchema = apiProfileMetadataSchema.safeExtend({
   revision: z.number().int().positive(),
-});
+}).transform(normalizeProfile);
 export const saveApiProfileSchema = z.strictObject({
-  profile: apiProfileInputSchema,
+    profile: apiProfileInputSchema.transform(normalizeProfile),
   expectedRevision: z.number().int().positive().nullable(),
 });
 export type ApiProfile = z.infer<typeof apiProfileSchema>;
@@ -58,6 +75,9 @@ export const apiProviders = Object.freeze([
     hosts: ["api.deepseek.com"],
   },
   {
+    id: "doubao",kind:"text",name:"豆包 / 火山方舟",state:"官方文本 API · 按计划授权执行",credentialInput:true,hosts:["ark.cn-beijing.volces.com"],
+  },
+  {
     id: "codex_cli",
     kind: "text",
     name: "Codex CLI / SDK",
@@ -81,6 +101,9 @@ export const apiProviders = Object.freeze([
     credentialInput: false,
     hosts: [],
   },
+  {id:'local_image',kind:'image',name:'本地图片导入',state:'真实图片导入 · 不调用模型',credentialInput:false,hosts:[]},
+  {id:'dot_image',kind:'image',name:'dot 外部出图后导入',state:'外部会话生成 · 客户端不直接调用',credentialInput:false,hosts:[]},
+  {id:'image_pending',kind:'image',name:'图片 API（待接入）',state:'图像适配器未接入',credentialInput:false,hosts:[]},
   {
     id: "yourmusic",
     kind: "music",

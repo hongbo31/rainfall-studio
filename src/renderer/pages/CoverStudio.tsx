@@ -2,7 +2,7 @@ import HelpNote from "../components/HelpNote";
 import React, { useState, useEffect, useRef } from "react";
 import { useStudio, PageHead, Cover, Badge } from "../context";
 export default function CoverStudio({ initialId }: { initialId?: string }) {
-  const { data, call, importAsset, exportArtifact } = useStudio();
+  const { data, call, go, importAsset, exportArtifact } = useStudio();
   const [id, setId] = useState(initialId || data.works[0]?.id || "");
   const initialWork = data.works.find((w: any) => w.id === id);
   const [brief, setBrief] = useState(
@@ -22,6 +22,7 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
     [requestId, setRequestId] = useState(""),
     [busy, setBusy] = useState(false);
   const load = async () => {
+    if (!id) return {requests: [], receipts: []};
     const rows = await call("cover.list", { workId: id });
     if (currentWorkId.current === id) setHandoff(rows);
     return rows;
@@ -30,6 +31,7 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
     let active = true;
     setRequestId("");
     setHandoff({ requests: [], receipts: [] });
+    if (!id) return () => { active = false; };
     void call("cover.list", { workId: id })
       .then((rows) => {
         if (active) setHandoff(rows);
@@ -53,7 +55,7 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
         API。
       </HelpNote>
       {!work ? (
-        <div className="panel empty">先创建一首作品，再来制作封面。</div>
+        <div className="panel empty"><p>先创建一首作品，再来制作封面。</p><button className="primary" onClick={() => go("create")}>先创建作品</button></div>
       ) : (
         <>
           <div className="split">

@@ -1,7 +1,7 @@
 // Offline diagnosis of the currently installed local-template plan. Production DB is opened readonly.
 import fs from 'node:fs';import path from 'node:path';import assert from 'node:assert/strict';import {randomUUID,createHash} from 'node:crypto';import {build} from 'esbuild';import {createRequire} from 'node:module';import Database from 'better-sqlite3';
 const out=path.resolve('output/daily-lyrics-audit-20261018'),root=path.join(out,'isolated-local-'+Date.now());fs.mkdirSync(path.join(root,'production'),{recursive:true});
-const pointer=JSON.parse(fs.readFileSync('C:/Users/CLOUD_USER/AppData/Local/RainfallStudioLauncher/verified-desktop.json','utf8'));
+const pointer=JSON.parse(fs.readFileSync('C:/Users/PUBLIC_USER/AppData/Local/RainfallStudioLauncher/verified-desktop.json','utf8'));
 const source=new Database(path.join(pointer.dataRoot,'production/library.sqlite'),{readonly:true,fileMustExist:true});let before,after;
 const digest=()=>Object.fromEntries(['settings','works','operations'].map(t=>[t,createHash('sha256').update(JSON.stringify(source.prepare('SELECT data FROM '+t+' ORDER BY id').all())).digest('hex')]));
 try{before=digest();await source.backup(path.join(root,'production/library.sqlite'));}catch(e){source.close();throw e}

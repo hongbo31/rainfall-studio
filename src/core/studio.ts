@@ -1,5 +1,10 @@
+import {AccountIdentityService,type AccountIdentityAdapter} from './account-identity';
+import {readGenerationConfig,saveGenerationConfig} from './generation-config';
+import {prepareManualCreation,listManualCreations} from './manual-creation';
 import {unifiedPublicationService,savePublicationMetadata} from "./unified-publication-integration";
 import fs from "node:fs";
+import {DirectoryTaskController} from './directory-tasks';
+import {ProviderTextService} from './provider-text';
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { DateTime } from "luxon";
@@ -66,10 +71,23 @@ export class Studio {
   now: () => Date;
   lastTick: Date;
   closing = false;
+  private identity?:AccountIdentityService;
+  private identityRepo?:Repository;
+  accountIdentityService(){if(!this.identity||this.identityRepo!==this.repo){this.identity=new AccountIdentityService(this.repo,{now:this.now,adapters:this.mode==='production'&&this.options.accountIdentityAdapter?[this.options.accountIdentityAdapter]:[]});this.identityRepo=this.repo;}return this.identity;}
   private creative?: CreationService;
   private music?: MusicService;
   private daily?: DailyScheduler;
   private inbox?: InboxController;
+  private directory?: DirectoryTaskController;
+  private providerText?: ProviderTextService;
+  providerTextService(){
+    if(!this.providerText||this.providerText.repo!==this.repo)this.providerText=new ProviderTextService(this.repo,{now:this.now});
+    return this.providerText;
+  }
+  directoryTasks(){
+    if(!this.directory||this.directory.repo!==this.repo)this.directory=new DirectoryTaskController(this.repo,{dataRoot:this.root,now:this.now,center:()=>this.planCenterService()});
+    return this.directory;
+  }
   private tme?: TmeDraftService;
   private liveText?: LiveTextService;
   private productionFlow?: ProductionFlowService;
@@ -233,7 +251,7 @@ export class Studio {
   constructor(
     public root: string,
     public mode: Mode,
-    private options: { now?: () => Date;musicAdapter?:MusicAdapter;albumServiceFactory?:(studio:Studio)=>PlanAlbumService } = {},
+    private options: { now?: () => Date;musicAdapter?:MusicAdapter;accountIdentityAdapter?:AccountIdentityAdapter;albumServiceFactory?:(studio:Studio)=>PlanAlbumService } = {},
   ) {
     this.now = options.now || (() => new Date());
     this.lastTick = this.now();
@@ -256,6 +274,7 @@ export class Studio {
         candidateLimit: 10,
       });
     initializePlatformConfigurations(this.repo);
+    this.providerTextService();
   }
   get db() {
     return this.repo.db;
@@ -271,6 +290,7 @@ export class Studio {
   }
   close() {
     if (this.closing) return;
+    this.directory?.close();
     this.inbox?.stop();
     this.creative?.stop();
     this.music?.stop();
@@ -345,8 +365,23 @@ export class Studio {
     if(method.startsWith('planAlbums.'))return executePlanAlbums(this,method.slice('planAlbums.'.length),input);
     if(method.startsWith('planCenter.'))return executePlanCenter(this,method,input);
     const v: any = validate(method, input);
+    if(method.startsWith('accountIdentity.'))return this.accountIdentityService().execute(method.slice('accountIdentity.'.length),v);
+    if(method.startsWith('directoryTasks.')){
+      const controller=this.directoryTasks(),action=method.slice('directoryTasks.'.length);
+      if(action==='status')return controller.status();
+      if(action==='save')return controller.save(v);
+      if(action==='pause')return controller.pause(v);
+      if(action==='resume')return controller.resume(v);
+      if(action==='scanNow')return controller.scanNow(v);
+      if(action==='stop')return controller.stop(v);
+      throw Error('METHOD_NOT_ALLOWED');
+    }
     if(method.startsWith('publish.')&&v.id&&['batches','units'].some(table=>this.repo.maybe(table as 'batches'|'units',v.id)?.kind==='tme_uia'))throw Error('TME_SPECIALIZED_CHANNEL_REQUIRED');
     switch (method) {
+      case 'generationConfig.read': return readGenerationConfig(this.repo);
+      case 'generationConfig.save': return saveGenerationConfig(this.repo,v);
+      case 'manualCreation.prepare': return prepareManualCreation(this,v);
+      case 'manualCreation.list': return listManualCreations(this);
       case 'platformConfig.list': return listPlatformConfigurations(this.repo);
       case 'platformConfig.save': return savePlatformConfiguration(this.repo,v.config,v.expectedRevision);
       case 'publish.selection.save': return savePublishSelection(this,v);
@@ -1089,6 +1124,7 @@ export class Studio {
     return list;
   }
   async tick() {
+    await this.directoryTasks().tick();
     tickPlanCenter(this);
     if(this.mode==='production')this.productionFlowService().tick();
     if (Date.now() - this.inboxTickAt >= 5000) {
@@ -1198,6 +1234,7 @@ export class Studio {
   }
   async restore(source: string) {
     archives.assertRestoreSafe(this);
+    this.directory?.close();
     this.inbox?.stop();
     this.creative?.stop();
     this.music?.stop();
@@ -1208,6 +1245,8 @@ export class Studio {
       this.music = undefined;
       this.daily = undefined;
       this.inbox = undefined;
+      this.directory = undefined;
+      this.providerText = undefined;
     }
   }
   async importReport(source: string) {

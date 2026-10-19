@@ -1,0 +1,33 @@
+{
+  "version": "0.12.0-preview.4",
+  "runtimeSourceCommit": "cbcb396feb151a84bc45e24c091328f60c0f6e3b",
+  "exportTreeCommit": "731ec7615896095d9b96e9af09357b317e5cb236",
+  "currentReleaseDocumentSha256": "6406ac3afdafbedc827f174cd9f579127ba4a601d7d7a37d0f757c6ca637b807",
+  "runtimeFilesExact": 239,
+  "setupSourceCommit": "cbcb396feb151a84bc45e24c091328f60c0f6e3b",
+  "setupSha256": "3eb8f698df530fa817248ed60d6a3d33140c926b6924879d5169e5982bee4cd0",
+  "privateOriginalGitHistoryCopied": false,
+  "independentSnapshotRootCommit": true,
+  "publicFixturePrivacyCorrection": {
+    "file": "tests/tme-intake-fields.test.mjs",
+    "sha256": "e748fac2899860aabf6e186ba5a467721d7419bb9fa49924b7e4bb0795309256",
+    "knownPrivateLiteralRemoved": true
+  },
+  "excludedPrivateDocumentationChanges": [
+    "docs/acceptance/2026-10-19-platform-capability-matrix.md",
+    "docs/acceptance/2026-10-19-preview4-installation-and-identity.md"
+  ],
+  "knownLiteralValuesIncluded": false,
+  "documentationChange": "docs/release/provider-routing-0.12.4.md",
+  "publicNonRuntimeChanges": [
+    "docs/release/provider-routing-0.12.4.md",
+    "tests/tme-intake-fields.test.mjs",
+    "scripts/run-tests.mjs"
+  ],
+  "runtimeModifications": [],
+  "cleanCheckoutRunnerPrerequisites": {
+    "file": "scripts/run-tests.mjs",
+    "sha256": "ca63159bf342d6bf9082b60e5e0e96a678bf05017ede7ca2ae7fb2349bcb9f83",
+    "runtimeModified": false
+  }
+}

@@ -17,6 +17,7 @@ import {ProductionFlowSchemas} from '../shared/production-flow';
 import {importProductionAudio} from './production-integration';
 import {executeTmeAiPrepare} from './tme-ai-prepare-integration';
 import {executeTmeAiSubmission} from './tme-ai-submission-integration';
+import {createAccountIdentityBridge} from './account-identity-channel';
 export { Studio };
 export { resolveQuickPublish } from '../shared/quick-publish';
 export {stageLiveMusic,liveMusicContext,materializeLiveMusic};
@@ -127,13 +128,27 @@ if (port) {
   const network=(action:string,operationId:string,url?:string)=>new Promise<any>((resolve,reject)=>{const id=randomUUID(),timer=setTimeout(()=>{networkPending.delete(id);reject(Error('PROVIDER_RESPONSE_TIMEOUT'))},120000);networkPending.set(id,{resolve,reject,timer});port.postMessage({kind:'music-provider',id,action,operationId,url})});
   const audioOwners=new Map<string,string>();
   const liveAdapter:MusicAdapter={source:'external',capabilities:{provider:'yourmusic',version:'openapi-1.0.0',maximumOutputs:2,lookupByClientKey:false,automaticPaid:false},submit:input=>network('submit',input.operationId),query:async ids=>{const op=studio.all('operations').find(o=>o.kind==='music'&&JSON.stringify(o.songIds)===JSON.stringify(ids));if(!op)throw Error('LIVE_OPERATION_REQUIRED');const result=await network('query',op.id);for(const song of result.songs??[])if(song.audio_url)audioOwners.set(song.audio_url,op.id);return result},download:async url=>{const id=audioOwners.get(url);if(!id)throw Error('UNVERIFIED_AUDIO_URL');const result=await network('download',id,url);return{bytes:Buffer.from(result.bytes),mime:result.mime}}};
+  const identityBridge=createAccountIdentityBridge(port,{invalidated:()=>studio.accountIdentityService().invalidateSessions()});
   const studio = new Studio(
     process.argv[2],
     process.argv[3] === "simulation" ? "simulation" : "production",
-    {musicAdapter:liveAdapter},
+    {musicAdapter:liveAdapter,accountIdentityAdapter:identityBridge.adapter},
   );
   let chain = Promise.resolve().then(() => studio.scanInbox());
   const execute = async (method: string, input: any) => {
+    if(method.startsWith('internal.accountIdentity.')){if(studio.mode!=='production')throw Error('PRODUCTION_REQUIRED');return studio.accountIdentityService().execute(method.slice('internal.accountIdentity.'.length),input);}
+    if(method.startsWith('internal.providerText.')){
+      if(studio.mode!=='production')throw Error('PRODUCTION_REQUIRED');
+      const action=method.slice('internal.providerText.'.length),service=studio.providerTextService();
+      if(action==='list')return service.list();
+      if(action==='context')return service.context(input.id);
+      if(action==='claim')return service.claim(input);
+      if(action==='record')return service.record(input);
+      if(action==='note')return service.note(input);
+      if(action==='stop')return service.stop(input.ownerKey);
+      throw Error('METHOD_NOT_ALLOWED');
+    }
+    if(method==='internal.directoryTasks.configureDirectory')return studio.directoryTasks().configureDirectory(input);
     if(method.startsWith('internal.planAlbums.'))return executeInternalPlanAlbums(studio,method.slice('internal.planAlbums.'.length),input);
     if(method==='internal.planCenter.recordModelEvidence')return recordPlanModelEvidence(studio.repo,input,studio.now().toISOString());
     if(method==='internal.planCenter.invalidateModelEvidence')return invalidatePlanModelEvidence(studio.repo,input);
@@ -170,6 +185,7 @@ if (port) {
     if(method==='internal.liveMusic.retryDownloads'){const c=liveMusicContext(studio);if(!c)throw Error('LIVE_ATTEMPT_REQUIRED');return studio.musicService().retryDownloads(c.operation.id)}
     if(method==='internal.liveMusic.recover'){const c=liveMusicContext(studio,input.id);if(!c)throw Error('LIVE_ATTEMPT_REQUIRED');return studio.musicService().recoverAccepted(c.operation.id,input.result)}
     if (method === "internal.pauseAutomation") {
+      for(const source of studio.directoryTasks().status().sources)studio.directoryTasks().stop({id:source.id,expectedRevision:source.revision});
       const center=studio.planCenterService();
       for(const p of center.list().plans.filter(p=>p.enabled))center.toggle({id:p.id,expectedRevision:p.revision,enabled:false});
       for(const r of center.list().runs.filter(r=>!['completed','stopped'].includes(r.state)))center.stop({runId:r.id});
@@ -275,6 +291,8 @@ if (port) {
     return studio.call(method, input);
   };
   port.on("message", ({ data }: any) => {
+    if(data?.kind==='account-identity-result'||data?.kind==='account-identity-invalidated'){identityBridge.accept(data);return;}
+    if(['directoryTasks.pause','directoryTasks.stop','directoryTasks.save','internal.directoryTasks.configureDirectory','internal.pauseAutomation','internal.close'].includes(data.method))studio.directoryTasks().interrupt();
     if(data.kind==='music-provider-result'){const p=networkPending.get(data.id);if(p){clearTimeout(p.timer);networkPending.delete(data.id);if(data.ok)p.resolve(data.value);else p.reject(Error('PROVIDER_OPERATION_FAILED'))}return;}
     if(['inbox.pause','inbox.bridge.pause','internal.inboxBridge.configure'].includes(data.method)){
       try{studio.inboxController().interruptRequest(data.method,data.input)}catch{/* Serialized execution returns the validation error. */}

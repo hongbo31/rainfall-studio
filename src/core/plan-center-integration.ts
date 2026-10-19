@@ -8,6 +8,7 @@ import {syncPlanPublications,planPublicationStatus,planPublicationCapabilities} 
 import {bindPlanWork,selectPlanVersion,confirmPlanMaterials,planAssetsCatalog,planMaterialPreview,syncPlanMaterials,adoptPlanIncomingCover} from './plan-center-assets';
 import {syncPlanMusic,stopPlanMusic,planMusicExternalOutcome} from './plan-center-music';
 import {tickPlanMusic} from './plan-center-music-stages';
+import {tickProviderPlanText,stopProviderPlanText,providerTextService,materializeProviderTextFinal} from './provider-plan-text';
 import {PlanCenterSaveSchema,PlanCenterToggleSchema,PlanCenterIdSchema,PlanCenterRunSchema,PlanCenterStopSchema,PlanCenterRetrySchema} from '../shared/plan-center';
 import type {PlanCenterStageAttempt} from '../shared/plan-center';
 const isAttempt=(value:unknown):value is PlanCenterStageAttempt=>!!value&&typeof (value as any).id==='string';
@@ -17,7 +18,7 @@ function localAttempt(s:Studio,runId:string,itemId:string,stage:'cover'|'materia
   if(!run||!item||item.runId!==run.id||run.stopRequested||['completed','stopped','failed'].includes(run.state))return null;
   const current=service.next({runId,itemId});if(!current||current.stage!==stage||current.state!==next.state)return null;
   const attempt=next.state==='ready'?service.claim({runId,itemId,stage}):rows.stageAttempts.filter(a=>a.itemId===itemId&&a.stage===stage).at(-1);
-  if(!isAttempt(attempt)||attempt.state!=='dispatching'||attempt.runId!==runId||attempt.itemId!==itemId||attempt.stage!==stage||(next.state!=='ready'&&(attempt.id!==next.attemptId||current.attemptId!==attempt.id)))return null;
+  if(!isAttempt(attempt)||!['dispatching',...(stage==='cover'?['waiting']:[])].includes(attempt.state)||attempt.runId!==runId||attempt.itemId!==itemId||attempt.stage!==stage||(next.state!=='ready'&&(attempt.id!==next.attemptId||current.attemptId!==attempt.id)))return null;
   try{execute(attempt);}catch(error){service.record({attemptId:attempt.id,status:'failed',reason:error instanceof Error&&/^[A-Z0-9_]+$/.test(error.message)?error.message:'LOCAL_STAGE_FAILED'});}
   return attempt;
  });
@@ -43,10 +44,13 @@ export function executePlanCenter(s:Studio,method:string,raw:unknown){
  const service=s.planCenterService();
  switch(method){
   case 'planCenter.list':empty.parse(raw);return service.list();
-  case 'planCenter.catalog':empty.parse(raw);return {...planCatalog(s.repo),works:planAssetsCatalog(s)};
+  case 'planCenter.catalog':{
+   empty.parse(raw);const catalog=planCatalog(s.repo);
+   return{...catalog,profiles:catalog.profiles.map(p=>({...p,textPricing:s.repo.maybe('settings','api-profile:'+p.id)?.textPricing??null})),works:planAssetsCatalog(s)};
+  }
   case 'planCenter.status':{
    empty.parse(raw);const rows=service.list();
-   return{dot:planDotStatus(s),publication:planPublicationStatus(s),music:rows.items.flatMap<Record<string,unknown>>(item=>{try{const run=rows.runs.find(r=>r.id===item.runId)!;const state=syncPlanMusic(s,run,item);return state?[{itemId:item.id,...state}]:[];}catch(e){return[{itemId:item.id,reason:e instanceof Error?e.message:'MUSIC_SCOPE_INVALID'}];}}),materials:rows.items.flatMap<Record<string,unknown>>(item=>{if(!item.workId)return[];try{return[{itemId:item.id,...planMaterialPreview(s,item.id)}]}catch(e){return[{itemId:item.id,reason:e instanceof Error?e.message:'MATERIALS_INVALID'}]}})};
+   return{providerText:providerTextService(s).list().map(({id,runId,itemId,phase,state,reason,currency,spentMicros,reservedMicros})=>({id,runId,itemId,phase,state,reason,currency,spentMicros,reservedMicros})),dot:planDotStatus(s),publication:planPublicationStatus(s),music:rows.items.flatMap<Record<string,unknown>>(item=>{try{const run=rows.runs.find(r=>r.id===item.runId)!;const state=syncPlanMusic(s,run,item);return state?[{itemId:item.id,...state}]:[];}catch(e){return[{itemId:item.id,reason:e instanceof Error?e.message:'MUSIC_SCOPE_INVALID'}];}}),materials:rows.items.flatMap<Record<string,unknown>>(item=>{if(!item.workId)return[];try{return[{itemId:item.id,...planMaterialPreview(s,item.id)}]}catch(e){return[{itemId:item.id,reason:e instanceof Error?e.message:'MATERIALS_INVALID'}]}})};
   }
   case 'planCenter.dotStatus':empty.parse(raw);return planDotStatus(s);
   case 'planCenter.exportDotRequests':empty.parse(raw);return exportPlanDotRequests(s);
@@ -63,6 +67,7 @@ export function executePlanCenter(s:Studio,method:string,raw:unknown){
   case 'planCenter.run':return service.run(PlanCenterRunSchema.parse(raw));
   case 'planCenter.stop':{
    const input=PlanCenterStopSchema.parse(raw),result=service.stop(input);
+   stopProviderPlanText(s,input.runId);
    for(const item of service.list().items.filter(i=>i.runId===input.runId))stopPlanMusic(s,result,item);
    for(const a of service.list().stageAttempts.filter(a=>a.runId===input.runId&&a.stage==='text_score'))
     s.productionFlowService().stopManagedInboxEvaluation(a.id);
@@ -101,11 +106,13 @@ export function tickPlanCenter(s:Studio){
   for(const item of items){
    try{
    if(run.stopRequested){
+    stopProviderPlanText(s,run.id);
     for(const a of rows.stageAttempts.filter(a=>a.itemId===item.id&&a.stage==='text_score'))
       s.productionFlowService().stopManagedInboxEvaluation(a.id);
    }
    const boundItem=service.list().items.find(i=>i.id===item.id)!;
    const imported=typeof boundItem.material?.candidateId==='string'?s.repo.maybe('textCandidates',boundItem.material.candidateId):undefined;
+   if(run.snapshot.material.source==='provider'&&tickProviderPlanText(s,run,boundItem)&&!run.stopRequested)continue;
    if(run.stopRequested){try{tickPlanMusic(s,run,boundItem);}catch{/* Existing receipt remains persisted for reconciliation. */}}
    if(!run.stopRequested&&boundItem.workId&&(run.snapshot.outputs.music||run.snapshot.authorization.publish)){try{syncPlanMaterials(s,run,boundItem);}catch{/* Stale material never becomes a submission. */}}
    const outstandingScore=rows.stageAttempts.filter(a=>a.itemId===item.id&&a.stage==='text_score'&&['dispatching','waiting','unknown'].includes(a.state)).at(-1);
@@ -141,14 +148,24 @@ export function tickPlanCenter(s:Studio){
        if(attempt.state==='dispatching'||attempt.state==='waiting')service.record({attemptId:attempt.id,status:'failed',evidenceId:evaluation.id,reason:evaluation.reasons.join(','),result});
      }
     }catch(e:any){if(attempt.state==='dispatching')service.record({attemptId:attempt.id,status:'failed',reason:/^[A-Z0-9_]+$/.test(e.message)?e.message:'TEXT_CONFIGURATION_REQUIRED'});}
-   }else if(next.stage==='cover'&&['ready','dispatching'].includes(next.state)&&(imported||boundItem.workId)){
+   }else if(next.stage==='cover'&&['ready','dispatching','waiting'].includes(next.state)&&(imported||boundItem.workId||run.snapshot.material.source==='provider')){
+    if(run.snapshot.material.source==='provider'&&!boundItem.workId&&!run.snapshot.outputs.music){
+     const final=boundItem.material?.finalRevision as any;
+     if(!final)throw Error('PROVIDER_FINAL_REQUIRED');
+     preparePlanCoverWork(s,{itemId:item.id,expectedFinalDraftId:final.draftId,expectedFinalPairHash:final.pairHash});
+    }
     const score=service.list().stageAttempts.filter(a=>a.itemId===item.id&&a.stage==='text_score'&&a.state==='succeeded').at(-1);
     localAttempt(s,run.id,item.id,'cover',next,attempt=>{
-    const boundWork=boundItem.workId?s.repo.maybe('works',boundItem.workId):null;
+    const latestItem=service.list().items.find(i=>i.id===item.id)!;
+    const boundWork=latestItem.workId?s.repo.maybe('works',latestItem.workId):null;
     const boundCover=boundWork?.assets?.cover?s.repo.maybe('assets',boundWork.assets.cover):null;
-    if(boundItem.workId&&s.repo.maybe('settings','plan-cover-work:'+boundItem.id)){
-     const binding=assertPlanCoverWork(s,boundItem.workId)!;
-     const proof=s.coverHandoff().verifiedSelectedReceipt(boundItem.workId);
+    if(latestItem.workId&&s.repo.maybe('settings','plan-cover-work:'+latestItem.id)){
+     const binding=assertPlanCoverWork(s,latestItem.workId)!;
+     let proof;
+     try{proof=s.coverHandoff().verifiedSelectedReceipt(latestItem.workId);}catch(error){
+      if(run.snapshot.material.source==='provider'&&!boundWork?.assets?.cover){service.record({attemptId:attempt.id,status:'waiting',reason:'COVER_REQUIRED'});return;}
+      throw error;
+     }
      service.record({attemptId:attempt.id,status:'succeeded',evidenceId:proof.receipt.id,result:{assetId:proof.asset.id,sha256:proof.asset.sha256,requestId:proof.request.id,receiptId:proof.receipt.id,contextHash:proof.request.contextHash,finalPairHash:binding.finalPairHash,source:'user-import-final-cover',generationVerified:false}});return;
     }
     if(boundCover){try{s.locate(boundCover.id);service.record({attemptId:attempt.id,status:'succeeded',evidenceId:boundCover.id,result:{assetId:boundCover.id,sha256:boundCover.sha256,source:'user-bound-existing-work'}});return;}catch{service.record({attemptId:attempt.id,status:'failed',reason:'COVER_MISSING_OR_CORRUPT'});return;}}
@@ -158,9 +175,10 @@ export function tickPlanCenter(s:Studio){
      try{if(boundItem.workId)adoptPlanIncomingCover(s,run,boundItem,Number(score?.result?.rewriteCount??0));else s.locate(asset.id);service.record({attemptId:attempt.id,status:'succeeded',evidenceId:asset.id,result:{assetId:asset.id,sha256:asset.sha256,source:'verified-local-inbox'}});}
      catch(e){service.record({attemptId:attempt.id,status:'failed',reason:e instanceof Error?e.message:'COVER_REQUIRED'});}
     }
-    else service.record({attemptId:attempt.id,status:'failed',reason:'COVER_REQUIRED'});
+    else service.record({attemptId:attempt.id,status:run.snapshot.material.source==='provider'?'waiting':'failed',reason:'COVER_REQUIRED'});
     });
    }else if(next.stage==='materials'&&['ready','dispatching'].includes(next.state)){
+    materializeProviderTextFinal(s,run,service.list().items.find(i=>i.id===item.id)!);
     if(run.snapshot.outputs.music||run.snapshot.authorization.publish){const material=syncPlanMaterials(s,run,service.list().items.find(i=>i.id===item.id)!);if(!material.ready)continue;}
     localAttempt(s,run.id,item.id,'materials',next,attempt=>{
      const current=service.list().items.find(i=>i.id===item.id)!;

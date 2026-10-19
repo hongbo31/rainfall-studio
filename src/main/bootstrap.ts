@@ -43,10 +43,13 @@ import {createProductionFlowBroker,blockedTmePublicationPort} from './production
 import {createTmeAiPrepareBroker,TmeAiNativePort,nativeSnapshot} from './tme/ai-prepare';
 import {createTmeAiSubmissionBroker} from './tme/ai-submission';
 import {TmeAiCloudSessionManager} from './tme/ai-cloud-session';
+import {createAccountIdentityBroker,accountIdentityUiResponse} from './account-identity-broker';
 import {createUnifiedPublishBroker,createTmeAiTransportProvider} from './tme/unified-publish';
 import {externalReceiptBarrier,persistExternalReceiptBarrier,persistExternalReceiptStop} from './tme/external-receipt-barrier';
 import {installNativeDiagnostics} from './native-diagnostics';
 import {chooseInboxBridgeProject} from './inbox-bridge';
+import {chooseDirectoryTaskSource} from './directory-tasks';
+import {createProviderTextBroker} from './provider-text';
 if (require("electron-squirrel-startup")) app.quit();
 protocol.registerSchemesAsPrivileged([
   {
@@ -139,6 +142,8 @@ const productionTransport=new WindowsUiaTransport(path.join(__dirname,'tme-uia-h
 const productionFlow=createProductionFlowBroker({credentials:apiCredentials,rpc:(method,input)=>rpc(method,input),available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,publication:blockedTmePublicationPort(productionTransport)});
 const tmeAiNative=new TmeAiNativePort(path.join(__dirname,'tme-ai-uia-host.ps1'));
 const tmeAiCloud=new TmeAiCloudSessionManager({enableExistingAlbum:true,available:()=>mode==='production'&&!switching&&!closing});
+const accountIdentity=createAccountIdentityBroker({session:tmeAiCloud,rpc:(method,input)=>rpc(method,input),available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration});
+tmeAiCloud.onIdentityInvalidated(()=>{try{child?.postMessage({kind:'account-identity-invalidated'})}catch{/* Old worker already stopped. */}});
 // Cloud sessions and calibrated browser contracts must be supplied by Main, never renderer flags.
 const tmeAiTransport=createTmeAiTransportProvider({platform:process.platform,cloudSession:()=>tmeAiCloud.submissionSession(),cloudExistingAlbumSession:()=>tmeAiCloud.existingAlbumSession(),readExternalReceipt:async(context)=>{const receipt=await tmeAiCloud.readExternalReceipt(context);persistExternalReceiptBarrier(root,receipt);return receipt},cloudPreparationSession:()=>tmeAiCloud.preparationSession(),native:tmeAiNative,nativeObserve:async(context)=>{
   const g=context.grant.input;
@@ -160,7 +165,9 @@ const planAlbums=createPlanAlbumBroker({rpc:(method,input)=>rpc(method,input),av
  }
  return{transport,account:()=>planPublications.native(()=>session.account())};
 },onAppend:()=>unifiedPublish.pump(),reconcileAppend:taskId=>unifiedPublish.reconcile(taskId)});
-setInterval(()=>{void productionFlow.pump();void unifiedPublish.pump();},2000).unref();
+const providerText=createProviderTextBroker({credentials:apiCredentials,rpc,available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration});
+app.on('before-quit',()=>providerText.stop());
+setInterval(()=>{void productionFlow.pump();void unifiedPublish.pump();void providerText.pump().catch(()=>undefined);},2000).unref();
 const pending = new Map<
   string,
   { resolve: (v: any) => void; reject: (e: any) => void; timer: NodeJS.Timeout }
@@ -178,6 +185,10 @@ function startCore() {
     child.stdout?.on("data", (b) => console.log(b.toString()));
     child.stderr?.on("data", (b) => console.error(b.toString()));
     child.on("message", (m) => {
+      if(m.kind==='account-identity-request'){
+        const generation=coreGeneration,assertCurrent=()=>{if(child!==worker||generation!==coreGeneration)throw Error('STALE_CORE_GENERATION')};
+        void accountIdentity.provider(m,assertCurrent).then(value=>{if(child===worker&&generation===coreGeneration)worker.postMessage({kind:'account-identity-result',id:m.id,ok:true,value})},error=>{if(child===worker&&generation===coreGeneration){const code=error instanceof Error&&/^[A-Z0-9_]{1,100}$/.test(error.message)?error.message:'IDENTITY_READ_FAILED';worker.postMessage({kind:'account-identity-result',id:m.id,ok:false,error:{code}})}});return;
+      }
       if(m.kind==='music-provider'){
         const generation=coreGeneration;
         const assertCurrent=()=>{if(child!==worker||generation!==coreGeneration)throw Error('STALE_CORE_GENERATION')};
@@ -320,6 +331,11 @@ function handlers() {
     safe(async () => {
       trusted(e);
       const parsed = validate(method, input);
+      if(method.startsWith('accountIdentity.'))return accountIdentityUiResponse(()=>accountIdentity.ui(method.slice('accountIdentity.'.length),parsed));
+      if(method==='directoryTasks.chooseDirectory')return chooseDirectoryTaskSource(parsed,{
+        capture:()=>({mode,generation:coreGeneration,epoch:importEpoch,available:!switching&&!closing}),
+        choose:()=>dialog.showOpenDialog(window,{title:'选择任务请求目录',properties:['openDirectory']}),rpc,
+      });
       if(method==='inbox.bridge.chooseDirectory')return chooseInboxBridgeProject({
         capture:()=>({mode,generation:coreGeneration,epoch:importEpoch,available:!switching&&!closing}),
         choose:()=>dialog.showOpenDialog(window,{title:'选择专用 dot-delivery 项目目录（包含 incoming 和 receipts）',properties:['openDirectory']}),rpc,

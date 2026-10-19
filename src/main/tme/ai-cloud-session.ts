@@ -7,6 +7,7 @@ import {TME_AI_BROWSER_PREPARE_CONTRACT,createTmeAiBrowserPreparePort,type TmeAi
 import {TME_AI_BROWSER_SUBMISSION_CONTRACT,createTmeAiBrowserSubmissionExecutor,type TmeAiBrowserSubmissionContract} from './ai-submission-browser';
 import {readOfficialProfileIdentity,TME_READONLY_IDENTITY_EVIDENCE_HASH} from './browser-identity';
 import {readFreshOfficialAccount} from './official-browser-read';
+import {readFreshOfficialStableIdentity,readLoadedOfficialStableIdentity} from './official-stable-identity';
 import {createExternalTmeReceiptReader} from './external-receipt-read';
 const ORIGIN='https://y.tencentmusic.com';
 const ConnectSchema=z.strictObject({port:z.number().int().min(1024).max(65535).default(9222),allowConnection:z.literal(true)});
@@ -47,6 +48,10 @@ export class TmeAiCloudSessionManager{
  private browser?:Browser;private page?:Page;private bindingValue?:ReturnType<typeof TmeAiPrepareBindingSchema.parse>;
  private preparation?:PreparationSession;private submission?:SubmissionSession;private existingSession?:{page:Page;account:()=>Promise<any>;now?:()=>Date};private fingerprint?:string;
  private epoch=0;private connecting=false;
+ private readonly identityInvalidated=new Set<()=>void>();
+ private stableIdentity?:{sessionRef:string;accountId:string;artistId:string;artistName:string};
+ onIdentityInvalidated(listener:()=>void){this.identityInvalidated.add(listener);return()=>this.identityInvalidated.delete(listener)}
+ private invalidateIdentity(){for(const listener of this.identityInvalidated)try{listener()}catch{/* Disconnection must complete even when a worker already exited. */}}
  constructor(private readonly options:Options={}){
   this.prepareContract=structuredClone(options.prepareContract??TME_AI_BROWSER_PREPARE_CONTRACT);
   this.submissionContract=structuredClone(options.submissionContract??TME_AI_BROWSER_SUBMISSION_CONTRACT);
@@ -85,10 +90,24 @@ export class TmeAiCloudSessionManager{
    this.submission={page,contract:this.submissionContract,binding:()=>{this.assertCurrent(page,epoch);return this.bindingValue!},now:this.options.now};
    if(this.options.enableExistingAlbum)this.existingSession={page,account:()=>this.account(page,epoch),now:this.options.now};
    browser.on('disconnected',()=>{if(this.browser===browser)this.clear()});
+    page.on?.('close',()=>{if(this.page===page)void this.disconnect().catch(()=>{})});
+    page.on?.('framenavigated',frame=>{if(this.page===page&&!frame.parentFrame()){this.stableIdentity=undefined;this.invalidateIdentity()}});
    this.connecting=false;return this.status();
   }catch(e){if(browser)await browser.close().catch(()=>{});throw e}finally{this.connecting=false}
  }
- private clear(){this.epoch++;this.browser=undefined;this.page=undefined;this.bindingValue=undefined;this.preparation=undefined;this.submission=undefined;this.existingSession=undefined;this.fingerprint=undefined}
+ private clear(){this.epoch++;this.browser=undefined;this.page=undefined;this.bindingValue=undefined;this.preparation=undefined;this.submission=undefined;this.existingSession=undefined;this.fingerprint=undefined;this.stableIdentity=undefined;this.invalidateIdentity()}
+ /** Main-only stable read. Connecting alone never reads identities or creates a binding. */
+ async readStableIdentity(){
+  this.available();const page=this.page,epoch=this.epoch;if(!page)throw Error('CLOUD_BROWSER_SESSION_REQUIRED');this.assertCurrent(page,epoch);
+  try{const identity=await readFreshOfficialStableIdentity(page);this.assertCurrent(page,epoch);const sessionRef=this.stableSessionRef();this.stableIdentity={sessionRef,accountId:identity.remoteAccountId,artistId:identity.remoteArtistId,artistName:identity.artistDisplayName};return{...identity,sessionRef}}catch(error){this.stableIdentity=undefined;this.invalidateIdentity();throw error}
+ }
+ private stableSessionRef(){const binding=this.bindingValue;if(!binding||!('sessionId'in binding))throw Error('CLOUD_BROWSER_SESSION_REQUIRED');return'tme-cloud:'+binding.sessionId+':'+this.epoch}
+ async stableIdentitySessionValid(ref:string){
+  try{const page=this.page,epoch=this.epoch,cached=this.stableIdentity;if(!page||!cached||cached.sessionRef!==ref)return false;this.assertCurrent(page,epoch);
+   if(ref!==this.stableSessionRef())return false;const loaded=await readLoadedOfficialStableIdentity(page);this.assertCurrent(page,epoch);
+   if(this.stableIdentity!==cached||loaded.accountId!==cached.accountId||loaded.artistId!==cached.artistId||loaded.artistName!==cached.artistName)throw Error('ACCOUNT_CHANGED');return true;
+  }catch{this.stableIdentity=undefined;this.invalidateIdentity();return false}
+ }
  async inspectAccount(input:unknown={}){
   z.strictObject({}).parse(input);this.available();const page=this.page,epoch=this.epoch;
   if(!page)throw Error('CLOUD_BROWSER_SESSION_REQUIRED');this.assertCurrent(page,epoch);

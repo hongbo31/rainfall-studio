@@ -1,3 +1,4 @@
+import {assertWorkIdentityWrite} from './plan-identity';
 import fs from 'node:fs';
 import path from 'node:path';
 import {z} from 'zod';
@@ -14,6 +15,7 @@ import {planPublicationMaterialFingerprint} from './plan-center-publication';
 
 /** Rechecked at each new Core write claim; read-only inspection and original receipts do not call this gate. */
 export function verifyPlanTmeAppendWrite(s:Studio,grant:{workId:string;publicationTaskId?:string;accountId?:string;identity:{subjectHash:string};existingAlbum?:{albumId?:string;bindingId?:string}},prepareJobId?:string){
+ assertWorkIdentityWrite(s,grant);
  const links=s.all('settings').filter(r=>r.id.startsWith('plan-publication:v1:')).map(r=>r.value).filter(l=>l.workId===grant.workId&&(!grant.publicationTaskId||l.publicationTaskId===grant.publicationTaskId));
  if(!links.length)return; // Existing standalone/legacy queue intents have no PlanCenter owner.
  if(!grant.publicationTaskId||!grant.accountId||typeof s.planAlbumService!=='function')throw Error('ALBUM_APPEND_TASK_SCOPE');

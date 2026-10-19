@@ -10,11 +10,7 @@ export default function Overview() {
         title="总览"
         action={
           <div className="button-row">
-            <button className="primary" onClick={() => go("chat")}>
-              聊聊新想法
-            </button>
-            <button onClick={() => go("create")}>用本地模板起草</button>
-            <button onClick={() => go("library")}>整理已有作品</button>
+            {data.works.length ? <><button className="primary" onClick={() => go("chat")}>聊聊新想法</button><button onClick={() => go("create")}>用本地模板起草</button><button onClick={() => go("library")}>整理已有作品</button></> : <><button className="primary" onClick={() => go("create")}>创建第一首作品</button><button onClick={() => go("chat")}>先聊聊想法</button></>}
           </div>
         }
       />

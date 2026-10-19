@@ -12,6 +12,7 @@ import type { CredentialVault } from "./credentials";
 import type { HttpTransport } from "../core/workflow/yourmusic";
 import {YourMusicAdapter} from '../core/workflow/yourmusic';
 import {DeepSeekAdapter} from '../core/workflow/deepseek';
+import {ProviderTextAdapter} from '../core/workflow/provider-text';
 import {z} from 'zod';
 import {planMusicModelIds,planModelEvidenceTtlMs,type PlanModelEvidence} from '../shared/plan-models';
 
@@ -240,6 +241,20 @@ export class ApiCredentials {
       const guard=()=>{assertActive();this.assertScope(scope)};
       const adapter=new YourMusicAdapter({source:'external',request:input=>{guard();return request({...input,assertActive:guard})},credential:async()=>{guard();return this.options.vault.get(this.binding(profile))}});
       const result=await callback(adapter);this.assertScope(scope);return result;
+    });
+  }
+  async withProviderTextAdapter<T>(input:unknown,callback:(adapter:ProviderTextAdapter)=>Promise<T>,assertActive:()=>void=()=>{}):Promise<T>{
+    assertActive();const {profileId,expectedRevision}=credentialIdentitySchema.parse(input),scope={...this.options.context()};
+    if(scope.mode!=='production')throw Error('PRODUCTION_REQUIRED');
+    return this.runExclusive(async()=>{
+      const profile=await this.lookup(profileId,scope,expectedRevision);
+      if(profile.kind!=='text'||!['deepseek','doubao'].includes(profile.providerId)||!profile.modelId||!profile.textPricing)throw Error('TEXT_PROFILE_OR_PRICE_REQUIRED');
+      if(!this.status(profile).configured)throw Error('CREDENTIAL_REQUIRED');
+      const request=this.options.textRequest;if(!request)throw Error('TEXT_TRANSPORT_UNAVAILABLE');
+      const guard=()=>{assertActive();this.assertScope(scope)};
+      const adapter=new ProviderTextAdapter({providerId:profile.providerId as 'deepseek'|'doubao',profileId,profileRevision:expectedRevision,modelId:profile.modelId,
+        request:input=>{guard();return request({...input,assertActive:guard})},assertActive:guard,credential:async()=>{guard();return this.options.vault.get(this.binding(profile))}});
+      const result=await callback(adapter);guard();return result;
     });
   }
   async withDeepSeekAdapter<T>(input:unknown,callback:(adapter:DeepSeekAdapter)=>Promise<T>,assertActive:()=>void=()=>{}):Promise<T>{

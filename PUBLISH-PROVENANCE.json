@@ -1,0 +1,28 @@
+{
+  "version": "0.12.0-preview.4",
+  "runtimeSourceCommit": "cbcb396feb151a84bc45e24c091328f60c0f6e3b",
+  "sourceExportCommit": "731ec7615896095d9b96e9af09357b317e5cb236",
+  "independentSanitizedSnapshot": "a859024a0a38ba703253a280cb7aa3bd8c653108",
+  "runtimeFilesByteIdentical": 239,
+  "history": "Normal forward commit on existing repository main; no development repository Git history copied",
+  "sourceArchiveSha256": "fe06cb11c8ecef8459a21fa23d5a18d7570c6d755e263637b40e5ac44a519197",
+  "setupSha256": "3eb8f698df530fa817248ed60d6a3d33140c926b6924879d5169e5982bee4cd0",
+  "privacy": "No user database, media, credentials or browser profile; offline artist fixture anonymized",
+  "readmeNormalization": "One terminal newline; runtime bytes unchanged",
+  "validation": {
+    "cleanCheckoutFullIntegration": 223,
+    "basicTests": 3,
+    "typecheck": true,
+    "productionIdentityWiring": 16,
+    "intakePrivacyFixture": 5,
+    "actualIsolatedInstallAndUninstall": true,
+    "nativeProcesses": 6,
+    "nativeScreens": 32
+  },
+  "limitations": [
+    "Unsigned Setup",
+    "No new real TME authorization or binding confirmed",
+    "No paid generation or publishing performed",
+    "Image API disconnected; local/dot imports need no API key"
+  ]
+}

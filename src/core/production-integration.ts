@@ -50,6 +50,7 @@ export function createProductionFlowService(s: Studio) {
         .find((w) => w.productionFlowRunId === run.id);
       if (prior) return { workId: prior.id };
       const d = candidate.draft;
+      const parent=run.managedProviderText?.parentRunId?s.repo.maybe('settings','plan-center:run:'+run.managedProviderText.parentRunId)?.value?.snapshot:undefined;
       const work = s.saveWork(
         {
           artistId: run.artistId,
@@ -58,6 +59,7 @@ export function createProductionFlowService(s: Studio) {
           lyrics: candidate.pair.lyrics,
           prompt: candidate.pair.musicPrompt,
           parameters: {
+            ...(parent?.artistSnapshot?.defaults??{}),
             genre: d.style,
             language: d.language,
             duration: d.musicPrompts.yourmusic.durationTarget,
@@ -72,6 +74,7 @@ export function createProductionFlowService(s: Studio) {
         },
         { kind: "generation_input", provider: candidate.source },
       );
+      if(parent?.artistSnapshot)s.save('works',{...work,artistSnapshot:parent.artistSnapshot,storyContext:parent.storyContext,routeSnapshot:parent.routeSnapshot});
       s.repo.audit("productionFlow.work", work.id, {
         runId: run.id,
         candidateId: candidate.id,

@@ -1,0 +1,45 @@
+/* Historical original palette: style.css before d6fb9e6 introduced global light overrides. */
+:root, :root[data-theme="original"] {
+  color-scheme: dark;
+  --bg: #101015; --panel: #1a1922; --surface-raised: #16141c;
+  --control: #27232f; --control-hover: #3c324b; --line: #82728f;
+  --text: #eeeaf1; --muted: #b8adc3; --accent: #c5a4eb; --on-accent: #221630;
+  --accent-soft: #302538; --success: #afe5ca; --success-soft: #1b352a;
+  --warning: #f1d094; --warning-soft: #352b1c; --danger: #ffb6bc; --danger-soft: #3a242d;
+  --art-start: #302538; --art-end: #443052; --art-text: #e3c6ff;
+  --disabled-bg: #26222d; --disabled-text: #a59bad; --shadow-color: #000;
+  --scrim: #0009; --scroll-track: #16141c; --scroll-thumb: #6b5c7d;
+  --purple: var(--accent); --surface: var(--panel); --border: var(--line);
+}
+:root[data-theme="white"] {
+  color-scheme: light;
+  --bg: #f4f7fc; --panel: #fff; --surface-raised: #fff;
+  --control: #fff; --control-hover: #edf2fa; --line: #7c8da5;
+  --text: #17263d; --muted: #53647a; --accent: #2865da; --on-accent: #fff;
+  --accent-soft: #eaf1ff; --success: #236347; --success-soft: #e8f5ee;
+  --warning: #785517; --warning-soft: #fff3d8; --danger: #a52e3b; --danger-soft: #ffedf0;
+  --art-start: #f5eef9; --art-end: #eadcf2; --art-text: #60436e;
+  --disabled-bg: #e8edf4; --disabled-text: #5d6c80; --shadow-color: #172b4d;
+  --scrim: #20385966; --scroll-track: #edf2f8; --scroll-thumb: #94a7c0;
+}
+body { background: var(--bg); color: var(--text); }
+* { scrollbar-color: var(--scroll-thumb) var(--scroll-track); }
+::selection { background: var(--accent); color: var(--on-accent); }
+input, textarea, select { accent-color: var(--accent); }
+input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
+button:disabled, input:disabled, select:disabled, textarea:disabled {
+  opacity: 1; color: var(--disabled-text); background: var(--disabled-bg); border-color: var(--line);
+}
+button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+button.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 86%, var(--text)); }
+button.primary:disabled { background: var(--disabled-bg); color: var(--disabled-text); border-color: var(--line); }
+label, legend { color: var(--text); }
+a { color: var(--accent); }
+.toast { background: var(--accent-soft); color: var(--text); border: 1px solid var(--line); }
+.theme-options { display: flex; gap: 16px; flex-wrap: wrap; }
+.theme-options label { display: flex; align-items: center; gap: 9px; margin: 0; padding: 10px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--control); cursor: pointer; }
+.theme-options label:has(input:checked) { background: var(--accent-soft); border-color: var(--accent); }
+.theme-options input { width: 16px; height: 16px; min-height: 0; margin: 0; }
+
+[hidden] { display: none !important; }
+nav button.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }

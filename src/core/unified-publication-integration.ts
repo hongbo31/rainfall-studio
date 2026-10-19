@@ -1,3 +1,4 @@
+import {assertTaskIdentity} from './plan-identity';
 import {z} from 'zod';
 import type {Studio} from './studio';
 import {UnifiedPublicationService,publicationMaterialHash,publicationEffectiveMaterialHash} from './unified-publication';
@@ -8,6 +9,7 @@ const cache=new WeakMap<Studio,{repo:Studio['repo'];service:UnifiedPublicationSe
 export function unifiedPublicationService(s:Studio){
  const old=cache.get(s);if(old?.repo===s.repo)return old.service;
  const service=new UnifiedPublicationService(s.repo,{now:s.now,verify:task=>{
+  assertTaskIdentity(s,task.id);
   const configs=listPlatformConfigurations(s.repo);
   for(const target of task.targets){
    const config=configs.find(c=>c.target===target);if(!config)throw Error('PLATFORM_CONFIGURATION_REQUIRED');

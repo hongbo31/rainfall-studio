@@ -1,0 +1,38 @@
+{
+  "version": "0.12.0-preview.4",
+  "runtimeSourceCommit": "cbcb396feb151a84bc45e24c091328f60c0f6e3b",
+  "exportTreeCommit": "731ec7615896095d9b96e9af09357b317e5cb236",
+  "historyPolicy": "Fresh independent snapshot; no original Git objects or remote",
+  "runtimeFilesExact": 239,
+  "redactedNonRuntimeFiles": [
+    "docs/integrations/2026-10-19-tme-stable-identity-calibration.md",
+    "docs/integrations/dot-local-receiver-checkpoint-20261018.md",
+    "docs/integrations/dot-scheduled-delivery-proposal-20261018.md",
+    "scripts/authorized-music-main.ts",
+    "scripts/debug-daily-local-candidate.mjs",
+    "tests/tme-intake-fields.test.mjs"
+  ],
+  "productionClaims": [
+    "Contains the frozen official-session read-only identity reader, Main/Core identity broker, explicit account connection UI, safe IPC error response, scheduler/UI regressions and long-path backup repair.",
+    "Image source cards explicitly state local or external import needs no API key and image API is not connected; no image generation API was added.",
+    "The exact portable candidate passed two real native processes and nine screenshots; this does not establish Setup installation/uninstallation acceptance.",
+    "No new real binding, paid model call, credential, platform upload or publication was performed for this release task.",
+    "Production stable identity binding, external-browser restart persistence, real provider billing and real publication still need separate acceptance.",
+    "Formal launcher/data are unchanged; Setup is unsigned and needs separate isolated install acceptance."
+  ],
+  "documentationOnlyUpdate": {
+    "file": "docs/release/provider-routing-0.12.4.md",
+    "previousExportTreeCommit": "cbcb396feb151a84bc45e24c091328f60c0f6e3b"
+  },
+  "publicFixturePrivacyCorrection": {
+    "file": "tests/tme-intake-fields.test.mjs",
+    "previousExportTreeCommit": "40725da79690979d55fa6f28762b50bc1bc49328",
+    "knownPrivateLiteralRemoved": true,
+    "privateLiteralValuesIncluded": false
+  },
+  "cleanCheckoutRunnerPrerequisites": {
+    "file": "scripts/run-tests.mjs",
+    "previousExportTreeCommit": "ff7174d8fcd4efbd64fa3ba8c42b2b45351a93a1",
+    "runtimeModified": false
+  }
+}

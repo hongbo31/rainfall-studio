@@ -1,3 +1,5 @@
+import {freezePlanIdentities} from '../plan-identity';
+import {freezePlanRoutes,planRouteIssue,freezeArtist,frozenRouteIssue} from '../generation-config';
 import { randomUUID } from 'node:crypto';
 import { DateTime } from 'luxon';
 import { z } from 'zod';
@@ -10,6 +12,8 @@ import { PlanCenterPlanSchema, PlanCenterSaveSchema, PlanCenterToggleSchema, Pla
 import type { PlanCenterPlan, PlanCenterPlanInput, PlanCenterCapabilities, PlanCenterCapabilityName, PlanCenterRun, PlanCenterItem, PlanCenterStage, PlanCenterStageAttempt, PlanCenterPublishAttempt, PlanCenterAlbumBinding, PlanCenterPublishTarget, PlanCenterList, PlanCenterMigration } from '../../shared/plan-center';
 import { CenterStore, digest, isLegacyOwned } from './storage';
 import { dueTimes } from './schedule';
+import {providerPlanProof} from '../provider-plan-text';
+import {ProviderTextJobSchema} from '../../shared/provider-text';
 export { isLegacyOwned } from './storage';
 
 export type PlanCenterOptions = {
@@ -22,7 +26,7 @@ export type PlanCenterOptions = {
 const terminalRuns=new Set(['completed','stopped','failed']);
 const inFlight=new Set(['dispatching','waiting','unknown']);
 const publishInFlight=new Set(['dispatching','submitted','reviewing','unknown']);
-const names:Record<PlanCenterStage,PlanCenterCapabilityName|undefined>={dot:'dot',text_score:'text',cover:'cover',music_submit:'music',music_assets:'music',materials:undefined};
+const names:Record<PlanCenterStage,PlanCenterCapabilityName|undefined>={dot:'dot',text_generate:'text',text_score:'text',cover:'cover',music_submit:'music',music_assets:'music',materials:undefined};
 const safeId=z.string().min(1).max(500);
 const targetInput=z.strictObject({runId:safeId,platform:safeId,accountId:safeId});
 const publishInput=targetInput.extend({itemId:safeId});
@@ -47,7 +51,15 @@ export class PlanCenterService {
     return this.repo.transaction(()=>{
       const old=this.store.get('plan',parsed.plan.id);
       if((old?.revision??null)!==parsed.expectedRevision)throw Error('REVISION_CONFLICT');
-      const now=this.now(),plan=this.store.put('plan',{...parsed.plan,revision:(old?.revision??0)+1,createdAt:old?.createdAt??now,updatedAt:now});
+      let inputPlan=freezePlanIdentities(this.repo,freezeArtist(this.repo,freezePlanRoutes(this.repo,parsed.plan)));
+      if(old?.routeSnapshot&&digest(old.routeSnapshot)!==digest(inputPlan.routeSnapshot)){inputPlan={...inputPlan,text:{...inputPlan.text,consent:false},music:{...inputPlan.music,consent:false},authorization:{...inputPlan.authorization,text:false,music:false}};}
+      if(inputPlan.material.source==='provider'&&inputPlan.text.profileId){
+        const profile=this.repo.maybe('settings','api-profile:'+inputPlan.text.profileId);
+        if(!profile||profile.kind!=='text'||!['deepseek','doubao'].includes(profile.providerId))throw Error('TEXT_PROFILE_REQUIRED');
+        if(profile.revision!==inputPlan.text.profileRevision)throw Error('PROFILE_REVISION_CHANGED');
+        inputPlan={...inputPlan,text:{...inputPlan.text,modelId:profile.modelId??undefined,maxOutputTokens:inputPlan.text.maxOutputTokens??2048}};
+      }
+      const now=this.now(),plan=this.store.put('plan',{...inputPlan,revision:(old?.revision??0)+1,createdAt:old?.createdAt??now,updatedAt:now});
       if(!old||digest(old.schedule)!==digest(plan.schedule)||old.enabled!==plan.enabled)
         this.store.put('cursor',{id:plan.id,lastAt:now});
       return plan;
@@ -55,15 +67,23 @@ export class PlanCenterService {
   }
   toggle(input:z.input<typeof PlanCenterToggleSchema>) {
     const p=PlanCenterToggleSchema.parse(input);
-    return this.repo.transaction(()=>{const old=this.store.get('plan',p.id);if(!old)throw Error('NOT_FOUND');return this.save({plan:{...old,enabled:p.enabled},expectedRevision:p.expectedRevision});});
+    return this.repo.transaction(()=>{const old=this.store.get('plan',p.id);if(!old)throw Error('NOT_FOUND');if(old.revision!==p.expectedRevision)throw Error('REVISION_CONFLICT');const now=this.now();const plan=this.store.put('plan',{...old,enabled:p.enabled,revision:old.revision+1,updatedAt:now});this.store.put('cursor',{id:plan.id,lastAt:now});return plan;});
   }
   preview(input:z.input<typeof PlanCenterIdSchema>) {
     const {id}=PlanCenterIdSchema.parse(input),plan=this.store.get('plan',id);if(!plan)throw Error('NOT_FOUND');
-    const summary={title:plan.title,artistId:plan.artistId,count:plan.count,outputs:plan.outputs,theme:plan.theme,styleTemplate:plan.styleTemplate,material:plan.material,text:plan.text,music:plan.music,publishTargets:plan.publishTargets.filter(t=>t.enabled),authorization:plan.authorization};
+    const summary={title:plan.title,artistId:plan.artistId,count:plan.count,outputs:plan.outputs,theme:plan.theme,styleTemplate:plan.styleTemplate,artistSnapshot:plan.artistSnapshot,storyContext:plan.storyContext,material:plan.material,text:plan.text,music:plan.music,routing:plan.routing,routeSnapshot:plan.routeSnapshot,routeIssue:planRouteIssue(this.repo,plan),publishTargets:plan.publishTargets.filter(t=>t.enabled),authorization:plan.authorization};
     return {planRevision:plan.revision,summaryHash:digest({plan,summary}),summary};
   }
   run(input:z.input<typeof PlanCenterRunSchema>) {
     const p=PlanCenterRunSchema.parse(input);
+    return this.runTrusted(p);
+  }
+  /** Internal-only directory dispatch. Public run validation never accepts this source. */
+  runDirectory(input:Omit<z.input<typeof PlanCenterRunSchema>,'source'>){
+    const parsed=PlanCenterRunSchema.omit({source:true}).parse(input);
+    return this.runTrusted({...parsed,source:'directory'});
+  }
+  private runTrusted(p:Omit<z.output<typeof PlanCenterRunSchema>,'source'>&{source:'manual'|'debug'|'directory'}){
     return this.repo.transaction(()=>{
       const existing=this.store.all('run').find(r=>r.requestId===p.requestId);
       if(existing) {if(existing.planId!==p.id||existing.source!==p.source||existing.summaryHash!==p.summaryHash||existing.planRevision!==p.expectedRevision)throw Error('REQUEST_ID_CONFLICT');return existing;}
@@ -75,6 +95,7 @@ export class PlanCenterService {
   }
   private createRun(plan:PlanCenterPlan,source:PlanCenterRun['source'],requestId:string,summaryHash:string,occurrenceKey?:string) {
     if(this.store.all('run').some(r=>r.planId===plan.id&&!terminalRuns.has(r.state)))throw Error('ACTIVE_RUN');
+    const routeIssue=planRouteIssue(this.repo,plan);if(routeIssue)plan={...plan,needsConfiguration:[routeIssue,...plan.needsConfiguration]};
     const now=this.now(),run=this.store.put('run',{id:randomUUID(),planId:plan.id,planRevision:plan.revision,snapshot:plan,summaryHash,requestId,source,occurrenceKey,state:'running',stopRequested:false,createdAt:now,updatedAt:now});
     for(let ordinal=1;ordinal<=plan.count;ordinal++)this.store.put('item',{id:`${run.id}:item:${ordinal}`,runId:run.id,planId:plan.id,ordinal,expectedExternalItemId:plan.material.expectedExternalItemIds?.[ordinal-1]??`pc-${digest([run.id,ordinal])}`,state:plan.material.source==='dot'?'waiting_external_dot':'waiting_materials',versions:[],createdAt:now,updatedAt:now});
     this.refresh(run.id);return this.store.get('run',run.id)!;
@@ -102,16 +123,36 @@ export class PlanCenterService {
     const {runId}=PlanCenterStopSchema.parse(input);
     return this.repo.transaction(()=>{const run=this.store.get('run',runId);if(!run)throw Error('NOT_FOUND');if(terminalRuns.has(run.state))return run;this.store.put('run',{...run,stopRequested:true,state:'stopping',updatedAt:this.now()});this.refresh(runId);return this.store.get('run',runId)!;});
   }
+  /** A local prepared job with zero operations proves no provider call was dispatched. */
+  resumeUnsentProviderGeneration(attemptId:string){
+    return this.repo.transaction(()=>{
+      const attempt=this.store.get('stage',safeId.parse(attemptId));
+      if(!attempt||attempt.stage!=='text_generate'||attempt.state!=='unknown')throw Error('PROVIDER_RESUME_SCOPE');
+      const run=this.store.get('run',attempt.runId),binding=this.repo.maybe('settings','provider-plan:binding:'+attempt.itemId)?.value;
+      if(!run||run.stopRequested||terminalRuns.has(run.state)||run.snapshot.material.source!=='provider')throw Error('PROVIDER_RESUME_SCOPE');
+      if(!binding){
+        if(this.repo.all('settings').some(r=>(r.id.startsWith('provider-text:job:')||r.id.startsWith('provider-text:operation:'))&&r.value?.ownerKey===attempt.id))throw Error('PROVIDER_DISPATCH_RECONCILE_REQUIRED');
+        const resumed=this.store.put('stage',{...attempt,state:'dispatching',reason:undefined,updatedAt:this.now()});this.refresh(run.id);return resumed;
+      }
+      if(binding.ownerKey!==attempt.id||binding.runId!==run.id||binding.itemId!==attempt.itemId)throw Error('PROVIDER_RESUME_SCOPE');
+      const job=ProviderTextJobSchema.parse(this.repo.maybe('settings','provider-text:job:'+binding.jobId)?.value);
+      if(job.ownerKey!==attempt.id||job.runId!==run.id||job.itemId!==attempt.itemId||job.artistId!==run.snapshot.artistId||job.profileId!==run.snapshot.text.profileId||job.profileRevision!==run.snapshot.text.profileRevision||job.state!=='ready'||job.phase!=='generate'||job.operations.length||job.operationId||job.draftId||job.stopRequested||job.spentMicros||job.reservedMicros)throw Error('PROVIDER_DISPATCH_RECONCILE_REQUIRED');
+      if(this.repo.all('settings').some(r=>r.id.startsWith('provider-text:operation:')&&r.value?.jobId===job.id))throw Error('PROVIDER_DISPATCH_RECONCILE_REQUIRED');
+      const resumed=this.store.put('stage',{...attempt,state:'dispatching',reason:undefined,updatedAt:this.now()});
+      this.refresh(run.id);return resumed;
+    });
+  }
   private stages(plan:PlanCenterPlan):PlanCenterStage[] {
-    return ['dot','text_score',...(plan.outputs.music?['music_submit' as const,'music_assets' as const]:[]),...(plan.outputs.cover?['cover' as const]:[]),'materials'];
+    return [...(plan.material.source==='provider'?['text_generate' as const]:['dot' as const]),'text_score',...(plan.outputs.music?['music_submit' as const,'music_assets' as const]:[]),...(plan.outputs.cover?['cover' as const]:[]),'materials'];
   }
   private stageGate(run:PlanCenterRun,item:PlanCenterItem,stage:PlanCenterStage):{state:string;reason?:string} {
-    if(run.snapshot.needsConfiguration.length)return {state:'blocked',reason:'LEGACY_CONFIGURATION_REQUIRED'};
+    const profileIssue=frozenRouteIssue(this.repo,run.snapshot);if(profileIssue)return{state:'blocked',reason:profileIssue};
+    if(run.snapshot.needsConfiguration.length)return {state:'blocked',reason:run.snapshot.routing?run.snapshot.needsConfiguration[0]:'LEGACY_CONFIGURATION_REQUIRED'};
     if(stage==='dot'&&run.snapshot.material.source==='manual')return {state:'waiting_materials',reason:'MANUAL_MATERIAL_REQUIRED'};
     const cap=names[stage];
     if(cap&&!this.capabilities()[cap].available)return {state:stage==='dot'?'waiting_external_dot':'blocked',reason:this.capabilities()[cap].reason};
     if(stage==='dot'&&(!run.snapshot.material.channel||!run.snapshot.material.identity))return {state:'waiting_external_dot',reason:'DOT_IDENTITY_REQUIRED'};
-    if(stage==='text_score'&&(!run.snapshot.authorization.text||!run.snapshot.text.consent||!run.snapshot.text.profileId||!run.snapshot.text.profileRevision||!run.snapshot.text.modelId||!run.snapshot.text.budgetMicros))return {state:'blocked',reason:'TEXT_GRANT_REQUIRED'};
+    if(['text_generate','text_score'].includes(stage)&&(!run.snapshot.authorization.text||!run.snapshot.text.consent||!run.snapshot.text.profileId||!run.snapshot.text.profileRevision||!run.snapshot.text.modelId||!run.snapshot.text.budgetMicros))return {state:'blocked',reason:'TEXT_GRANT_REQUIRED'};
     if(stage==='music_submit'&&run.snapshot.music.route==='manual')return item.workId?{state:'ready'}:{state:'waiting_materials',reason:'EXISTING_AUDIO_BINDING_REQUIRED'};
     if(stage==='music_submit'&&(!run.snapshot.authorization.music||!run.snapshot.music.consent||!run.snapshot.music.profileId||!run.snapshot.music.profileRevision||!run.snapshot.music.modelId||!run.snapshot.music.budgetCredits||!run.snapshot.music.maxCostPerRequestCredits||(!run.snapshot.music.pricingEvidence&&!run.snapshot.music.creditPolicy)))return {state:'blocked',reason:'MUSIC_GRANT_REQUIRED'};
     if(stage==='music_submit'&&!['yourmusic','pule'].includes(run.snapshot.music.route))return {state:'blocked',reason:'MUSIC_ROUTE_UNAVAILABLE'};
@@ -166,11 +207,17 @@ export class PlanCenterService {
     if(p.status==='succeeded') {
       if(!p.evidenceId)throw Error('EVIDENCE_REQUIRED');
       if(attempt.stage==='dot')this.validateDot(run,item,p.result);
+      if(attempt.stage==='text_generate'){
+        const proof=providerPlanProof(this.repo,run,item,safeId.parse(p.result?.providerJobId),false);
+        if(p.evidenceId!==proof.generationOperation.id||p.result?.draftId!==proof.version.id||p.result?.pairHash!==proof.version.pairHash)throw Error('PROVIDER_GENERATION_EVIDENCE_MISMATCH');
+        this.store.put('item',{...item,material:{...item.material,providerJobId:proof.job.id,source:'provider'},updatedAt:this.now()});
+      }
       if(attempt.stage==='text_score') {
         const result=p.result??{};
         if(result.source!=='model'||typeof result.score!=='number'||!Number.isFinite(result.score)||result.score<run.snapshot.text.threshold||result.score>100)throw Error('MODEL_SCORE_REQUIRED');
         if(item.material?.candidateId&&result.candidateId!==item.material.candidateId)throw Error('SCORE_CANDIDATE_MISMATCH');
-        if(result.evaluationRunId!==undefined||result.evaluatedDraftId!==undefined||result.evaluatedMaterial!==undefined)this.applyEvaluatedMaterial(run,item,attempt,p);
+        if(run.snapshot.material.source==='provider')this.applyProviderEvaluatedMaterial(run,item,attempt,p);
+        else if(result.evaluationRunId!==undefined||result.evaluatedDraftId!==undefined||result.evaluatedMaterial!==undefined)this.applyEvaluatedMaterial(run,item,attempt,p);
       }
       if(attempt.stage==='music_assets') {
         const versions=z.array(z.strictObject({version:z.enum(['A','B']),assetId:safeId,externalId:safeId.optional(),sha256:z.string().optional()})).min(1).max(2).parse(p.result?.versions);
@@ -185,6 +232,12 @@ export class PlanCenterService {
   private validateDot(run:PlanCenterRun,item:PlanCenterItem,result?:Record<string,unknown>) {
     if(!result||result.artistId!==run.snapshot.artistId||result.channel!==run.snapshot.material.channel||result.identity!==run.snapshot.material.identity||result.externalItemId!==item.expectedExternalItemId)throw Error('DOT_IDENTITY_MISMATCH');
     if(typeof result.title!=='string'||!result.title.trim()||typeof result.lyrics!=='string'||!result.lyrics.trim())throw Error('DOT_MATERIAL_INCOMPLETE');
+  }
+  private applyProviderEvaluatedMaterial(run:PlanCenterRun,item:PlanCenterItem,attempt:PlanCenterStageAttempt,input:z.output<typeof PlanCenterRecordSchema>){
+    const result=input.result??{},jobId=safeId.parse(result.providerJobId),proof=providerPlanProof(this.repo,run,item,jobId),v=proof.version;
+    if(item.material?.providerJobId!==jobId||attempt.stage!=='text_score'||result.evaluatedDraftId!==v.id||result.proofHash!==proof.proofHash||input.evidenceId!==proof.scoreOperation?.id||digest(result.assessment)!==digest(v.score)||result.score!==v.score?.overall||v.score?.threshold!==run.snapshot.text.threshold||!v.score.passed||result.rewriteCount!==proof.job.versions.length-1)throw Error('PROVIDER_SCORE_EVIDENCE_MISMATCH');
+    const final={title:v.draft.title,lyrics:v.pair.lyrics,musicPrompt:v.pair.musicPrompt,draftId:v.id,pairHash:v.pairHash,providerJobId:jobId,proofHash:proof.proofHash,assessment:v.score,evidenceId:proof.scoreOperation!.id};
+    this.store.put('item',{...item,material:{...item.material,source:'provider',title:final.title,lyrics:final.lyrics,musicPrompt:final.musicPrompt,finalDraftId:v.id,coverRefreshRequired:proof.job.versions.length>1,finalRevision:final},updatedAt:this.now()});
   }
   private applyEvaluatedMaterial(run:PlanCenterRun,item:PlanCenterItem,attempt:PlanCenterStageAttempt,input:z.output<typeof PlanCenterRecordSchema>) {
     const result=input.result!,evaluationRunId=safeId.parse(result.evaluationRunId),draftId=safeId.parse(result.evaluatedDraftId);
@@ -253,6 +306,7 @@ export class PlanCenterService {
       if(!['failed','not_found'].includes(attempt.state))throw Error('RECONCILE_REQUIRED');
       const run=this.store.get('run',attempt.runId)!,item=this.store.get('item',attempt.itemId)!;
       if(run.stopRequested)throw Error('STOP_REQUESTED');
+      if(run.snapshot.material.source==='provider'&&['text_generate','text_score'].includes(attempt.stage))throw Error('PROVIDER_TEXT_RETRY_REQUIRES_NEW_RUN');
       const attempts=this.store.all('stage').filter(a=>a.itemId===item.id&&a.stage===attempt.stage),last=attempts.at(-1)!;
       if(last.id!==attempt.id) {
         if(['unknown','waiting'].includes(last.state))throw Error('RECONCILE_REQUIRED');

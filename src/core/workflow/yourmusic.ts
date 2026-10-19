@@ -10,6 +10,7 @@ export type HttpRequest = {
   body?: unknown;
   binary?: boolean;
   assertActive?:()=>void;
+  assertDispatch?:()=>Promise<void>;
 };
 export type HttpResponse = {
   status: number;
@@ -54,7 +55,7 @@ export const nodeHttpsTransport: HttpTransport = async (input) => {
   const u = new URL(input.url);
   if (
     u.protocol !== "https:" ||
-    !["api.yourmusic.fun", "oss.yourmusic.fun", "api.deepseek.com"].includes(u.hostname) ||
+    !["api.yourmusic.fun", "oss.yourmusic.fun", "api.deepseek.com", "ark.cn-beijing.volces.com"].includes(u.hostname) ||
     u.username ||
     u.password ||
     (u.port && u.port !== "443")
@@ -62,6 +63,7 @@ export const nodeHttpsTransport: HttpTransport = async (input) => {
     throw Error("HTTP_HOST_REJECTED");
   if(u.hostname==='api.deepseek.com' && (u.search || u.hash || !((input.method==='GET' && u.pathname==='/models') || (input.method==='POST' && u.pathname==='/chat/completions'))))
     throw Error('HTTP_HOST_REJECTED');
+  if(u.hostname==='ark.cn-beijing.volces.com'&&(u.search||u.hash||input.method!=='POST'||u.pathname!=='/api/v3/chat/completions'))throw Error('HTTP_HOST_REJECTED');
   if (
     u.hostname === "oss.yourmusic.fun" &&
     input.headers &&
@@ -74,6 +76,7 @@ export const nodeHttpsTransport: HttpTransport = async (input) => {
   });
   if (!addresses.length || addresses.some((a) => !publicIpv4(a.address)))
     throw Error("HTTP_ADDRESS_REJECTED");
+  await input.assertDispatch?.();
   input.assertActive?.();
   return new Promise((resolve, reject) => {
     const req = https.request(
