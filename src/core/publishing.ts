@@ -1,12 +1,45 @@
 import { randomUUID } from "node:crypto";
 import { hash } from "./database";
 import type { Studio } from "./studio";
+import {publicationPayload} from './publication-payload';
+import {resolveQuickPublish, type QuickPublishInput} from '../shared/quick-publish';
+export function quick(s: Studio, input: QuickPublishInput) {
+  return s.repo.transaction(() => {
+    const resolved = resolveQuickPublish({mode:s.mode,works:s.all('works'),accounts:s.all('accounts'),bindings:s.all('bindings')},input);
+    if (resolved.issues.length) throw Error(resolved.issues.join('\n'));
+    const previous = new Set(s.all('batches').map(b => b.id));
+    const batch = plan(s,{workIds:input.workIds,destinations:resolved.destinations,recordings:resolved.recordings});
+    const units = s.all('units').filter(u => u.batchId === batch.id);
+    // A repeat click must never approve, resume or retry a prior/unknown submission.
+    if (s.mode === 'simulation' && !previous.has(batch.id) && units.length && units.every(u => u.state === 'READY')) {
+      approve(s,{id:batch.id,snapshotHash:batch.snapshotHash});
+      return {batch:start(s,batch.id),started:true};
+    }
+    return {batch,started:false};
+  });
+}
 export function plan(s: Studio, input: any) {
   return s.repo.transaction(() => {
-    const workIds = [...new Set(input.workIds)] as string[];
-    if (workIds.length * input.destinations.length > 500)
+    const workIds = [...new Set(input.workIds)].sort() as string[];
+    const selections = input.recordings ? [...new Map(input.recordings.map((r:any) => [r.workId+':'+r.slot,r])).values()].sort((a:any,b:any) => (a.workId+a.slot).localeCompare(b.workId+b.slot)) as any[] : workIds.map(workId => ({workId,slot:'audio_A'}));
+    if (selections.some(r => !workIds.includes(r.workId) || !['audio_A','audio_B'].includes(r.slot)) || workIds.some(id => !selections.some(r => r.workId === id))) throw Error('录音范围无效');
+    if (selections.length * input.destinations.length > 500)
       throw Error("BATCH_LIMIT");
-    const frozen = workIds.map((id) => s.get("works", id));
+    const frozen = selections.map(r => {
+      const w = structuredClone(s.get('works',r.workId));
+      if (r.slot === 'audio_B' && !w.assets.audio_B) throw Error('录音 B 不存在');
+      if (input.recordings) w.publicationAudioSlot = r.slot;
+      if (r.slot === 'audio_B') w.assets.audio_A = w.assets.audio_B;
+      if (input.recordings) {
+        delete w.assets.audio_B;
+        // A video belongs to its exact audio/cover inputs, not just the work ID.
+        const videoKey = `${w.assets.audio_A}:${w.assets.cover}:vertical-v1`;
+        const video = s.all('assets').find(a => a.derivedKey === videoKey);
+        if (video) w.assets.video = video.id;
+        else delete w.assets.video;
+      }
+      return w;
+    });
     for (const w of frozen)
       for (const d of input.destinations)
         s.checkBinding(d.bindingId, w.artistId, d.accountId, d.target);
@@ -47,9 +80,11 @@ export function plan(s: Studio, input: any) {
           account = s.get("accounts", d.accountId),
           binding = s.get("bindings", d.bindingId);
         const issues: string[] = [];
+        const payload=publicationPayload(s,w);
+        if(s.mode==='production')issues.push(...payload.warnings);
         if (!w.assets.audio_A) issues.push("缺少音频");
         if (!w.assets.cover) issues.push("缺少封面");
-        if (!w.rights || w.rights.startsWith("待") || w.ai === "unknown")
+        if (!w.rights || /待确认|待核实|待授权|未确认|未授权/.test(w.rights) || w.rights.startsWith("待") || w.ai === "unknown")
           issues.push("权益或AI来源待确认");
         if (d.kind === "video_post" && !w.assets.video)
           issues.push("视频发布需先包装MP4");
@@ -82,6 +117,8 @@ export function plan(s: Studio, input: any) {
         const fingerprint = hash({
           snapshotHash,
           work: w.id,
+          recording,
+          recordingSlot: w.publicationAudioSlot || 'audio_A',
           destinations,
           bindingRevision: binding.revision,
           accountId: account.id,
@@ -91,11 +128,13 @@ export function plan(s: Studio, input: any) {
           batchId: batch.id,
           fingerprint,
           workId: w.id,
+          recordingSlot: w.publicationAudioSlot || 'audio_A',
           artistId: w.artistId,
           accountId: account.id,
           bindingId: binding.id,
           bindingRevision: binding.revision,
           snapshot: structuredClone(w),
+          payload,
           destinations,
           issues,
           state,

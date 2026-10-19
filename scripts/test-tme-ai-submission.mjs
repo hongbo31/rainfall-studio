@@ -1,0 +1,12 @@
+import {build} from 'esbuild';
+import {spawnSync} from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+const files=['src/shared/tme-ai-submission.ts','src/core/tme-ai-submission.ts','src/main/tme/ai-submission.ts','src/core/tme-ai-submission-integration.ts'];
+const entries=['export {Repository,hash} from "./src/core/database";export {Studio} from "./src/core/studio";export {tmeAiSubjectHash} from "./src/shared/tme-ai-prepare";'];
+for(const file of files)if(fs.existsSync(file))entries.push(`export * from './${file}';`);
+if(fs.existsSync('src/renderer/components/TmeAiSubmissionWorkspace.tsx'))entries.push('export * from "./tests/fixtures/tme-ai-submission-ui";');
+const outfile=path.resolve('output/tme-ai-submission-tests/core.cjs');
+await build({stdin:{contents:entries.join('\n'),resolveDir:process.cwd()},outfile,bundle:true,platform:'node',format:'cjs',packages:'external'});
+const r=spawnSync(process.execPath,['--require',path.resolve('tests/fixtures/offline-only.cjs'),'--test','tests/tme-ai-submission.test.mjs'],{stdio:'inherit',env:{...process.env,RAINFALL_TME_AI_SUBMISSION_BUNDLE:outfile}});
+process.exit(r.status??1);

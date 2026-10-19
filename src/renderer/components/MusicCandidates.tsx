@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useStudio, Badge } from "../context";
 import {workflowLabel} from '../workflow-labels';
+import HelpNote from "./HelpNote";
 export default function MusicCandidates({ draft }: { draft: any }) {
   const { call, data, play, notify } = useStudio();
   const [rows, setRows] = useState<any>({ operations: [], candidates: [] }),
@@ -14,12 +15,13 @@ export default function MusicCandidates({ draft }: { draft: any }) {
   }, []);
   return (
     <section className="panel">
-      <h3>音乐候选 · 谱乐适配</h3>
-      <p>
+      <h3>音乐候选</h3>
+      <Badge>{data.mode==='simulation'?'离线诊断音':'真实调用未启用'}</Badge>
+      <HelpNote label="音乐候选说明">
         {data.mode === "simulation"
           ? "离线链路测试：将生成两个本地 1 秒诊断音，内容相同，不是 AI 歌曲。"
           : "公开 API 映射已实现；账户、模型许可、隐私、价格和结果核对合同未验收，真实调用禁用。"}
-      </p>
+      </HelpNote>
       <label>
         账户允许的模型 ID
         <input
@@ -60,7 +62,9 @@ export default function MusicCandidates({ draft }: { draft: any }) {
       </button>
       {rows.operations
         .filter((o: any) => o.draftId === draft?.id)
-        .map((o: any) => (
+        .map((o: any) => {
+          const failedDownload = o.state === "download_failed" || rows.candidates.some((c: any) => c.operationId === o.id && c.state === "download_failed");
+          return (
           <article key={o.id}>
             <Badge>
               {o.source === "fixture" ? "模拟 · " : ""}
@@ -74,12 +78,26 @@ export default function MusicCandidates({ draft }: { draft: any }) {
               <p key={r}>{workflowLabel(r)}</p>
             ))}
             {["accepted", "polling", "download_failed"].includes(o.state) && (
-              <button onClick={() => call("music.reconcile", { id: o.id })}>
+              <button disabled={busy} onClick={async () => {
+                setBusy(true);
+                try {
+                  await call(failedDownload ? "music.retryDownloads" : "music.reconcile", { id: o.id });
+                  await refresh();
+                  notify(failedDownload ? "已请求重试原单音频下载；未重新生成。" : "已请求核对原单。");
+                } catch {
+                  notify("原单恢复未完成，请查看任务状态后重试。");
+                } finally {
+                  setBusy(false);
+                }
+              }}>
+                {failedDownload ? "重试原单音频下载（不重新生成）" : <>
                 核对原订单 / 重试下载
+                </>}
               </button>
             )}
           </article>
-        ))}
+          );
+        })}
       {rows.candidates
         .filter((c: any) => c.draftId === draft?.id)
         .map((c: any) => (

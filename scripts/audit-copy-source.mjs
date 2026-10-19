@@ -1,0 +1,4 @@
+import fs from 'node:fs';import path from 'node:path';import crypto from 'node:crypto';
+const root='src/renderer',out='output/deep-copy-cleanup';
+const files=fs.readdirSync(root,{recursive:true}).filter(f=>f.endsWith('.tsx')).sort().map(f=>{const file=path.join(root,f),text=fs.readFileSync(file,'utf8');return{file,sha256:crypto.createHash('sha256').update(text).digest('hex'),sourceLines:text.split(/\r?\n/).flatMap((line,index)=>/[\u4e00-\u9fff]/.test(line)?[{line:index+1,text:line.trim()}]:[])}});
+fs.mkdirSync(out,{recursive:true});fs.writeFileSync(path.join(out,'source-copy-inventory.json'),JSON.stringify({kind:'mechanical source inventory; semantic review is review.md; actual visible DOM is after/visible-copy.md',files},null,2));console.log(JSON.stringify({files:files.length,lines:files.reduce((n,f)=>n+f.sourceLines.length,0)}));

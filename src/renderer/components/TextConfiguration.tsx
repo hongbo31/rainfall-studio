@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useStudio } from "../context";
 import { apiProviders } from "../../shared/api-profiles";
+import HelpNote from "./HelpNote";
 export default function TextConfiguration() {
   const { call, notify } = useStudio();
   const [profiles, setProfiles] = useState<any[]>([]),
@@ -33,11 +34,11 @@ export default function TextConfiguration() {
   };
   return (
     <details className="panel">
-      <summary>文本服务配置 · 默认 DeepSeek</summary>
-      <p>
+      <summary>文本服务配置</summary>
+      <HelpNote label="文本配置说明">
         先在账号设置创建 DeepSeek 配置并自行填写 API
         Key。这里保存模型及输入输出上限；保存不验证、不发起调用。具体模型、价格和调用预算待确认。
-      </p>
+      </HelpNote>
       <form
         onSubmit={async (e) => {
           e.preventDefault();
@@ -92,16 +93,14 @@ export default function TextConfiguration() {
             ))}
           </select>
         </label>
-        <p>
-          {provider?.state ?? "请选择配置。旧待定配置不会自动迁移或继承密钥。"}
-        </p>
+        <p>{profile ? "配置未验证" : "未选择配置"}</p>
         {profile?.providerId === "deepseek" ? (
           <label>
             官方服务地址
             <input readOnly value="https://api.deepseek.com" />
           </label>
         ) : (
-          <p>本地 CLI / SDK 适配器尚未配置，不启动命令、不读取登录凭据。</p>
+          profile&&<p>CLI 适配器未接入</p>
         )}
         <label>
           模型 ID

@@ -2,6 +2,8 @@ import { DateTime } from "luxon";
 import { randomUUID } from "node:crypto";
 import { Repository, type Row } from "../database";
 import { DailyPlanInputSchema } from "../../shared/daily";
+import {assertLegacyScheduleEditable} from '../plan-center-ownership';
+import {isLegacyOwned} from '../plan-center/storage';
 export function resolveDailyTime(date: string, time: string, zone: string) {
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time))
     throw Error("SCHEDULE_TIME_INVALID");
@@ -37,6 +39,7 @@ export class DailyScheduler {
   }
   save(raw: unknown, expectedRevision: number | null) {
     const input = DailyPlanInputSchema.parse(raw);
+    assertLegacyScheduleEditable(this.repo,'dailyPlans',input.id);
     this.repo.get("artists", input.artistId);
     if (input.seriesId) this.repo.get("series", input.seriesId);
     return this.repo.transaction(() => {
@@ -126,7 +129,7 @@ export class DailyScheduler {
         .all("dailyPlans")
         .filter(
           (p) =>
-            p.enabled &&
+            p.enabled && !isLegacyOwned(this.repo,'dailyPlans',p.id) &&
             p.state === "enabled" &&
             p.authorizationRevision === p.revision,
         )) {

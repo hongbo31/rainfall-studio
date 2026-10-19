@@ -7,6 +7,7 @@ import {
   type InboxReceipt,
 } from "../../shared/inbox";
 import { checkHardRules } from "../quality/rules";
+import {PlanDotRequestSchema,planDotRequestPrefix} from '../../shared/plan-dot';
 // No coercion or Unicode normalization. Array order and all text values are significant.
 export function canonicalJson(value: unknown): string {
   if (Array.isArray(value))
@@ -57,6 +58,14 @@ export class InboxService {
       const importedAt = new Date().toISOString(),
         items: InboxReceipt["items"] = [];
       for (const [itemIndex, item] of p.items.entries()) {
+        const echo='requestEcho' in item?PlanDotRequestSchema.parse(item.requestEcho):undefined;
+        if(echo){
+          const saved=this.repo.maybe('settings',planDotRequestPrefix+echo.requestId)?.request;
+          if(!saved||!PlanDotRequestSchema.safeParse(saved).success||inboxHash(saved)!==inboxHash(echo))throw Error('DOT_REQUEST_ECHO_MISMATCH');
+          const {requestHash,...body}=echo;
+          if(inboxHash(body)!==requestHash)throw Error('DOT_REQUEST_HASH_MISMATCH');
+          if(echo.channelId!==channel.id||echo.workspaceId!==channel.workspaceId||echo.workspaceRef!==p.targetWorkspaceRef||echo.artistRef!==item.artistRef||echo.artistId!==channel.artistRefs[item.artistRef]||echo.expectedExternalItemId!==item.externalItemId||echo.revision!==item.revision)throw Error('DOT_REQUEST_SCOPE_MISMATCH');
+        }
         const artistId = Object.hasOwn(channel.artistRefs, item.artistRef)
           ? channel.artistRefs[item.artistRef]
           : undefined;
@@ -166,6 +175,7 @@ export class InboxService {
           itemKey,
           itemHash,
           externalItemId: item.externalItemId,
+          artistRef:item.artistRef,
           externalRevision: item.revision,
           parentRevision: item.parentRevision,
           artistId,
@@ -178,6 +188,10 @@ export class InboxService {
               : "complete",
           source: {
             channelId: channel.id,
+            workspaceId:channel.workspaceId,
+            workspaceRef:channel.workspaceRef,
+            artistRef:item.artistRef,
+            ...(echo?{requestEcho:echo}:{}),
             verification: "local_channel",
             producerClaim: item.provenance.producer,
             receivedAt: importedAt,

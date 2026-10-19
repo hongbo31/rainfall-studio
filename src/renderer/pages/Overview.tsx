@@ -1,3 +1,4 @@
+import HelpNote from "../components/HelpNote";
 import React from "react";
 import { useStudio, PageHead, WorkCard, Badge, label } from "../context";
 export default function Overview() {
@@ -6,12 +7,15 @@ export default function Overview() {
   return (
     <>
       <PageHead
-        title="让故事，成为下一首歌。"
-        sub="从灵感到作品，再到每一次认真发布。今天也写一点心里的声音。"
+        title="总览"
         action={
-          <button className="primary" onClick={() => go("create")}>
-            ＋ 开始创作
-          </button>
+          <div className="button-row">
+            <button className="primary" onClick={() => go("chat")}>
+              聊聊新想法
+            </button>
+            <button onClick={() => go("create")}>用本地模板起草</button>
+            <button onClick={() => go("library")}>整理已有作品</button>
+          </div>
         }
       />
       <div className="stats">
@@ -31,7 +35,7 @@ export default function Overview() {
             {r.finished}
             <em>首成品</em>
           </strong>
-          <span>版本和平台数量不重复计数</span>
+          <HelpNote label="成品计数">版本和平台数量不重复计数。</HelpNote>
         </div>
         <div>
           <small>生成预算 · 本地上限</small>
@@ -53,25 +57,14 @@ export default function Overview() {
       </div>
       <section className="series">
         <div>
-          <div className="eyebrow">STORIES THAT BECOME SONGS</div>
-          <h2>{data.series[0]?.title || "把下一章，写成音乐。"}</h2>
-          <p>
-            {data.series[0]?.story ||
-              "建立系列或专辑，为每一首作品留下故事的来处。"}
-          </p>
-          <div className="storyline">
-            相识 <i>────</i> 熟悉 <i>────</i> 告白
-          </div>
-          <button onClick={() => go("library")}>进入作品与故事线 ↗</button>
+          <h2>{data.series[0]?.title || "系列与专辑"}</h2>
+          {data.series[0]?.story && <p>{data.series[0].story}</p>}
+          <button onClick={() => go("library")}>管理系列 ↗</button>
         </div>
-        <div className="series-art">
-          雨<span>EVERY STORY HAS A SOUND</span>
-        </div>
+        <div className="series-art">雨</div>
       </section>
       <div className="section-title">
-        <h2>
-          最近的作品 <small>YOUR MUSIC, YOUR STORY</small>
-        </h2>
+        <h2>最近作品</h2>
         <button onClick={() => go("library")}>查看全部 →</button>
       </div>
       {data.works.length ? (
@@ -81,32 +74,12 @@ export default function Overview() {
           ))}
         </div>
       ) : (
-        <div className="panel empty">
-          作品库还是空白。创建一首作品，或切换到隔离的模拟演练查看原创故事样本。
-        </div>
+        <div className="panel empty">暂无作品。可用本地模板新建。</div>
       )}
       <div className="split section-gap">
         <div className="panel">
-          <h2>每日创作计划</h2>
-          {data.plans.length ? (
-            data.plans.slice(0, 3).map((p: any) => (
-              <div className="row" key={p.id}>
-                <div>
-                  {p.title}
-                  <small>
-                    {p.timezone} · {p.time} ·{" "}
-                    {p.enabled ? "已启用，需客户端打开" : "已暂停"}
-                  </small>
-                </div>
-                <Badge>{p.finishedGoal} 首目标</Badge>
-              </div>
-            ))
-          ) : (
-            <p>
-              让创作变成日常。开启计划后，本地准备按时执行；真实生成仍需合法接入与费用授权。
-            </p>
-          )}
-          <button onClick={() => go("create")}>配置每日计划 →</button>
+          <h2>{"计划中心"}</h2>
+          <button onClick={() => go("plans")}>{"管理计划与执行历史"}</button>
         </div>
         <div className="panel">
           <h2>

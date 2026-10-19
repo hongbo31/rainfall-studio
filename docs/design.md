@@ -1,4 +1,8 @@
+当前 0.7.1 修订：北京时间 09:00（Asia/Shanghai / 01:00 UTC）与腾讯 AI 作品准备执行器，明确停在新三年条款待确认。真实、离线与未接入边界见 [本轮说明](release/beijing-tme-ai-0.7.1.md)。官网可选保存的未知结果保留，不重试，不冒充成功。
+
 # 设计与技术说明
+
+当前0.7 Windows客户端使用现有Electron44、React/TypeScript、SQLite及本地FFmpeg，Main/Core/renderer分层；早期零依赖网页保留作历史原型。持久调度/预算/评分/素材/发布端口设计与验收以 [0.7说明](release/production-flow-0.7.md) 为准，桌面作品不存网页localStorage。
 
 视觉：深炭黑工作台、暖紫点缀；左侧导航、中央创作区域、底部真实音频播放器。1440px 桌面布局和 390px 移动降级；中文层级、状态标签、足够对比。总览用三章爱情故事形成叙事中心。
 

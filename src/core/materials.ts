@@ -1,5 +1,6 @@
 import type { Studio } from "./studio";
 import { hash } from "./database";
+import {publicationPayload} from './publication-payload';
 export function materialEntries(studio: Studio, batchId: string) {
   const batch = studio.get("batches", batchId),
     units = studio.all("units").filter((u) => u.batchId === batchId);
@@ -23,7 +24,9 @@ export function materialEntries(studio: Studio, batchId: string) {
       seen.set(digest, prefix);
       files.push(
         { name: prefix + "/metadata.json", text: JSON.stringify(w, null, 2) },
-        { name: prefix + "/lyrics.txt", text: w.lyrics },
+        { name: prefix + "/lyrics-original.txt", text: w.lyrics },
+        { name: prefix + "/lyrics.txt", text: (u.payload??publicationPayload(studio,w)).lyrics.plainText },
+        { name: prefix + "/publication-payload.json", text: JSON.stringify(u.payload??publicationPayload(studio,w),null,2) },
       );
       for (const [role, id] of Object.entries(w.assets)) {
         const a = studio.get("assets", id as string);
@@ -36,6 +39,7 @@ export function materialEntries(studio: Studio, batchId: string) {
     manifestUnits.push({
       unitId: u.id,
       workId: u.workId,
+      recordingSlot: u.recordingSlot || 'audio_A',
       revision: w.revision,
       accountId: u.accountId,
       bindingId: u.bindingId,

@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { useStudio, PageHead, Badge, names, label } from "../context";
 import ApiSettings from "../components/ApiSettings";
+import HelpHint from "../components/HelpHint";
 const blank = {
   genre: "流行",
   voice: "female",
@@ -12,7 +13,10 @@ const blank = {
   mood: "温柔",
   duration: 180,
 };
-export default function Accounts() {
+export default function Accounts({
+  showApi = true,
+  compact = false,
+}: { showApi?: boolean; compact?: boolean } = {}) {
   const { data, call, importAsset, exportArtifact, runtime, notify } =
     useStudio();
   const [artistId, setArtistId] = useState(data.artists[0]?.id || "");
@@ -34,14 +38,11 @@ export default function Accounts() {
   };
   return (
     <>
-      <PageHead
-        title="管理你的创作身份。"
-        sub="艺人资料与平台账号各自独立，经过明确绑定后才用于作品与任务。"
-      />
-      <ApiSettings />
+      {!compact && <PageHead title="账号与艺人" />}
+      {showApi && <ApiSettings compact={compact} />}
       <div className="split">
         <section className="panel">
-          <h2>艺人资料与默认创作配置</h2>
+          <h2>艺人资料与创作默认值</h2>
           <label>
             选择艺人
             <select value={artistId} onChange={(e) => choose(e.target.value)}>
@@ -130,10 +131,10 @@ export default function Accounts() {
         </section>
         <div>
           <section className="panel">
-            <h2>添加本地平台账号资料</h2>
-            <div className="notice">
+            <h2>添加账号资料</h2>
+            <HelpHint label="本地账号说明">
               仅保存身份与本地配额配置，不会登录、绑定真实账号或伪造授权。账号隔离用于防串号，不规避平台限制。
-            </div>
+            </HelpHint>
             <label>
               平台
               <select
@@ -180,7 +181,9 @@ export default function Accounts() {
             >
               保存本地账号资料
             </button>
-            <p>这个上限是你的本地设置，不代表官方平台配额或许可。</p>
+            <HelpHint label="本地上限说明">
+              这个上限是你的本地设置，不代表官方平台配额或许可。
+            </HelpHint>
           </section>
           <section className="panel">
             <h2>艺人与账号绑定</h2>
@@ -228,7 +231,9 @@ export default function Accounts() {
             >
               建立本地绑定
             </button>
-            <p>生效能力仍取平台资格、账号权限、绑定和本次确认范围的交集。</p>
+            <HelpHint label="绑定说明">
+              生效能力仍取平台资格、账号权限、绑定和本次确认范围的交集。
+            </HelpHint>
           </section>
         </div>
       </div>
@@ -271,11 +276,11 @@ export default function Accounts() {
           </div>
         ))}
         {!data.accounts.length && (
-          <p>暂无账号资料。所有本地创作与素材管理仍可使用。</p>
+          <p>暂无账号资料</p>
         )}
       </section>
       <section className="panel">
-        <h2>三类目标与额度</h2>
+        <h2>预算与配额</h2>
         <div className="form-grid">
           <label>
             每日生成成本本地上限（元）
@@ -306,9 +311,9 @@ export default function Accounts() {
         >
           保存本地预算
         </button>
-        <p>
+        <HelpHint label="预算说明">
           成本与候选上限、计划成品目标、每平台账号提交配额分别计数。未知消耗保留预占；审核驳回不退已提交次数。真实付费生成未接入，保存预算不会授予扣费权。
-        </p>
+        </HelpHint>
         {data.resources.submissions.map((r: any) => (
           <div className="row" key={r.id}>
             <span>
@@ -343,19 +348,23 @@ export default function Accounts() {
             导出脱敏诊断
           </button>
         </div>
-        <p>
+        <HelpHint label="恢复与迁移说明">
           恢复只接受同模式备份；不恢复可执行授权、不自动重发。原型 JSON
           导入请切换模拟工作区，旧音频 blob 需要重新导入。
-        </p>
+        </HelpHint>
         <label>
           实际素材与数据库目录
           <input readOnly value={runtime.root} />
         </label>
-        <p>
-          Electron {runtime.versions?.electron} · Node {runtime.versions?.node}{" "}
-          · {runtime.packaged ? "打包运行" : "开发运行"} · FFmpeg{" "}
-          {data.tools.ffmpeg ? "已检测" : "缺失，仅视频包装受阻"}
-        </p>
+        <details>
+          <summary>运行环境</summary>
+          <p>
+            Electron {runtime.versions?.electron} · Node{" "}
+            {runtime.versions?.node} ·{" "}
+            {runtime.packaged ? "打包运行" : "开发运行"} · FFmpeg{" "}
+            {data.tools.ffmpeg ? "已检测" : "缺失，仅视频包装受阻"}
+          </p>
+        </details>
       </section>
     </>
   );

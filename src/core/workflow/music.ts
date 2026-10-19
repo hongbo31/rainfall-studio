@@ -15,6 +15,7 @@ export class MusicService {
       adapter: MusicAdapter;
       now?: () => Date;
       dailyLimit?: number;
+      productionAuthorization?:(input:z.infer<typeof MusicRequestSchema>)=>{maxCredits:number}|null;
       ingest: (bytes: Buffer, mime: string) => Promise<{ id: string }>;
     },
   ) {
@@ -49,7 +50,7 @@ export class MusicService {
       accountRef: op.accountRef,
       kind,
       amount,
-      unit: "fixture_credit",
+      unit: this.mode==='production'?'provider_credit':"fixture_credit",
       date: op.budgetDate,
       at: this.now(),
     });
@@ -73,7 +74,9 @@ export class MusicService {
       )
         throw Error("STALE_PAIR");
       const reasons: string[] = [];
-      if (this.mode === "production")
+      const grant=this.mode==='production'?this.options.productionAuthorization?.(i):null;
+      const reservation=grant?.maxCredits??2;
+      if (this.mode === "production"&&!grant)
         reasons.push(
           "LIVE_EXECUTION_DISABLED",
           "PRICING_PRIVACY_PERMISSION_REQUIRED",
@@ -89,7 +92,7 @@ export class MusicService {
         .find(
           (e) => e.draftId === draft.id && e.pairHash === i.expectedPairHash,
         );
-      if (evaluation?.decision.state !== "pass")
+      if (evaluation?.decision.state !== "pass"&&!grant)
         reasons.push("QUALITY_NOT_PASSED");
       const session = this.repo.maybe("creativeSessions", draft.sessionId);
       if (session && session.draftId !== draft.id)
@@ -122,7 +125,7 @@ export class MusicService {
         if (e.kind === "reserve") attemptUsed += e.amount;
         if (e.kind === "release") attemptUsed -= e.amount;
       }
-      if (i.budgetLimit - attemptUsed < 2) reasons.push("BUDGET_INSUFFICIENT");
+      if (i.budgetLimit - attemptUsed < reservation) reasons.push("BUDGET_INSUFFICIENT");
       if (
         this.repo
           .all("operations")
@@ -138,14 +141,14 @@ export class MusicService {
         .all("workflowLedger")
         .filter(
           (e) =>
-            e.date === this.now().slice(0, 10) && e.unit === "fixture_credit",
+            e.date === this.now().slice(0, 10) && e.unit === (this.mode==='production'?'provider_credit':"fixture_credit"),
         );
       let used = 0;
       for (const e of entries) {
         if (e.kind === "reserve") used += e.amount;
         if (e.kind === "release") used -= e.amount;
       }
-      if (i.budgetLimit < 2 || (this.options.dailyLimit ?? 100) - used < 2)
+      if (i.budgetLimit < reservation || (grant?.maxCredits??this.options.dailyLimit ?? 100) - used < reservation)
         reasons.push("BUDGET_INSUFFICIENT");
       if (this.stopped) reasons.push("WORKSPACE_STOPPED");
       const op = {
@@ -166,11 +169,13 @@ export class MusicService {
         createdAt: this.now(),
         songIds: [],
         maxOutputs: 2,
-        maxCost: 2,
+        submittedLyrics:{text:draft.pair.lyrics,source:'generation_input',pairHash:i.expectedPairHash},
+        maxCost: reservation,
+        qualityReview:grant?'user_authorized_direction_no_automatic_score':'quality_gate',
         queryErrors: 0,
       };
       this.repo.save("operations", op);
-      if (!reasons.length) this.ledger(op, "reserve", 2, op.id + ":reserve");
+      if (!reasons.length) this.ledger(op, "reserve", reservation, op.id + ":reserve");
       return op;
     });
   }
@@ -194,7 +199,7 @@ export class MusicService {
       );
     if (frozen)
       return this.repo.transaction(() => {
-        this.ledger(op, "release", 2, op.id + ":release");
+        this.ledger(op, "release", op.maxCost, op.id + ":release");
         return this.patch(id, {
           state: "blocked",
           costState: "not_dispatched",
@@ -207,7 +212,7 @@ export class MusicService {
         this.ledger(
           op,
           "release",
-          2,
+          op.maxCost,
           id + ":rollover:" + op.budgetDate + ":release",
         );
         let used = 0;
@@ -217,7 +222,7 @@ export class MusicService {
           if (e.kind === "reserve") used += e.amount;
           if (e.kind === "release") used -= e.amount;
         }
-        if ((this.options.dailyLimit ?? 100) - used < 2) {
+        if ((this.options.dailyLimit ?? 100) - used < op.maxCost || this.mode==='production') {
           this.patch(id, {
             state: "blocked",
             costState: "not_dispatched",
@@ -226,7 +231,7 @@ export class MusicService {
           return false;
         }
         op = this.patch(id, { budgetDate: today });
-        this.ledger(op, "reserve", 2, id + ":rollover:" + today + ":reserve");
+        this.ledger(op, "reserve", op.maxCost, id + ":rollover:" + today + ":reserve");
         return true;
       });
       if (!moved) return this.repo.get("operations", id);
@@ -260,7 +265,20 @@ export class MusicService {
           state: "unknown",
           costState: "unknown",
           reasons: ["SUBMISSION_OUTCOME_UNKNOWN"],
+          submitHttpStatus:r.httpStatus??null,
         });
+      return this.recordAccepted(id,r);
+    } finally {this.active.delete(id)}
+  }
+  recoverAccepted(id:string,result:unknown){
+    const op=this.repo.get('operations',id);
+    if(op.kind!=='music'||op.state!=='unknown'||this.active.has(id)||this.stopped)throw Error('RECOVERY_SCOPE_REJECTED');
+    const r=z.object({state:z.literal('accepted'),trackingId:z.string().max(200).nullable(),songIds:z.array(z.string().min(1).max(200)).length(2)}).parse(result);
+    if(new Set(r.songIds).size!==2)throw Error('DUPLICATE_REMOTE_ID');
+    return this.recordAccepted(id,r);
+  }
+  private recordAccepted(id:string,r:any){
+      let op=this.repo.get('operations',id);
       this.repo.transaction(() => {
         const costKnown =
           this.options.adapter.source === "fixture" &&
@@ -315,13 +333,11 @@ export class MusicService {
               state: "pending",
               downloadAttempts: 0,
               assetId: null,
+              submittedLyrics:op.submittedLyrics,
             });
         }
       });
       return op;
-    } finally {
-      this.active.delete(id);
-    }
   }
   async reconcile(id: string) {
     let op = this.repo.get("operations", id);
@@ -397,7 +413,9 @@ export class MusicService {
             ...candidate,
             state: "ready",
             assetId: asset.id,
+            actualLyrics:song.actualLyrics&&typeof song.actualLyrics.text==='string'&&song.actualLyrics.text.length<=100000&&(song.actualLyrics.version==null||typeof song.actualLyrics.version==='string'&&song.actualLyrics.version.length<=200)?{text:song.actualLyrics.text,version:song.actualLyrics.version??null}:null,
             readyAt: this.now(),
+            providerMetadata:{model:song.model_name??op.modelId,duration:song.duration??null,title:song.title??null,createdAt:song.created_at??null},
           });
         } catch {
           if (this.repo.db.open)
@@ -435,5 +453,9 @@ export class MusicService {
     } finally {
       this.active.delete(id);
     }
+  }
+  retryDownloads(id:string){
+    const op=this.repo.get('operations',id);if(!['accepted','polling','download_failed'].includes(op.state)||this.active.has(id)||this.stopped||!op.songIds?.length)throw Error('DOWNLOAD_RETRY_SCOPE_REJECTED');
+    this.repo.transaction(()=>{for(const c of this.repo.all('candidates').filter(c=>c.operationId===id&&c.state==='download_failed'))this.repo.save('candidates',{...c,previousDownloadAttempts:(c.previousDownloadAttempts??0)+c.downloadAttempts,downloadAttempts:0,state:'pending',reason:'USER_REQUESTED_ORIGINAL_DOWNLOAD_RETRY'});this.patch(id,{state:'polling',nextCheckAt:this.now(),reasons:['ORIGINAL_AUDIO_DOWNLOAD_RETRY_ONLY']});this.repo.audit('music.download.retry',id,{newGeneration:false})});return this.repo.get('operations',id);
   }
 }

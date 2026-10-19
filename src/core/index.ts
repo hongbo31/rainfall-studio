@@ -1,6 +1,9 @@
+import {recordPlanModelEvidence,invalidatePlanModelEvidence} from './plan-center-models';
+import {executeInternalPlanAlbums} from './plan-albums-integration';
+import {executeUnifiedPublication} from "./unified-publication-integration";
 import { materialEntries } from "./materials";
 export { materialEntries };
-export { probe } from "./assets";
+export { probe, ffmpeg, ffprobe } from "./assets";
 import { Studio } from "./studio";
 import fs from "node:fs";
 import path from "node:path";
@@ -8,7 +11,16 @@ import { randomUUID } from "node:crypto";
 import { zip } from "./backup";
 import { exportCover } from "./assets";
 import { hash } from "./database";
+import {stageLiveMusic,liveMusicContext,materializeLiveMusic} from './live-music';
+import type {MusicAdapter} from './workflow/yourmusic';
+import {ProductionFlowSchemas} from '../shared/production-flow';
+import {importProductionAudio} from './production-integration';
+import {executeTmeAiPrepare} from './tme-ai-prepare-integration';
+import {executeTmeAiSubmission} from './tme-ai-submission-integration';
 export { Studio };
+export { resolveQuickPublish } from '../shared/quick-publish';
+export {stageLiveMusic,liveMusicContext,materializeLiveMusic};
+export { TmeDraftService, cleanTmeLyrics } from './tme-drafts';
 export { listApiProfiles, saveApiProfile } from "./api-profiles";
 
 export function previewLegacy(file: string) {
@@ -111,13 +123,58 @@ export async function importLegacy(s: Studio, file: string) {
 }
 const port = (process as any).parentPort;
 if (port) {
+  const networkPending=new Map<string,{resolve:(value:any)=>void;reject:(e:Error)=>void;timer:NodeJS.Timeout}>();
+  const network=(action:string,operationId:string,url?:string)=>new Promise<any>((resolve,reject)=>{const id=randomUUID(),timer=setTimeout(()=>{networkPending.delete(id);reject(Error('PROVIDER_RESPONSE_TIMEOUT'))},120000);networkPending.set(id,{resolve,reject,timer});port.postMessage({kind:'music-provider',id,action,operationId,url})});
+  const audioOwners=new Map<string,string>();
+  const liveAdapter:MusicAdapter={source:'external',capabilities:{provider:'yourmusic',version:'openapi-1.0.0',maximumOutputs:2,lookupByClientKey:false,automaticPaid:false},submit:input=>network('submit',input.operationId),query:async ids=>{const op=studio.all('operations').find(o=>o.kind==='music'&&JSON.stringify(o.songIds)===JSON.stringify(ids));if(!op)throw Error('LIVE_OPERATION_REQUIRED');const result=await network('query',op.id);for(const song of result.songs??[])if(song.audio_url)audioOwners.set(song.audio_url,op.id);return result},download:async url=>{const id=audioOwners.get(url);if(!id)throw Error('UNVERIFIED_AUDIO_URL');const result=await network('download',id,url);return{bytes:Buffer.from(result.bytes),mime:result.mime}}};
   const studio = new Studio(
     process.argv[2],
     process.argv[3] === "simulation" ? "simulation" : "production",
+    {musicAdapter:liveAdapter},
   );
   let chain = Promise.resolve().then(() => studio.scanInbox());
   const execute = async (method: string, input: any) => {
+    if(method.startsWith('internal.planAlbums.'))return executeInternalPlanAlbums(studio,method.slice('internal.planAlbums.'.length),input);
+    if(method==='internal.planCenter.recordModelEvidence')return recordPlanModelEvidence(studio.repo,input,studio.now().toISOString());
+    if(method==='internal.planCenter.invalidateModelEvidence')return invalidatePlanModelEvidence(studio.repo,input);
+    if(method==='internal.inboxBridge.configure')return studio.inboxController().configureBridge(input);
+    if(method.startsWith('internal.unifiedPublish.'))return executeUnifiedPublication(studio,method.slice('internal.unifiedPublish.'.length),input);
+    if(method.startsWith('internal.tmeAiSubmission.'))return executeTmeAiSubmission(studio,method.slice('internal.tmeAiSubmission.'.length),input);
+    if(method.startsWith('internal.tmeAiPrepare.'))return executeTmeAiPrepare(studio,method.slice('internal.tmeAiPrepare.'.length),input);
+    if(method.startsWith('internal.productionFlow.')){
+      if(studio.mode!=='production')throw Error('PRODUCTION_REQUIRED');
+      const action=method.slice('internal.productionFlow.'.length);
+      if(action==='importAudio')return importProductionAudio(studio,input);
+      const schema=(ProductionFlowSchemas as Record<string,any>)['productionFlow.'+action];
+      if(!schema)throw Error('METHOD_NOT_ALLOWED');
+      const value=schema.parse(input),flow=studio.productionFlowService();
+      if(action==='context')return flow.context(value.id);
+      if(action==='list')return flow.list();
+      return (flow as any)[action](value);
+    }
+    if(method.startsWith('internal.liveText.')){
+      if(studio.mode!=='production')throw Error('PRODUCTION_REQUIRED');
+      const text=studio.liveTextService();
+      if(method==='internal.liveText.prepare')return text.prepare(input);
+      if(method==='internal.liveText.claim')return text.claim(input);
+      if(method==='internal.liveText.record')return text.record(input);
+      if(method==='internal.liveText.context'){const context=text.context(input.id);return {...context,draft:context.job.draftId?studio.get('drafts',context.job.draftId):null};}
+      if(method==='internal.liveText.list')return text.list();
+      throw Error('METHOD_NOT_ALLOWED');
+    }
+    if(method==='internal.liveMusic.stage')return stageLiveMusic(studio,input);
+    if(method==='internal.liveMusic.context')return liveMusicContext(studio,input.id);
+    if(method==='internal.liveMusic.status'){const c=liveMusicContext(studio);if(c&&['accepted','polling','download_failed'].includes(c.operation.state))studio.musicService();return c;}
+    if(method==='internal.liveMusic.start'){const c=liveMusicContext(studio);if(!c||c.grant.requestId!==input.requestId)throw Error('LIVE_SCOPE_MISMATCH');void studio.musicService().submit(c.operation.id).then(()=>studio.musicService().reconcile(c.operation.id)).catch(()=>undefined);return c.operation;}
+    if(method==='internal.liveMusic.materialize')return materializeLiveMusic(studio);
+    if(method==='internal.liveMusic.retryDownloads'){const c=liveMusicContext(studio);if(!c)throw Error('LIVE_ATTEMPT_REQUIRED');return studio.musicService().retryDownloads(c.operation.id)}
+    if(method==='internal.liveMusic.recover'){const c=liveMusicContext(studio,input.id);if(!c)throw Error('LIVE_ATTEMPT_REQUIRED');return studio.musicService().recoverAccepted(c.operation.id,input.result)}
     if (method === "internal.pauseAutomation") {
+      const center=studio.planCenterService();
+      for(const p of center.list().plans.filter(p=>p.enabled))center.toggle({id:p.id,expectedRevision:p.revision,enabled:false});
+      for(const r of center.list().runs.filter(r=>!['completed','stopped'].includes(r.state)))center.stop({runId:r.id});
+      for(const p of studio.all('plans').filter(p=>p.enabled))studio.save('plans',{...p,enabled:false});
+      if(studio.mode==='production')studio.productionFlowService().pauseAll();
       for (const p of studio.all("dailyPlans"))
         studio.save("dailyPlans", { ...p, state: "paused", enabled: false });
       return { paused: true };
@@ -136,13 +193,31 @@ if (port) {
       return true;
     }
     if (method === "internal.locate") return studio.locate(input.id);
+    if (method === 'internal.tme.get') return studio.tmeDraftService().get(input.id);
+    if (method === 'internal.tme.list') return studio.tmeDraftService().list();
+    if (method === 'internal.tme.current') { studio.tmeDraftService().assertCurrent(studio.tmeDraftService().get(input.id)); return true; }
+    if (method === 'internal.tme.update') return studio.tmeDraftService().update(input.id,input.revision,input.patch);
+    if (method === 'internal.tme.bind') return studio.tmeDraftService().bind(input.id,input.revision,input.identity);
+    if (method === 'internal.tme.live') {
+      const svc=studio.tmeDraftService();
+      if(input.action==='units')return svc.batchUnits(input.id);
+      if(input.action==='batches')return svc.batches();
+      if(input.action==='updateUnit')return svc.updateUnit(input.id,input.patch);
+      if(input.action==='updateBatch')return svc.updateBatch(input.id,input.patch);
+      if(input.action==='claim')return svc.claimUnit(input.id,input.identity);
+      if(input.action==='start')return svc.startUnit(input.id);
+      throw Error('METHOD_NOT_ALLOWED');
+    }
     if (method === "internal.import") {
+      if(input.role==='lyrics')return studio.lyricService().importText(input.source,input.workId);
+      if(input.role==='coverResultImage'||input.role==='coverResultManifest')return studio.coverHandoff().receiveFile(input.source,input.workId,input.requestId,input.role==='coverResultManifest'?'manifest':'image');
       if (input.role === "backup") return studio.restore(input.source);
       if (input.role === "report") return studio.importReport(input.source);
       if (input.role === "legacy") return importLegacy(studio, input.source);
       return studio.importFile(input.source, input.role, input.workId);
     }
     if (method === "internal.export") {
+      if(input.kind==='coverRequest'){const request=studio.coverHandoff().exportRequest(input.input.requestId);fs.writeFileSync(input.destination,JSON.stringify(request,null,2),'utf8');return{path:input.destination,notice:'已导出文件交接请求，尚未执行图像生成'};}
       if (input.kind === "backup") return studio.backup(input.destination);
       if (input.kind === "cover")
         return exportCover(
@@ -200,6 +275,10 @@ if (port) {
     return studio.call(method, input);
   };
   port.on("message", ({ data }: any) => {
+    if(data.kind==='music-provider-result'){const p=networkPending.get(data.id);if(p){clearTimeout(p.timer);networkPending.delete(data.id);if(data.ok)p.resolve(data.value);else p.reject(Error('PROVIDER_OPERATION_FAILED'))}return;}
+    if(['inbox.pause','inbox.bridge.pause','internal.inboxBridge.configure'].includes(data.method)){
+      try{studio.inboxController().interruptRequest(data.method,data.input)}catch{/* Serialized execution returns the validation error. */}
+    }
     chain = chain.then(async () => {
       try {
         const value = await execute(data.method, data.input);

@@ -6,15 +6,51 @@ import {
   credentialStatusInputSchema,
   type ApiProfile,
   type CredentialStatus,
+  type ApiConnectionCheck,
 } from "../shared/api-profiles";
 import type { CredentialVault } from "./credentials";
+import type { HttpTransport } from "../core/workflow/yourmusic";
+import {YourMusicAdapter} from '../core/workflow/yourmusic';
+import {DeepSeekAdapter} from '../core/workflow/deepseek';
+import {z} from 'zod';
+import {planMusicModelIds,planModelEvidenceTtlMs,type PlanModelEvidence} from '../shared/plan-models';
+
+// Exact retained OpenApiHistoryResponseDto/OpenApiSongDto, bounded before projection.
+// Never persist or return the song records, remote identifiers, titles or lyrics.
+const musicHistorySchema=z.strictObject({
+  data:z.array(z.strictObject({
+    id:z.string().min(1).max(200),status:z.enum(['pending','processing','succeeded','failed']),
+    title:z.string().max(1000).optional(),audio_url:z.string().max(5000).optional(),
+    audio_wav_url:z.string().max(5000).optional(),image_url:z.string().max(5000).optional(),
+    duration:z.number().finite().nonnegative().max(10000).optional(),lyric:z.string().max(100000).optional(),
+    created_at:z.iso.datetime().optional(),instrumental:z.boolean().optional(),
+    tags:z.string().max(10000).optional(),model_name:z.string().min(1).max(200).optional(),
+  })).max(20),
+  total:z.number().int().nonnegative(),page:z.literal(1),size:z.literal(20),total_pages:z.number().int().nonnegative(),
+}).refine(p=>p.total>=p.data.length&&p.total_pages===Math.ceil(p.total/20));
 
 type Context = { mode: string; generation: number };
 type Options = {
   vault: CredentialVault;
   getProfile: (id: string) => Promise<ApiProfile | undefined>;
   context: () => Context;
+  connectionRequest?: HttpTransport;
+  textRequest?: HttpTransport;
+  // Main-only cache owner. Await before mutating music credentials; failure blocks mutation.
+  invalidateMusicModelEvidence?: (identity:{profileId:string;expectedRevision:number})=>Promise<void>;
 };
+function connectionFailure(error: unknown): NonNullable<ApiConnectionCheck["failureCode"]> {
+  const e = error as { code?: unknown; message?: unknown } | null;
+  const code = typeof e?.code === "string" ? e.code : "";
+  if (["ENOTFOUND", "EAI_AGAIN"].includes(code)) return "HTTP_DNS_FAILED";
+  if (["CERT_HAS_EXPIRED", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "SELF_SIGNED_CERT_IN_CHAIN", "DEPTH_ZERO_SELF_SIGNED_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY"].includes(code) || code.startsWith("ERR_TLS_") || code.startsWith("ERR_SSL_")) return "HTTP_TLS_FAILED";
+  if (["ERR_INVALID_CHAR", "ERR_HTTP_INVALID_HEADER_VALUE"].includes(code)) return "CREDENTIAL_FORMAT_INVALID";
+  if (["EACCES", "EPERM"].includes(code)) return "HTTP_ACCESS_DENIED";
+  if (e?.message === "HTTP_ADDRESS_REJECTED") return "HTTP_ADDRESS_REJECTED";
+  if (e?.message === "HTTP_TIMEOUT") return "HTTP_TIMEOUT";
+  if (e?.message === "HTTP_SIZE_LIMIT") return "HTTP_SIZE_LIMIT";
+  return "HTTP_REQUEST_FAILED";
+}
 export class ApiCredentials {
   private tail: Promise<unknown> = Promise.resolve();
   constructor(private options: Options) {}
@@ -90,6 +126,10 @@ export class ApiCredentials {
       const profile = await this.lookup(profileId, scope, expectedRevision);
       if (!canStoreApiCredential(profile))
         throw Error("PROVIDER_NOT_CONFIGURED");
+      if(profile.providerId==='yourmusic'&&profile.kind==='music'&&this.options.invalidateMusicModelEvidence){
+        await this.options.invalidateMusicModelEvidence({profileId,expectedRevision});
+        await this.lookup(profileId,scope,expectedRevision);
+      }
       this.options.vault.put(this.binding(profile), secret);
       await this.lookup(profileId, scope, expectedRevision);
       return this.status(profile);
@@ -109,9 +149,110 @@ export class ApiCredentials {
       const profile = await this.lookup(profileId, scope, expectedRevision);
       if (!canStoreApiCredential(profile))
         throw Error("PROVIDER_NOT_CONFIGURED");
+      if(profile.providerId==='yourmusic'&&profile.kind==='music'&&this.options.invalidateMusicModelEvidence){
+        await this.options.invalidateMusicModelEvidence({profileId,expectedRevision});
+        await this.lookup(profileId,scope,expectedRevision);
+      }
       this.options.vault.delete(this.binding(profile));
       await this.lookup(profileId, scope, expectedRevision);
       return this.status(profile);
+    });
+  }
+  async checkApiConnection(input: unknown): Promise<ApiConnectionCheck> {
+    const { profileId, expectedRevision } = credentialIdentitySchema.parse(input);
+    const scope = { ...this.options.context() };
+    if (scope.mode !== "production")
+      throw Error(scope.mode === "simulation" ? "SIMULATION_CREDENTIALS_DISABLED" : "WORKSPACE_CHANGED");
+    return this.runExclusive(async () => {
+      const profile = await this.lookup(profileId, scope, expectedRevision);
+      if (!["yourmusic", "deepseek"].includes(profile.providerId)) throw Error("CONNECTION_CHECK_UNSUPPORTED");
+      const deepseek=profile.providerId==='deepseek';
+      const request = deepseek ? this.options.textRequest : this.options.connectionRequest;
+      if (!request) throw Error("CONNECTION_CHECK_UNAVAILABLE");
+      // Only Main consumes the credential. Never return request, headers, history or remote errors.
+      const credential = this.options.vault.get(this.binding(profile));
+      let failureCode: ApiConnectionCheck["failureCode"] = null;
+      const response = await request({
+        method: "GET",
+        url: deepseek ? "https://api.deepseek.com/models" : "https://api.yourmusic.fun/v1/music/generations/history?page=1&size=1",
+        headers: { Authorization: "Bearer " + credential, Accept: "application/json" },
+      }).catch(error => { failureCode = connectionFailure(error); return null; });
+      await this.lookup(profileId, scope, expectedRevision);
+      let state: ApiConnectionCheck["state"] = "unavailable";
+      const status = response?.status ?? null;
+      if (status === 200) {
+        const b = response?.body;
+        state = deepseek ? (b && b.object==='list' && Array.isArray(b.data) && b.data.length<=100 && b.data.every((m:any)=>typeof m.id==='string'&&m.id.trim().length>0&&m.id.length<200) ? 'connected':'invalid_response') : b && Array.isArray(b.data) && b.data.length <= 1 &&
+          Number.isInteger(b.total) && b.total >= 0 && b.page === 1 && b.size === 1 &&
+          Number.isInteger(b.total_pages) && b.total_pages >= 0
+          ? "connected" : "invalid_response";
+      } else if (status === 401) state = "unauthorized";
+      else if (status === 403) state = "forbidden";
+      else if (status === 402) state = "credits_required";
+      else if (status === 429) state = "rate_limited";
+      return { profileId, providerId: deepseek ? "deepseek" : "yourmusic", state, httpStatus: status, failureCode,
+        checkedAt: new Date().toISOString(), scope: "authentication_only", paidGenerationRequested: false };
+    });
+  }
+  async readMusicModelEvidence(input:unknown):Promise<PlanModelEvidence>{
+    return this.withMusicModelEvidence(input,async evidence=>evidence);
+  }
+  // Main keeps the read and its cache commit under the same lock as key replacement/clear.
+  // Only the safe projection crosses the callback, never the adapter, credential or history.
+  async withMusicModelEvidence<T>(input:unknown,callback:(evidence:PlanModelEvidence)=>Promise<T>):Promise<T>{
+    const {profileId,expectedRevision}=credentialIdentitySchema.parse(input),scope={...this.options.context()};
+    if(scope.mode!=='production')throw Error(scope.mode==='simulation'?'SIMULATION_CREDENTIALS_DISABLED':'WORKSPACE_CHANGED');
+    return this.runExclusive(async()=>{
+      const profile=await this.lookup(profileId,scope,expectedRevision);
+      if(profile.providerId!=='yourmusic'||profile.kind!=='music')throw Error('PROVIDER_NOT_CONFIGURED');
+      const request=this.options.connectionRequest;if(!request)throw Error('CONNECTION_CHECK_UNAVAILABLE');
+      const status=this.status(profile);
+      if(status.state==='unavailable')throw Error('SECURE_STORAGE_UNAVAILABLE');
+      if(!status.configured)throw Error('CREDENTIAL_NOT_CONFIGURED');
+      const credential=this.options.vault.get(this.binding(profile));
+      const response=await request({method:'GET',url:'https://api.yourmusic.fun/v1/music/generations/history?page=1&size=20',
+        headers:{Authorization:'Bearer '+credential,Accept:'application/json'},assertActive:()=>this.assertScope(scope),
+      }).catch(()=>null);
+      await this.lookup(profileId,scope,expectedRevision);
+      if(!response||response.status!==200)throw Error('MODEL_EVIDENCE_READ_FAILED');
+      const parsed=musicHistorySchema.safeParse(response.body);
+      if(!parsed.success)throw Error('MODEL_EVIDENCE_INVALID_RESPONSE');
+      const observedAt=new Date().toISOString();
+      const evidence:PlanModelEvidence={profileId,profileRevision:profile.revision,providerId:'yourmusic',source:'yourmusic_history',
+        scope:'historical_success_only',range:{page:1,size:20},observedAt,expiresAt:new Date(Date.parse(observedAt)+planModelEvidenceTtlMs).toISOString(),
+        models:planMusicModelIds.filter(modelId=>parsed.data.data.some(song=>song.status==='succeeded'&&song.model_name===modelId))
+          .map(modelId=>({modelId,status:'account-observed-success' as const})),
+      };
+      const result=await callback(evidence);
+      await this.lookup(profileId,scope,expectedRevision);
+      return result;
+    });
+  }
+  async withMusicAdapter<T>(input:unknown,callback:(adapter:YourMusicAdapter)=>Promise<T>,assertActive:()=>void=()=>{}):Promise<T>{
+    assertActive();
+    const {profileId,expectedRevision}=credentialIdentitySchema.parse(input),scope={...this.options.context()};
+    if(scope.mode!=='production')throw Error('PRODUCTION_REQUIRED');
+    return this.runExclusive(async()=>{
+      assertActive();
+      const profile=await this.lookup(profileId,scope,expectedRevision);
+      if(profile.providerId!=='yourmusic'||profile.kind!=='music')throw Error('PROVIDER_NOT_CONFIGURED');
+      const request=this.options.connectionRequest;if(!request)throw Error('CONNECTION_CHECK_UNAVAILABLE');
+      const guard=()=>{assertActive();this.assertScope(scope)};
+      const adapter=new YourMusicAdapter({source:'external',request:input=>{guard();return request({...input,assertActive:guard})},credential:async()=>{guard();return this.options.vault.get(this.binding(profile))}});
+      const result=await callback(adapter);this.assertScope(scope);return result;
+    });
+  }
+  async withDeepSeekAdapter<T>(input:unknown,callback:(adapter:DeepSeekAdapter)=>Promise<T>,assertActive:()=>void=()=>{}):Promise<T>{
+    assertActive();
+    const {profileId,expectedRevision}=credentialIdentitySchema.parse(input),scope={...this.options.context()};
+    if(scope.mode!=='production')throw Error('PRODUCTION_REQUIRED');
+    return this.runExclusive(async()=>{
+      assertActive();const profile=await this.lookup(profileId,scope,expectedRevision);
+      if(profile.providerId!=='deepseek'||profile.kind!=='text')throw Error('PROVIDER_NOT_CONFIGURED');
+      const request=this.options.textRequest;if(!request)throw Error('CONNECTION_CHECK_UNAVAILABLE');
+      const guard=()=>{assertActive();this.assertScope(scope)};
+      const adapter=new DeepSeekAdapter({request:input=>{guard();return request({...input,assertActive:guard})},credential:async()=>{guard();return this.options.vault.get(this.binding(profile))}});
+      const result=await callback(adapter);guard();return result;
     });
   }
 }
@@ -124,6 +265,8 @@ const publicErrors = new Set([
   "PROVIDER_NOT_CONFIGURED",
   "SIMULATION_CREDENTIALS_DISABLED",
   "SECURE_STORAGE_UNAVAILABLE",
+  "CONNECTION_CHECK_UNSUPPORTED",
+  "CONNECTION_CHECK_UNAVAILABLE",
 ]);
 export function registerApiCredentialHandlers(
   register: (
@@ -137,6 +280,7 @@ export function registerApiCredentialHandlers(
     ["write", (input: unknown) => service.writeApiCredential(input)],
     ["clear", (input: unknown) => service.clearApiCredential(input)],
     ["status", (input: unknown) => service.apiCredentialStatus(input)],
+    ["check", (input: unknown) => service.checkApiConnection(input)],
   ] as const) {
     register("rainfall:api-credential:" + name, async (event, input) => {
       try {

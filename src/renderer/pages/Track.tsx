@@ -1,7 +1,10 @@
+import HelpNote from "../components/HelpNote";
 import React, { useState, useRef, useEffect } from "react";
 import { useStudio, PageHead, Cover, Badge, date, label } from "../context";
+import {LyricsPublicationPanel} from '../components/LyricsPublicationPanel';
+import HelpHint from '../components/HelpHint';
 export default function Track({ id }: { id: string }) {
-  const { data, call, go, play, importAsset, notify } = useStudio();
+  const { data, call, go, play, importAsset, notify,setSelected } = useStudio();
   const work = data.works.find((w: any) => w.id === id);
   const [form, setForm] = useState({ ...work });
   const expected = useRef(work.revision),
@@ -72,6 +75,7 @@ export default function Track({ id }: { id: string }) {
   const run = data.runs.find(
     (r: any) => r.workId === id && r.state !== "succeeded",
   );
+  const prepare=async()=>{await persist();if(JSON.stringify(latest.current)!==saved.current){notify('当前编辑尚未保存，请先保存再准备发布。');return;}setSelected([id]);go('publish');};
   return (
     <>
       <PageHead
@@ -79,6 +83,8 @@ export default function Track({ id }: { id: string }) {
         sub={"本地作品 · v" + expected.current + " · " + status}
         action={
           <div className="button-row">
+            <Badge>发布版本 A</Badge>
+            <button disabled={!work.assets.audio_A} onClick={()=>play(work,"audio_A")}>试听</button>
             <button
               onClick={async () => {
                 await persist();
@@ -88,17 +94,18 @@ export default function Track({ id }: { id: string }) {
             >
               保存版本
             </button>
-            <button className="primary" onClick={() => go("cover", id)}>
+            <button onClick={() => go("cover", id)}>
               封面工作室 →
             </button>
+            <button className="primary" onClick={()=>void prepare()}>准备发布材料 →</button>
           </div>
         }
       />
       <div className="detail-grid">
         <div>
           <Cover work={work} large />
-          <div className="panel">
-            <h2>A / B 试听</h2>
+          <div className="panel" id="track-audio" tabIndex={-1}>
+            <h2>A / B 试听 <HelpHint label="A/B 试听说明">发布使用 A 版。试听 B 版仅用于比较，不会切换发布版本。</HelpHint></h2>
             <div className="button-row">
               <button
                 disabled={!work.assets.audio_A}
@@ -121,7 +128,7 @@ export default function Track({ id }: { id: string }) {
                 导入音频 B
               </button>
             </div>
-            <p>音频复制入库，退出重开仍可试听；没有音频时不显示假播放。</p>
+            <HelpNote label="音频入库说明">导入音频会复制保存到作品库。</HelpNote>
             <label>
               音频 A 版本
               <select
@@ -150,7 +157,7 @@ export default function Track({ id }: { id: string }) {
               </select>
             </label>
             <Badge>
-              {work.assets.audio_A ? "本地音频已受管" : "等待音频导入"}
+              {work.assets.audio_A ? "已导入音频" : "等待音频导入"}
             </Badge>
           </div>
           {run && (
@@ -201,13 +208,13 @@ export default function Track({ id }: { id: string }) {
                   notify("已记为独立成品");
                 }}
               >
-                确认成品（先完成候选与封面确认）
+                确认成品
               </button>
             </div>
           )}
         </div>
         <div>
-          <div className="panel">
+          <div className="panel" id="track-lyrics-edit" tabIndex={-1}>
             <h2>歌词与创作提示</h2>
             {[
               ["title", "歌名", 1],
@@ -238,7 +245,7 @@ export default function Track({ id }: { id: string }) {
               <Badge>{status}</Badge>
             </div>
           </div>
-          <div className="panel">
+          <div className="panel" id="track-rights" tabIndex={-1}>
             <h2>来源与授权依据</h2>
             <label>
               商用依据与来源
@@ -264,13 +271,14 @@ export default function Track({ id }: { id: string }) {
             <button onClick={() => importAsset("rights", id)}>
               导入授权依据附件
             </button>
-            <p>
+            <HelpNote label="授权记录说明">
               本地记录不替代完整权利核验。正式发布前仍需确认各素材的商用依据及
               AI 标识。
-            </p>
+            </HelpNote>
           </div>
         </div>
       </div>
+      <LyricsPublicationPanel workId={id} beforeAction={async()=>{await persist();if(JSON.stringify(latest.current)!==saved.current)throw Error('请先保存当前编辑内容')}} onChanged={async()=>{const snapshot=await call('snapshot');const current=snapshot.works.find((w:any)=>w.id===id);if(current){expected.current=current.revision;latest.current={...current};saved.current=JSON.stringify(current);setForm({...current});setStatus('已保存')}}}/>
       <section className="panel">
         <h2>歌词与提示词版本对照</h2>
         <div className="compare">

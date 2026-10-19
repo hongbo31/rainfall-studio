@@ -9,6 +9,7 @@ export type HttpRequest = {
   headers?: Record<string, string>;
   body?: unknown;
   binary?: boolean;
+  assertActive?:()=>void;
 };
 export type HttpResponse = {
   status: number;
@@ -45,18 +46,22 @@ export function publicIpv4(value: string) {
     (a === 203 && b === 0 && c === 113)
   );
 }
-// Optional real transport, never instantiated or registered by the current application.
+// Main registers this only for its fixed read-only authentication check.
+// Paid generation remains unregistered.
 // DNS resolves once; the connection is pinned to a public IPv4 address. No redirects/proxies.
 export const nodeHttpsTransport: HttpTransport = async (input) => {
+  input.assertActive?.();
   const u = new URL(input.url);
   if (
     u.protocol !== "https:" ||
-    !["api.yourmusic.fun", "oss.yourmusic.fun"].includes(u.hostname) ||
+    !["api.yourmusic.fun", "oss.yourmusic.fun", "api.deepseek.com"].includes(u.hostname) ||
     u.username ||
     u.password ||
     (u.port && u.port !== "443")
   )
     throw Error("HTTP_HOST_REJECTED");
+  if(u.hostname==='api.deepseek.com' && (u.search || u.hash || !((input.method==='GET' && u.pathname==='/models') || (input.method==='POST' && u.pathname==='/chat/completions'))))
+    throw Error('HTTP_HOST_REJECTED');
   if (
     u.hostname === "oss.yourmusic.fun" &&
     input.headers &&
@@ -69,6 +74,7 @@ export const nodeHttpsTransport: HttpTransport = async (input) => {
   });
   if (!addresses.length || addresses.some((a) => !publicIpv4(a.address)))
     throw Error("HTTP_ADDRESS_REJECTED");
+  input.assertActive?.();
   return new Promise((resolve, reject) => {
     const req = https.request(
       u,
@@ -99,6 +105,11 @@ export const nodeHttpsTransport: HttpTransport = async (input) => {
         res.on("end", () => {
           try {
             const bytes = Buffer.concat(chunks);
+            let body: unknown = bytes;
+            if (!input.binary) {
+              try { body = JSON.parse(bytes.toString("utf8")); }
+              catch { body = null; }
+            }
             resolve({
               status: res.statusCode ?? 0,
               headers: Object.fromEntries(
@@ -107,7 +118,7 @@ export const nodeHttpsTransport: HttpTransport = async (input) => {
                   String(v ?? ""),
                 ]),
               ),
-              body: input.binary ? bytes : JSON.parse(bytes.toString("utf8")),
+              body,
             });
           } catch {
             reject(Error("HTTP_RESPONSE_INVALID"));
@@ -116,7 +127,10 @@ export const nodeHttpsTransport: HttpTransport = async (input) => {
       },
     );
     req.setTimeout(30000, () => req.destroy(Error("HTTP_TIMEOUT")));
-    req.on("error", () => reject(Error("HTTP_REQUEST_FAILED")));
+    req.on("error", (cause: NodeJS.ErrnoException) => {
+      const failure = Object.assign(Error(cause.message === "HTTP_TIMEOUT" ? "HTTP_TIMEOUT" : "HTTP_REQUEST_FAILED"), { code: cause.code });
+      reject(failure);
+    });
     if (input.body !== undefined) req.write(JSON.stringify(input.body));
     req.end();
   });
@@ -125,6 +139,7 @@ const SongSchema = z.object({
   id: z.string().min(1).max(200),
   status: z.enum(["pending", "processing", "succeeded", "failed"]),
   audio_url: z.string().max(5000).optional(),
+  title:z.string().max(1000).optional(),duration:z.number().nonnegative().max(10000).optional(),lyric:z.string().max(100000).optional(),model_name:z.string().max(200).optional(),created_at:z.string().max(200).optional(),
 });
 export interface MusicAdapter {
   source: "fixture" | "external";
@@ -211,7 +226,7 @@ export class YourMusicAdapter implements MusicAdapter {
     try {
       const r = await this.api("POST", "/v1/suno/generate/custom", body);
       if (r.status !== 202)
-        return { state: "unknown", reason: "SUBMISSION_NOT_PROVEN_UNCHARGED" };
+        return { state: "unknown", reason: "SUBMISSION_NOT_PROVEN_UNCHARGED",httpStatus:r.status };
       const parsed = z
         .object({
           task_id: z.string().min(1),
@@ -251,18 +266,47 @@ export class YourMusicAdapter implements MusicAdapter {
         new Set(songs.map((s) => s.id)).size !== songs.length
       )
         return { state: "error" };
-      return { state: "known", songs };
+      return { state: "known", songs:songs.map(s=>({...s,actualLyrics:s.lyric?{text:s.lyric,version:null}:null})) };
     } catch {
       return { state: "error" };
     }
   }
+  async nativeWav(songId:string){
+    z.string().uuid().parse(songId);
+    const r=await this.api('POST','/v1/music/generations/wav',{songid:songId});
+    if(r.status!==200)throw Error('NATIVE_WAV_NOT_AVAILABLE');
+    const result=z.object({id:z.string(),audio_wav_url:z.string().url()}).parse(r.body);
+    if(result.id!==songId)throw Error('OUTPUT_ID_MISMATCH');
+    safeMusicUrl(result.audio_wav_url);return result;
+  }
+  async recoverRecent(input:{draft:CreativeDraft;createdAt:string;expectedModel?:string}){
+    if(!input.expectedModel || !['chirp-v6','chirp-v6-wild','chirp-v6-mini'].includes(input.expectedModel))
+      return {state:'not_established',reason:'EXPECTED_MODEL_REQUIRED'};
+    if(!Number.isFinite(Date.parse(input.createdAt)))return {state:'not_established',reason:'DISPATCH_TIME_REQUIRED'};
+    const r=await this.api('GET','/v1/music/generations/history?page=1&size=20');
+    if(r.status!==200)return{state:'not_established',httpStatus:r.status};
+    const page=z.object({data:z.array(SongSchema).max(20)}).safeParse(r.body);if(!page.success)return{state:'not_established'};
+    const lyrics=input.draft.sections.map(s=>`[${s.kind}]\n${s.lines.join('\n')}`).join('\n\n');
+    const start=Date.parse(input.createdAt),songs=page.data.data.filter(s=>s.title===input.draft.title&&s.model_name===input.expectedModel&&s.lyric===lyrics&&s.created_at&&Date.parse(s.created_at)>=start-5000&&Date.parse(s.created_at)<=start+300000);
+    return songs.length===2&&new Set(songs.map(s=>s.id)).size===2?{state:'accepted',trackingId:null,songIds:songs.map(s=>s.id),evidence:'exact_title_lyrics_model_and_time_history_match'}:{state:'not_established',matchingCount:songs.length};
+  }
   async download(url: string) {
     safeMusicUrl(url);
     const r = await this.options.request({ method: "GET", url, binary: true });
-    const mime = (r.headers?.["content-type"] ?? "")
+    let mime = (r.headers?.["content-type"] ?? "")
       .split(";")[0]
       .trim()
       .toLowerCase();
+    // Official OSS serves MP3 and M4A results as generic binary. This is only a
+    // format hint; Core still requires ffprobe to validate the entire audio.
+    if(mime==='application/octet-stream'&&new URL(url).pathname.toLowerCase().endsWith('.mp3')&&Buffer.isBuffer(r.body)&&r.body.length>=10){
+      const b=r.body,id3=b.subarray(0,3).toString('ascii')==='ID3'&&[2,3,4].includes(b[3])&&[6,7,8,9].every(i=>(b[i]&0x80)===0),frame=b[0]===0xff&&(b[1]&0xe0)===0xe0&&(b[1]&0x06)!==0&&(b[2]&0xf0)!==0&&(b[2]&0xf0)!==0xf0;
+      if(id3||frame)mime='audio/mpeg';
+    }
+    if(mime==='application/octet-stream'&&new URL(url).pathname.toLowerCase().endsWith('.m4a')&&Buffer.isBuffer(r.body)&&r.body.length>=16){
+      const b=r.body,size=b.readUInt32BE(0),brand=b.subarray(8,12).toString('ascii');
+      if(size>=16&&size<=b.length&&b.subarray(4,8).toString('ascii')==='ftyp'&&['M4A ','isom','iso2','mp41','mp42'].includes(brand))mime='audio/mp4';
+    }
     if (
       r.status !== 200 ||
       ![

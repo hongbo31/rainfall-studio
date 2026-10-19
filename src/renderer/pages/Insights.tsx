@@ -1,30 +1,44 @@
-import React, { useState } from "react";
+import HelpNote from "../components/HelpNote";
+import React, { useState, useEffect } from "react";
 import { useStudio, PageHead, Badge, names, date } from "../context";
+import { summarizeReports, reportScopeKey } from "../insights-summary";
 export default function Insights() {
   const { data, importAsset } = useStudio();
   const [platform, setPlatform] = useState(""),
-    [period, setPeriod] = useState("");
-  const list = data.metrics.filter(
-    (m: any) =>
-      (!platform || m.platform === platform) && (!period || m.date === period),
-  );
-  const plays = list.reduce((n: number, m: any) => n + (m.plays ?? 0), 0),
-    favorites = list.reduce((n: number, m: any) => n + (m.favorites ?? 0), 0),
-    comments = list.reduce((n: number, m: any) => n + (m.comments ?? 0), 0);
+    [period, setPeriod] = useState(""),
+    [confirmedScope, setConfirmedScope] = useState<string | null>(null);
+  const scope = { platform, date: period },
+    scopeKey = reportScopeKey(data.metrics, scope);
+  const summary = summarizeReports(data.metrics, {
+      ...scope,
+      basisConfirmed: confirmedScope === scopeKey,
+    }),
+    list = summary.rows;
+  useEffect(() => setConfirmedScope(null), [scopeKey]);
+  const hint =
+    summary.status === "choose_date"
+      ? "请选择统计日期"
+      : summary.status === "choose_platform"
+        ? "请选择一个统计平台"
+        : summary.status === "no_reports"
+          ? "当前筛选尚无报表 · 未同步"
+          : summary.status === "confirm_basis"
+            ? "请先核对指标口径"
+            : null;
   return (
     <>
       <PageHead
-        title="把成长，看得更清楚。"
-        sub="保留数据来源与观察时间，记录作品每一步真实的回响。"
+        title="数据看板"
         action={
           <button className="primary" onClick={() => importAsset("report")}>
             ＋ 导入 CSV 报表
           </button>
         }
       />
-      <div className="notice">
-        在线统计尚未接入。此页仅展示已导入报表；累计快照按账号、作品和日期替换，不能跨日期相加解读为总增长。
-      </div>
+      <p className="notice">用户导入报表 · 未自动同步 · 累计快照非增长</p>
+      <HelpNote label="统计口径">
+        在线统计尚未接入，数据不会自动同步。此页仅展示用户导入报表；选择同一日期、同一平台并核对指标口径后，才合计已知数值。累计快照不能跨日期相加解读为总增长。
+      </HelpNote>
       <div className="toolbar">
         <select
           aria-label="统计平台"
@@ -48,33 +62,56 @@ export default function Insights() {
         />
         <Badge>指标缺失显示 —</Badge>
       </div>
+      <label className="inline-check">
+        <input
+          type="checkbox"
+          aria-label="我已核对当前报表的指标口径一致"
+          disabled={!period || !platform || !list.length}
+          checked={confirmedScope === scopeKey}
+          onChange={(e) =>
+            setConfirmedScope(e.target.checked ? scopeKey : null)
+          }
+        />
+        我已核对当前报表的指标口径一致
+      </label>
       <div className="stats">
         <div>
           <small>当前筛选报表行</small>
           <strong>{list.length}</strong>
-          <span>包含不同日期快照</span>
+          <span>{hint || "按当前日期与平台筛选"}</span>
         </div>
-        <div>
-          <small>播放快照合计</small>
-          <strong>{plays.toLocaleString()}</strong>
-          <span>仅当前行；非去重增长</span>
-        </div>
-        <div>
-          <small>收藏快照合计</small>
-          <strong>{favorites.toLocaleString()}</strong>
-          <span>缺失项不补造</span>
-        </div>
-        <div>
-          <small>评论快照合计</small>
-          <strong>{comments.toLocaleString()}</strong>
-          <span>以原报表口径为准</span>
-        </div>
+        {(
+          [
+            ["plays", "播放"],
+            ["favorites", "收藏"],
+            ["comments", "评论"],
+          ] as const
+        ).map(([field, title]) => {
+          const metric = summary.metrics[field];
+          return (
+            <div key={field} data-testid={"metric-" + field}>
+              <small>{title} · 已知数据合计</small>
+              <strong>
+                {metric.value === null ? "—" : metric.value.toLocaleString()}
+              </strong>
+              {!hint&&<span>
+                {(metric.overflow
+                    ? "合计超出安全范围，请查看明细"
+                    : metric.known === 0
+                      ? "尚未导入此指标 · 未同步"
+                      : `覆盖 ${metric.known}/${metric.total} 条 · 非增长`)}
+              </span>}
+            </div>
+          );
+        })}
       </div>
       <section className="panel">
         <h2>作品表现与来源</h2>
         {!list.length ? (
           <div className="empty">
-            还没有导入数据。准备一份自己的平台报表，或按下方格式整理 CSV。
+            {data.metrics.length
+              ? "当前筛选暂无报表"
+              : "暂无报表"}
           </div>
         ) : (
           <div className="table-wrap">
@@ -113,8 +150,8 @@ export default function Insights() {
           </div>
         )}
       </section>
-      <section className="panel">
-        <h2>CSV 导入格式</h2>
+      <details className="panel">
+        <summary>CSV 导入格式</summary>
         <pre>
           platform,account,work,date,plays,favorites,comments{"\n"}
           netease,我的账号,原创作品,2026-10-15,100,,2
@@ -124,7 +161,7 @@ export default function Insights() {
           douyin。支持 UTF-8
           BOM、引号、逗号和换行。此行只是字段示例，不会自动写入统计。
         </p>
-      </section>
+      </details>
     </>
   );
 }

@@ -2,13 +2,21 @@ import { build } from "esbuild";
 import { build as viteBuild } from "vite";
 import fs from "node:fs/promises";
 await fs.mkdir("build", { recursive: true });
+await fs.copyFile('src/core/inbox/dot-rename-exclusive.ps1','build/dot-rename-exclusive.ps1');
+await fs.copyFile('src/core/inbox/dot-volume-facts.ps1','build/dot-volume-facts.ps1');
+await fs.copyFile('src/main/tme/uia-host.ps1','build/tme-uia-host.ps1');
+await fs.copyFile('src/main/tme/ai-uia-host.ps1','build/tme-ai-uia-host.ps1');
+await fs.copyFile('src/main/tme/uia-grid.ps1','build/uia-grid.ps1');
 for (const [name, entry] of Object.entries({
   main: "src/main/bootstrap.ts",
   preload: "src/preload/index.ts",
   core: "src/core/index.ts",
+  'dot-inbox-host': "src/core/inbox/headless-host.ts",
   vault: "src/main/credentials.ts",
   "api-credentials": "src/main/api-credentials.ts",
+  "live-music": "src/main/live-music.ts",
   quality: "src/core/quality/index.ts",
+  'tme-browser': 'src/main/tme/index.ts',
 })) {
   await build({
     entryPoints: [entry],

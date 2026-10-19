@@ -1,6 +1,6 @@
 {
   "name": "rainfall-studio",
-  "version": "0.5.1",
+  "version": "0.11.2-preview.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -18,7 +18,11 @@
     "test:security": "node scripts/run-tests.mjs",
     "test:e2e": "node scripts/e2e.mjs && node scripts/journey.mjs && node scripts/cover-task-test.mjs",
     "test:packaged": "node scripts/e2e.mjs --packaged && node scripts/journey.mjs --packaged && node scripts/cover-task-test.mjs --packaged",
-    "verify:all": "npm test && npm run typecheck && npm run test:integration && npm run test:e2e"
+    "verify:all": "npm test && npm run typecheck && npm run test:integration && npm run test:e2e",
+    "test:tme": "npm run desktop:build && node scripts/test-tme.mjs",
+    "test:cover-lyrics": "npm run desktop:build && node scripts/test-cover-lyrics.mjs",
+    "test:publish-materials": "node scripts/test-publish-material-feedback.mjs && node --test tests/publish-material-feedback-ui.test.mjs",
+    "test:qq-preparation": "node scripts/test-tme-ai-broker.mjs && node --test tests/tme-ai-upload-control.test.mjs tests/tme-ai-native-contract.test.mjs"
   },
   "dependencies": {
     "archiver": "8.0.0",
@@ -28,7 +32,8 @@
     "luxon": "3.7.2",
     "sharp": "0.35.5",
     "yauzl": "3.4.0",
-    "zod": "4.6.7"
+    "zod": "4.6.7",
+    "playwright-core": "1.64.1"
   },
   "devDependencies": {
     "@electron-forge/cli": "8.0.1",

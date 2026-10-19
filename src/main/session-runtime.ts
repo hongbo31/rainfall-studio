@@ -12,7 +12,11 @@ export async function acquireWorkspaceLease(root: string) {
       : path.join(os.tmpdir(), "rainfall-" + key + ".sock");
   const server = net.createServer((socket) => socket.destroy());
   await new Promise<void>((resolve, reject) => {
-    server.once("error", () => reject(Error("WORKSPACE_ALREADY_OWNED")));
+    server.once("error", (error: NodeJS.ErrnoException) => {
+      reject(error.code === "EADDRINUSE"
+        ? new Error("WORKSPACE_ALREADY_OWNED", { cause: error })
+        : error);
+    });
     server.listen({ path: endpoint, exclusive: true }, () => resolve());
   });
   server.unref();

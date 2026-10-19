@@ -5,7 +5,7 @@ const test = require("node:test"),
   { randomUUID } = require("node:crypto"),
   sharp = require("sharp"),
   { execFileSync } = require("node:child_process");
-const { Studio, importLegacy } = require("../../build/core.cjs");
+const { ffmpeg, Studio, importLegacy } = require("../../build/core.cjs");
 function setup() {
   const root = path.resolve("output/test-runs", randomUUID());
   return { root, s: new Studio(root, "simulation") };
@@ -63,7 +63,7 @@ test("local MP4 has actual video/audio, vertical work preset and full source dur
   const audio = path.join(root, "video-audio.wav"),
     cover = path.join(root, "video-cover.png");
   execFileSync(
-    "C:/ffmpeg/ffmpeg-8.1-essentials_build/bin/ffmpeg.exe",
+    ffmpeg,
     [
       "-v",
       "error",

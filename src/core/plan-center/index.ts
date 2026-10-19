@@ -1,0 +1,441 @@
+import { randomUUID } from 'node:crypto';
+import { DateTime } from 'luxon';
+import { z } from 'zod';
+import { parseDraft } from '../../shared/creation';
+import { TextEvaluationScoreSchema } from '../../shared/text-evaluation';
+import { PairSchema } from '../quality/contracts';
+import { pairHash } from '../quality/scoring';
+import type { Repository } from '../database';
+import { PlanCenterPlanSchema, PlanCenterSaveSchema, PlanCenterToggleSchema, PlanCenterIdSchema, PlanCenterRunSchema, PlanCenterStopSchema, PlanCenterClaimSchema, PlanCenterRecordSchema, PlanCenterReconcileSchema, PlanCenterRetrySchema, PlanCenterMaterialsSchema, PlanCenterCapabilitySchema, PlanCenterCapabilityNames } from '../../shared/plan-center';
+import type { PlanCenterPlan, PlanCenterPlanInput, PlanCenterCapabilities, PlanCenterCapabilityName, PlanCenterRun, PlanCenterItem, PlanCenterStage, PlanCenterStageAttempt, PlanCenterPublishAttempt, PlanCenterAlbumBinding, PlanCenterPublishTarget, PlanCenterList, PlanCenterMigration } from '../../shared/plan-center';
+import { CenterStore, digest, isLegacyOwned } from './storage';
+import { dueTimes } from './schedule';
+export { isLegacyOwned } from './storage';
+
+export type PlanCenterOptions = {
+  now?:()=>Date|string;
+  capabilities?:Partial<PlanCenterCapabilities>|(()=>Partial<PlanCenterCapabilities>);
+  ports?:{albumCatalog?:(input:{platform:string;accountId:string})=>{evidenceId:string;albums:Array<{id:string}>}};
+  // Recovery is a process-start action. Long-lived integrations must reuse the service instance.
+  recoverDispatching?:boolean;
+};
+const terminalRuns=new Set(['completed','stopped','failed']);
+const inFlight=new Set(['dispatching','waiting','unknown']);
+const publishInFlight=new Set(['dispatching','submitted','reviewing','unknown']);
+const names:Record<PlanCenterStage,PlanCenterCapabilityName|undefined>={dot:'dot',text_score:'text',cover:'cover',music_submit:'music',music_assets:'music',materials:undefined};
+const safeId=z.string().min(1).max(500);
+const targetInput=z.strictObject({runId:safeId,platform:safeId,accountId:safeId});
+const publishInput=targetInput.extend({itemId:safeId});
+export class PlanCenterService {
+  private store:CenterStore;
+  constructor(readonly repo:Repository,readonly options:PlanCenterOptions={}) {
+    this.store=new CenterStore(repo);
+    if(options.recoverDispatching!==false)this.recover();
+  }
+  private now() {const n=this.options.now?.()??new Date();return new Date(n).toISOString();}
+  capabilities():PlanCenterCapabilities {
+    const supplied=typeof this.options.capabilities==='function'?this.options.capabilities():this.options.capabilities??{};
+    const result={} as PlanCenterCapabilities;
+    for(const key of PlanCenterCapabilityNames)result[key]=PlanCenterCapabilitySchema.parse(supplied[key]??{available:false,reason:key==='dot'?'DOT_CREATION_PORT_UNAVAILABLE':`${key.toUpperCase()}_PORT_UNAVAILABLE`});
+    return result;
+  }
+  list():PlanCenterList {
+    return {plans:this.store.all('plan'),runs:this.store.all('run'),items:this.store.all('item'),stageAttempts:this.store.all('stage'),publishAttempts:this.store.all('publish'),occurrences:this.store.all('occurrence'),albumBindings:this.store.all('album'),migration:this.store.all('migration').at(-1)??null};
+  }
+  save(input:{plan:PlanCenterPlanInput;expectedRevision:number|null}) {
+    const parsed=PlanCenterSaveSchema.parse(input);
+    return this.repo.transaction(()=>{
+      const old=this.store.get('plan',parsed.plan.id);
+      if((old?.revision??null)!==parsed.expectedRevision)throw Error('REVISION_CONFLICT');
+      const now=this.now(),plan=this.store.put('plan',{...parsed.plan,revision:(old?.revision??0)+1,createdAt:old?.createdAt??now,updatedAt:now});
+      if(!old||digest(old.schedule)!==digest(plan.schedule)||old.enabled!==plan.enabled)
+        this.store.put('cursor',{id:plan.id,lastAt:now});
+      return plan;
+    });
+  }
+  toggle(input:z.input<typeof PlanCenterToggleSchema>) {
+    const p=PlanCenterToggleSchema.parse(input);
+    return this.repo.transaction(()=>{const old=this.store.get('plan',p.id);if(!old)throw Error('NOT_FOUND');return this.save({plan:{...old,enabled:p.enabled},expectedRevision:p.expectedRevision});});
+  }
+  preview(input:z.input<typeof PlanCenterIdSchema>) {
+    const {id}=PlanCenterIdSchema.parse(input),plan=this.store.get('plan',id);if(!plan)throw Error('NOT_FOUND');
+    const summary={title:plan.title,artistId:plan.artistId,count:plan.count,outputs:plan.outputs,theme:plan.theme,styleTemplate:plan.styleTemplate,material:plan.material,text:plan.text,music:plan.music,publishTargets:plan.publishTargets.filter(t=>t.enabled),authorization:plan.authorization};
+    return {planRevision:plan.revision,summaryHash:digest({plan,summary}),summary};
+  }
+  run(input:z.input<typeof PlanCenterRunSchema>) {
+    const p=PlanCenterRunSchema.parse(input);
+    return this.repo.transaction(()=>{
+      const existing=this.store.all('run').find(r=>r.requestId===p.requestId);
+      if(existing) {if(existing.planId!==p.id||existing.source!==p.source||existing.summaryHash!==p.summaryHash||existing.planRevision!==p.expectedRevision)throw Error('REQUEST_ID_CONFLICT');return existing;}
+      const plan=this.store.get('plan',p.id);if(!plan)throw Error('NOT_FOUND');
+      if(plan.revision!==p.expectedRevision)throw Error('REVISION_CONFLICT');
+      if(this.preview({id:p.id}).summaryHash!==p.summaryHash)throw Error('SUMMARY_CONFLICT');
+      return this.createRun(plan,p.source,p.requestId,p.summaryHash);
+    });
+  }
+  private createRun(plan:PlanCenterPlan,source:PlanCenterRun['source'],requestId:string,summaryHash:string,occurrenceKey?:string) {
+    if(this.store.all('run').some(r=>r.planId===plan.id&&!terminalRuns.has(r.state)))throw Error('ACTIVE_RUN');
+    const now=this.now(),run=this.store.put('run',{id:randomUUID(),planId:plan.id,planRevision:plan.revision,snapshot:plan,summaryHash,requestId,source,occurrenceKey,state:'running',stopRequested:false,createdAt:now,updatedAt:now});
+    for(let ordinal=1;ordinal<=plan.count;ordinal++)this.store.put('item',{id:`${run.id}:item:${ordinal}`,runId:run.id,planId:plan.id,ordinal,expectedExternalItemId:plan.material.expectedExternalItemIds?.[ordinal-1]??`pc-${digest([run.id,ordinal])}`,state:plan.material.source==='dot'?'waiting_external_dot':'waiting_materials',versions:[],createdAt:now,updatedAt:now});
+    this.refresh(run.id);return this.store.get('run',run.id)!;
+  }
+  tick() {
+    return this.repo.transaction(()=>{
+      const now=this.now();
+      for(const plan of this.store.all('plan').filter(p=>p.enabled)) {
+        if(this.store.all('run').some(r=>r.planId===plan.id&&!terminalRuns.has(r.state)))continue;
+        const cursor=this.store.get('cursor',plan.id)??{id:plan.id,lastAt:plan.createdAt??now};
+        const times=dueTimes(plan,cursor.lastAt,now);if(!times.length)continue;
+        const selected=plan.catchUp.mode==='bounded'?times.slice(-plan.catchUp.limit)[0]:times.at(-1)!;
+        const key=`${plan.id}:${selected}`;
+        if(!this.store.get('occurrence',key)) {
+          const base={id:key,planId:plan.id,occurrenceKey:key,intendedAt:selected,localDate:DateTime.fromISO(selected).setZone('Asia/Shanghai').toISODate()!,createdAt:now};
+          if(plan.catchUp.mode==='skip'&&Date.parse(now)-Date.parse(selected)>60_000)this.store.put('occurrence',{...base,status:'skipped',reason:'CATCH_UP_SKIP'});
+          else {const run=this.createRun(plan,'scheduled',key,this.preview({id:plan.id}).summaryHash,key);this.store.put('occurrence',{...base,status:'claimed',runId:run.id});}
+        }
+        this.store.put('cursor',{id:plan.id,lastAt:plan.catchUp.mode==='bounded'?selected:now});
+      }
+      return this.list();
+    });
+  }
+  stop(input:z.input<typeof PlanCenterStopSchema>) {
+    const {runId}=PlanCenterStopSchema.parse(input);
+    return this.repo.transaction(()=>{const run=this.store.get('run',runId);if(!run)throw Error('NOT_FOUND');if(terminalRuns.has(run.state))return run;this.store.put('run',{...run,stopRequested:true,state:'stopping',updatedAt:this.now()});this.refresh(runId);return this.store.get('run',runId)!;});
+  }
+  private stages(plan:PlanCenterPlan):PlanCenterStage[] {
+    return ['dot','text_score',...(plan.outputs.music?['music_submit' as const,'music_assets' as const]:[]),...(plan.outputs.cover?['cover' as const]:[]),'materials'];
+  }
+  private stageGate(run:PlanCenterRun,item:PlanCenterItem,stage:PlanCenterStage):{state:string;reason?:string} {
+    if(run.snapshot.needsConfiguration.length)return {state:'blocked',reason:'LEGACY_CONFIGURATION_REQUIRED'};
+    if(stage==='dot'&&run.snapshot.material.source==='manual')return {state:'waiting_materials',reason:'MANUAL_MATERIAL_REQUIRED'};
+    const cap=names[stage];
+    if(cap&&!this.capabilities()[cap].available)return {state:stage==='dot'?'waiting_external_dot':'blocked',reason:this.capabilities()[cap].reason};
+    if(stage==='dot'&&(!run.snapshot.material.channel||!run.snapshot.material.identity))return {state:'waiting_external_dot',reason:'DOT_IDENTITY_REQUIRED'};
+    if(stage==='text_score'&&(!run.snapshot.authorization.text||!run.snapshot.text.consent||!run.snapshot.text.profileId||!run.snapshot.text.profileRevision||!run.snapshot.text.modelId||!run.snapshot.text.budgetMicros))return {state:'blocked',reason:'TEXT_GRANT_REQUIRED'};
+    if(stage==='music_submit'&&run.snapshot.music.route==='manual')return item.workId?{state:'ready'}:{state:'waiting_materials',reason:'EXISTING_AUDIO_BINDING_REQUIRED'};
+    if(stage==='music_submit'&&(!run.snapshot.authorization.music||!run.snapshot.music.consent||!run.snapshot.music.profileId||!run.snapshot.music.profileRevision||!run.snapshot.music.modelId||!run.snapshot.music.budgetCredits||!run.snapshot.music.maxCostPerRequestCredits||(!run.snapshot.music.pricingEvidence&&!run.snapshot.music.creditPolicy)))return {state:'blocked',reason:'MUSIC_GRANT_REQUIRED'};
+    if(stage==='music_submit'&&!['yourmusic','pule'].includes(run.snapshot.music.route))return {state:'blocked',reason:'MUSIC_ROUTE_UNAVAILABLE'};
+    if(stage==='materials'&&!item.materials&&run.snapshot.authorization.publish&&run.snapshot.publishTargets.some(t=>t.enabled))return {state:'waiting_materials',reason:'MATERIALS_INCOMPLETE'};
+    return {state:'ready'};
+  }
+  next(input:{runId?:string;itemId?:string}={}) {
+    const parsed=z.strictObject({runId:safeId.optional(),itemId:safeId.optional()}).parse(input);
+    for(const run of this.store.all('run').filter(r=>!terminalRuns.has(r.state)&&!r.stopRequested&&(!parsed.runId||r.id===parsed.runId)))
+      for(const item of this.store.all('item').filter(i=>i.runId===run.id&&(!parsed.itemId||i.id===parsed.itemId))) {
+        const attempts=this.store.all('stage').filter(a=>a.itemId===item.id);
+        for(const stage of this.stages(run.snapshot)) {
+          if(attempts.some(a=>a.stage===stage&&a.state==='succeeded'))continue;
+          const last=attempts.filter(a=>a.stage===stage).at(-1);
+          if(last)return {runId:run.id,itemId:item.id,stage,state:last.state,reason:last.reason,attemptId:last.id};
+          return {runId:run.id,itemId:item.id,stage,...this.stageGate(run,item,stage)};
+        }
+      }
+    return null;
+  }
+  claim(input:z.input<typeof PlanCenterClaimSchema>):PlanCenterStageAttempt|{state:string;reason?:string} {
+    const p=PlanCenterClaimSchema.parse(input);
+    return this.repo.transaction(()=>{
+      const run=this.store.get('run',p.runId),item=this.store.get('item',p.itemId);if(!run||!item||item.runId!==run.id)throw Error('NOT_FOUND');
+      if(run.stopRequested)throw Error('STOP_REQUESTED');if(terminalRuns.has(run.state))throw Error('RUN_TERMINAL');
+      const attempts=this.store.all('stage').filter(a=>a.itemId===p.itemId&&a.stage===p.stage),success=attempts.find(a=>a.state==='succeeded');
+      if(p.requestHash&&attempts.length&&p.requestHash!==attempts.at(-1)!.requestHash)throw Error('REQUEST_HASH_CONFLICT');
+      if(success)return success;
+      if(attempts.length) {const last=attempts.at(-1)!;if(last.state==='unknown')throw Error('RECONCILE_REQUIRED');return last;}
+      const required=this.stages(run.snapshot),stageIndex=required.indexOf(p.stage);if(stageIndex<0)throw Error('STAGE_NOT_CONFIGURED');
+      for(const prev of required.slice(0,stageIndex))if(!this.store.all('stage').some(a=>a.itemId===item.id&&a.stage===prev&&a.state==='succeeded'))throw Error('STAGE_PREREQUISITE');
+      const gate=this.stageGate(run,item,p.stage);if(gate.state!=='ready'){this.store.put('item',{...item,...gate,updatedAt:this.now()});this.refresh(run.id);return gate;}
+      return this.newAttempt(run,item,p.stage,1,p.requestHash);
+    });
+  }
+  private newAttempt(run:PlanCenterRun,item:PlanCenterItem,stage:PlanCenterStage,ordinal:number,requestHash?:string) {
+    const now=this.now(),key=`${run.id}:${item.id}:${stage}:${ordinal}`;
+    const attempt=this.store.put('stage',{id:key,runId:run.id,itemId:item.id,stage,ordinal,idempotencyKey:key,requestHash:requestHash??digest({snapshot:run.snapshot,itemId:item.id,stage,ordinal}),state:'dispatching',createdAt:now,updatedAt:now});
+    this.store.put('item',{...item,state:'running',reason:undefined,updatedAt:now});this.refresh(run.id);return attempt;
+  }
+  record(input:z.input<typeof PlanCenterRecordSchema>) {
+    const p=PlanCenterRecordSchema.parse(input);
+    return this.repo.transaction(()=>this.recordInside(p));
+  }
+  private recordInside(p:z.output<typeof PlanCenterRecordSchema>) {
+    const attempt=this.store.get('stage',p.attemptId);if(!attempt)throw Error('NOT_FOUND');
+    if(['succeeded','failed','not_found'].includes(attempt.state)) {
+      if(attempt.state===p.status&&digest(attempt.result??{})===digest(p.result??{})&&attempt.evidenceId===p.evidenceId)return attempt;
+      throw Error('TERMINAL_ATTEMPT');
+    }
+    const item=this.store.get('item',attempt.itemId)!,run=this.store.get('run',attempt.runId)!;
+    if(p.status==='succeeded') {
+      if(!p.evidenceId)throw Error('EVIDENCE_REQUIRED');
+      if(attempt.stage==='dot')this.validateDot(run,item,p.result);
+      if(attempt.stage==='text_score') {
+        const result=p.result??{};
+        if(result.source!=='model'||typeof result.score!=='number'||!Number.isFinite(result.score)||result.score<run.snapshot.text.threshold||result.score>100)throw Error('MODEL_SCORE_REQUIRED');
+        if(item.material?.candidateId&&result.candidateId!==item.material.candidateId)throw Error('SCORE_CANDIDATE_MISMATCH');
+        if(result.evaluationRunId!==undefined||result.evaluatedDraftId!==undefined||result.evaluatedMaterial!==undefined)this.applyEvaluatedMaterial(run,item,attempt,p);
+      }
+      if(attempt.stage==='music_assets') {
+        const versions=z.array(z.strictObject({version:z.enum(['A','B']),assetId:safeId,externalId:safeId.optional(),sha256:z.string().optional()})).min(1).max(2).parse(p.result?.versions);
+        if(new Set(versions.map(v=>v.version)).size!==versions.length)throw Error('DUPLICATE_VERSION');
+        this.store.put('item',{...item,versions,state:'ready',updatedAt:this.now()});
+      }
+      if(attempt.stage==='dot')this.store.put('item',{...item,material:p.result,state:'ready',updatedAt:this.now()});
+    }
+    const updated=this.store.put('stage',{...attempt,state:p.status==='waiting'?'waiting':p.status,...(p.externalTaskId?{externalTaskId:p.externalTaskId}:{}),...(p.evidenceId?{evidenceId:p.evidenceId}:{}),result:p.result??attempt.result,reason:p.reason,updatedAt:this.now()});
+    this.refresh(attempt.runId);return updated;
+  }
+  private validateDot(run:PlanCenterRun,item:PlanCenterItem,result?:Record<string,unknown>) {
+    if(!result||result.artistId!==run.snapshot.artistId||result.channel!==run.snapshot.material.channel||result.identity!==run.snapshot.material.identity||result.externalItemId!==item.expectedExternalItemId)throw Error('DOT_IDENTITY_MISMATCH');
+    if(typeof result.title!=='string'||!result.title.trim()||typeof result.lyrics!=='string'||!result.lyrics.trim())throw Error('DOT_MATERIAL_INCOMPLETE');
+  }
+  private applyEvaluatedMaterial(run:PlanCenterRun,item:PlanCenterItem,attempt:PlanCenterStageAttempt,input:z.output<typeof PlanCenterRecordSchema>) {
+    const result=input.result!,evaluationRunId=safeId.parse(result.evaluationRunId),draftId=safeId.parse(result.evaluatedDraftId);
+    const evaluation=this.repo.maybe('settings',`production-flow:run:${evaluationRunId}`)?.value,draftRow=this.repo.maybe('drafts',draftId);
+    if(!evaluation||evaluation.state!=='completed'||evaluation.artistId!==run.snapshot.artistId||evaluation.inboxCandidateId!==item.material?.candidateId||!evaluation.plan?.managedByPlanCenter||evaluation.plan.managedOwnerKey!==attempt.id||evaluation.candidate?.id!==draftId||!draftRow||draftRow.artistId!==run.snapshot.artistId||draftRow.source!=='inbox-evaluation'||draftRow.evaluationRunId!==evaluationRunId)throw Error('SCORE_ARTIFACT_SCOPE_MISMATCH');
+    if(digest(result.assessment)!==digest(evaluation.score)||evaluation.score?.revisionId!==draftId||evaluation.score?.overall!==result.score||evaluation.score?.threshold!==run.snapshot.text.threshold||!evaluation.score?.passed)throw Error('SCORE_PROOF_MISMATCH');
+    const raw=evaluation.score;
+    TextEvaluationScoreSchema.parse({revisionId:raw.revisionId,dimensions:raw.dimensions,overall:raw.overall,findings:raw.findings,threshold:raw.threshold,passed:raw.passed,source:raw.source,calibration:raw.calibration});
+    if(raw.operationId&&input.evidenceId!==raw.operationId)throw Error('SCORE_EVIDENCE_MISMATCH');
+    const draft=parseDraft(draftRow.draft),pair=PairSchema.parse(draftRow.pair),verifiedHash=pairHash(pair);
+    if(pair.revisionId!==draftId||verifiedHash!==evaluation.candidate.pairHash||digest(pair)!==digest(evaluation.candidate.pair)||digest(draft)!==digest(evaluation.candidate.draft))throw Error('SCORE_PAIR_MISMATCH');
+    if(!Number.isInteger(evaluation.revisionCount)||evaluation.revisionCount<0||evaluation.revisionCount>run.snapshot.text.maxRewrites||result.rewriteCount!==evaluation.revisionCount)throw Error('SCORE_REVISION_LIMIT');
+    const final={title:draft.title,lyrics:pair.lyrics,musicPrompt:pair.musicPrompt,draftId,pairHash:verifiedHash};
+    if(result.evaluatedMaterial!==undefined) {
+      const supplied=z.strictObject({title:z.string(),lyrics:z.string(),musicPrompt:z.string(),draftId:safeId,pairHash:z.string()}).parse(result.evaluatedMaterial);
+      if(digest(supplied)!==digest(final))throw Error('SCORE_ARTIFACT_MISMATCH');
+    }
+    const originalDot=item.material?.originalDot??{...item.material};
+    this.store.put('item',{...item,material:{...item.material,originalDot,title:final.title,lyrics:final.lyrics,musicPrompt:final.musicPrompt,finalDraftId:draftId,coverRefreshRequired:evaluation.revisionCount>0,finalRevision:{...final,evaluationRunId,assessment:result.assessment,evidenceId:input.evidenceId}},updatedAt:this.now()});
+  }
+  // Incoming dot evidence can be accepted without pretending a creation port exists.
+  acceptDotCandidate(input:{itemId:string;evidenceId:string;candidate:Record<string,unknown>}) {
+    const p=z.strictObject({itemId:safeId,evidenceId:safeId,candidate:z.record(z.string(),z.unknown())}).parse(input);
+    return this.repo.transaction(()=>{
+      const item=this.store.get('item',p.itemId);if(!item)throw Error('NOT_FOUND');const run=this.store.get('run',item.runId)!;
+      this.validateDot(run,item,p.candidate);
+      const success=this.store.all('stage').find(a=>a.itemId===item.id&&a.stage==='dot'&&a.state==='succeeded');if(success)return success;
+      const existing=this.store.all('stage').filter(a=>a.itemId===item.id&&a.stage==='dot').at(-1);
+      if(!existing&&run.stopRequested)throw Error('STOP_REQUESTED');
+      const attempt=existing??this.newAttempt(run,item,'dot',1);
+      return this.recordInside({attemptId:attempt.id,status:'succeeded',evidenceId:p.evidenceId,result:p.candidate});
+    });
+  }
+  attachDot(input:{itemId:string;candidateId:string}) {
+    const p=z.strictObject({itemId:safeId,candidateId:safeId}).parse(input);
+    return this.repo.transaction(()=>{
+      const item=this.store.get('item',p.itemId),candidate=this.repo.maybe('textCandidates',p.candidateId);if(!item||!candidate)throw Error('NOT_FOUND');
+      const run=this.store.get('run',item.runId)!;
+      if(!candidate.isCurrent||candidate.source?.verification!=='local_channel'||candidate.lineageState==='lineage_pending')throw Error('DOT_CANDIDATE_UNTRUSTED');
+      const channel=this.repo.maybe('settings','inbox-channel')?.channel;
+      if(!channel||channel.id!==run.snapshot.material.channel||candidate.source.channelId!==channel.id||channel.artistRefs?.[run.snapshot.material.identity]!==run.snapshot.artistId||candidate.artistId!==run.snapshot.artistId||candidate.externalItemId!==item.expectedExternalItemId)throw Error('DOT_IDENTITY_MISMATCH');
+      // Older imported rows did not persist artistRef. Only an unambiguous channel mapping can establish it.
+      const aliases=Object.entries(channel.artistRefs??{}).filter(([,artist])=>artist===candidate.artistId).map(([ref])=>ref);
+      const importedRef=candidate.artistRef??candidate.source.artistRef;
+      if(importedRef?importedRef!==run.snapshot.material.identity:aliases.length!==1)throw Error('DOT_IDENTITY_AMBIGUOUS');
+      const draft=this.repo.maybe('drafts',candidate.draftId);if(!draft||draft.artistId!==run.snapshot.artistId)throw Error('DOT_CANDIDATE_UNTRUSTED');
+      const d=draft.draft;if(!d||typeof d.title!=='string'||!Array.isArray(d.sections))throw Error('DOT_MATERIAL_INCOMPLETE');
+      const lyrics=d.sections.flatMap((s:{lines?:string[]})=>s.lines??[]).join('\n');
+      return this.acceptDotCandidate({itemId:item.id,evidenceId:`text-candidate:${candidate.id}`,candidate:{candidateId:candidate.id,draftId:candidate.draftId,artistId:candidate.artistId,channel:candidate.source.channelId,identity:run.snapshot.material.identity,externalItemId:candidate.externalItemId,title:d.title,lyrics,itemHash:candidate.itemHash??null}});
+    });
+  }
+  reconcile(input:z.input<typeof PlanCenterReconcileSchema>) {
+    const p=PlanCenterReconcileSchema.parse(input);
+    return this.repo.transaction(()=>{
+      const attempt=this.store.get('stage',p.attemptId);if(!attempt)throw Error('NOT_FOUND');if(!['unknown','dispatching','waiting'].includes(attempt.state))throw Error('RECONCILE_NOT_REQUIRED');
+      if(p.status==='pending')return this.store.put('stage',{...attempt,state:'waiting',evidenceId:p.evidenceId,externalTaskId:p.externalTaskId??attempt.externalTaskId,updatedAt:this.now()});
+      if(p.status==='not_found') {const a=this.store.put('stage',{...attempt,state:'not_found',evidenceId:p.evidenceId,reason:'RECONCILED_NOT_FOUND',updatedAt:this.now()});this.refresh(a.runId);return a;}
+      return this.recordInside({...p,status:p.status});
+    });
+  }
+  retry(input:z.input<typeof PlanCenterRetrySchema>) {
+    const p=PlanCenterRetrySchema.parse(input);
+    return this.repo.transaction(()=>{
+      const attempt=this.store.get('stage',p.attemptId);if(!attempt)throw Error('NOT_FOUND');
+      if(attempt.state==='succeeded')return attempt;
+      if(!['failed','not_found'].includes(attempt.state))throw Error('RECONCILE_REQUIRED');
+      const run=this.store.get('run',attempt.runId)!,item=this.store.get('item',attempt.itemId)!;
+      if(run.stopRequested)throw Error('STOP_REQUESTED');
+      const attempts=this.store.all('stage').filter(a=>a.itemId===item.id&&a.stage===attempt.stage),last=attempts.at(-1)!;
+      if(last.id!==attempt.id) {
+        if(['unknown','waiting'].includes(last.state))throw Error('RECONCILE_REQUIRED');
+        if(last.state==='dispatching')throw Error('ATTEMPT_IN_PROGRESS');
+        return last;
+      }
+      const gate=this.stageGate(run,item,attempt.stage);if(gate.state!=='ready')throw Error(gate.reason??'STAGE_BLOCKED');
+      if(attempt.stage==='text_score'&&typeof attempt.result?.evaluationRunId==='string'){
+        const child=this.repo.maybe('settings',`production-flow:run:${attempt.result.evaluationRunId}`)?.value;
+        if(!child?.plan?.managedByPlanCenter||child.plan.managedOwnerKey!==attempt.id||child.state!=='ready'||child.paused)throw Error('MANAGED_SCORE_RESUME_REQUIRED');
+        const resumed=this.store.put('stage',{...attempt,state:'dispatching',reason:undefined,updatedAt:this.now()});
+        this.repo.audit('planCenter.managedScore.resumed',attempt.id,{runId:run.id,evaluationRunId:child.id});
+        this.refresh(run.id);return resumed;
+      }
+      if(['music_submit','music_assets'].includes(attempt.stage)&&typeof attempt.result?.childRunId==='string'){
+        const child=this.repo.maybe('settings',`production-flow:run:${attempt.result.childRunId}`)?.value;
+        const binding=this.repo.maybe('settings','plan-center-music:'+item.id);
+        if(!child?.managedMusic||binding?.childRunId!==child.id||child.managedStopped||child.state==='unknown'||child.paused)throw Error('MANAGED_MUSIC_RESUME_REQUIRED');
+        const resumed=this.store.put('stage',{...attempt,state:'dispatching',reason:undefined,updatedAt:this.now()});this.refresh(run.id);return resumed;
+      }
+      const limit=attempt.stage==='text_score'?run.snapshot.text.maxScoreRetries+1:3;if(attempt.ordinal>=limit)throw Error('RETRY_LIMIT');
+      return this.newAttempt(run,item,attempt.stage,attempt.ordinal+1);
+    });
+  }
+  bindWork(input:{itemId:string;workId:string;versions:PlanCenterItem['versions'];selectedVersion?:'A'|'B';collectOnly?:boolean}) {
+    return this.repo.transaction(()=>{
+      const item=this.store.get('item',input.itemId);if(!item)throw Error('NOT_FOUND');
+      const run=this.store.get('run',item.runId)!;if(run.stopRequested&&!input.collectOnly)throw Error('STOP_REQUESTED');
+      if(item.workId&&item.workId!==input.workId)throw Error('WORK_ALREADY_BOUND');
+      const versions=z.array(z.strictObject({version:z.enum(['A','B']),assetId:safeId,externalId:safeId.optional(),sha256:z.string().regex(/^[a-f0-9]{64}$/).optional()})).max(2).parse(input.versions);
+      if(new Set(versions.map(v=>v.version)).size!==versions.length)throw Error('DUPLICATE_VERSION');
+      if(input.selectedVersion&&versions.length&&!versions.some(v=>v.version===input.selectedVersion))throw Error('AUDIO_VERSION_MISMATCH');
+      if(run.snapshot.music.versionPolicy==='first'&&input.selectedVersion&&input.selectedVersion!=='A')throw Error('VERSION_POLICY_FIRST');
+      return this.store.put('item',{...item,workId:input.workId,versions,selectedVersion:input.selectedVersion??item.selectedVersion,updatedAt:this.now()});
+    });
+  }
+  setMaterials(input:z.input<typeof PlanCenterMaterialsSchema>) {
+    const p=PlanCenterMaterialsSchema.parse(input);
+    return this.repo.transaction(()=>{
+      const item=this.store.get('item',p.itemId);if(!item)throw Error('NOT_FOUND');const run=this.store.get('run',item.runId)!;
+      if(item.versions.length) {
+        const first=item.versions.find(v=>v.version==='A')??item.versions[0];
+        if(run.snapshot.music.versionPolicy==='first'&&p.selectedVersion!==first.version)throw Error('VERSION_POLICY_FIRST');
+        const version=item.versions.find(v=>v.version===p.selectedVersion);if(!version||version.assetId!==p.audioAssetId)throw Error('AUDIO_VERSION_MISMATCH');
+      }
+      const {itemId,...materials}=p;const saved=this.store.put('item',{...item,materials,updatedAt:this.now()});this.refresh(item.runId);return saved;
+    });
+  }
+  private target(runId:string,platform:string,accountId:string):{run:PlanCenterRun;target:PlanCenterPublishTarget} {
+    const run=this.store.get('run',runId);if(!run)throw Error('NOT_FOUND');
+    const target=run.snapshot.publishTargets.find(t=>t.enabled&&t.platform===platform&&t.accountId===accountId);if(!target)throw Error('TARGET_NOT_CONFIGURED');return {run,target};
+  }
+  claimAlbum(input:z.input<typeof targetInput>):PlanCenterAlbumBinding {
+    const p=targetInput.parse(input);
+    return this.repo.transaction(()=>{
+      const {run,target}=this.target(p.runId,p.platform,p.accountId);if(run.stopRequested)throw Error('STOP_REQUESTED');
+      const selectionHash=digest(target.album),id=digest({planId:run.planId,platform:p.platform,accountId:p.accountId,selectionHash}),old=this.store.get('album',id),caps=this.capabilities();
+      if(old?.state==='unknown'||old?.state==='dispatching')throw Error('ALBUM_RECONCILE_REQUIRED');
+      if(old?.state==='bound') {if(!caps.albumAppend.available)throw Error('ALBUM_APPEND_UNSUPPORTED');return old;}
+      if(old?.state==='failed')throw Error('ALBUM_FAILED_REQUIRES_REVIEW');
+      const now=this.now(),base={id,planId:run.planId,createdByRunId:run.id,platform:p.platform,accountId:p.accountId,selectionHash,selection:target.album,createdAt:now,updatedAt:now};
+      if(target.album.mode==='existing') {
+        if(!caps.albumCatalog.available||!this.options.ports?.albumCatalog)throw Error('ALBUM_CATALOG_UNAVAILABLE');
+        const catalog=z.strictObject({evidenceId:safeId,albums:z.array(z.strictObject({id:safeId}))}).parse(this.options.ports.albumCatalog({platform:p.platform,accountId:p.accountId}));
+        const albumId=target.album.albumId;
+        if(!catalog.albums.some(a=>a.id===albumId))throw Error('ALBUM_NOT_IN_CATALOG');
+        if(!caps.albumAppend.available)throw Error('ALBUM_APPEND_UNSUPPORTED');
+        return this.store.put('album',{...base,state:'bound',albumId:target.album.albumId,evidenceId:catalog.evidenceId});
+      }
+      if(!caps.albumCreate.available)throw Error('ALBUM_CREATE_UNAVAILABLE');
+      return this.store.put('album',{...base,state:'dispatching'});
+    });
+  }
+  recordAlbum(input:{bindingId:string;status:'bound'|'unknown'|'failed';albumId?:string;evidenceId?:string;reason?:string}) {
+    const p=z.strictObject({bindingId:safeId,status:z.enum(['bound','unknown','failed']),albumId:safeId.optional(),evidenceId:safeId.optional(),reason:z.string().optional()}).parse(input);
+    return this.repo.transaction(()=>{
+      const old=this.store.get('album',p.bindingId);if(!old)throw Error('NOT_FOUND');
+      if(p.status==='bound'&&(!p.albumId||!p.evidenceId))throw Error('ALBUM_EVIDENCE_REQUIRED');
+      if(old.state==='bound') {if(p.status==='bound'&&old.albumId===p.albumId&&old.evidenceId===p.evidenceId)return old;throw Error('TERMINAL_ALBUM_BINDING');}
+      const saved=this.store.put('album',{...old,state:p.status,albumId:p.albumId??old.albumId,evidenceId:p.evidenceId??old.evidenceId,reason:p.reason,updatedAt:this.now()});
+      if(old.createdByRunId)this.refresh(old.createdByRunId);return saved;
+    });
+  }
+  claimPublish(input:z.input<typeof publishInput>):PlanCenterPublishAttempt {
+    const p=publishInput.parse(input);
+    return this.repo.transaction(()=>{
+      const {run}=this.target(p.runId,p.platform,p.accountId),item=this.store.get('item',p.itemId);if(!item||item.runId!==run.id)throw Error('NOT_FOUND');if(run.stopRequested)throw Error('STOP_REQUESTED');
+      if(!item.materials)throw Error('MATERIALS_INCOMPLETE');
+      const previous=this.store.all('publish').filter(a=>a.itemId===item.id&&a.platform===p.platform&&a.accountId===p.accountId).at(-1);
+      if(previous) {if(previous.state==='unknown')throw Error('PUBLISH_RECONCILE_REQUIRED');return previous;}
+      if(!this.capabilities().publication.available)throw Error('PUBLICATION_PORT_UNAVAILABLE');
+      if(!run.snapshot.authorization.publish)throw Error('PUBLICATION_GRANT_REQUIRED');
+      const binding=this.claimAlbum({runId:p.runId,platform:p.platform,accountId:p.accountId});if(binding.state!=='bound'||!binding.albumId||!binding.evidenceId)throw Error('ALBUM_NOT_BOUND');
+      const key=`${item.id}:${p.platform}:${p.accountId}:1`,now=this.now();
+      return this.store.put('publish',{id:key,runId:run.id,itemId:item.id,platform:p.platform,accountId:p.accountId,bindingId:binding.id,ordinal:1,idempotencyKey:key,requestHash:digest({materials:item.materials,albumId:binding.albumId,target:p}),state:'dispatching',createdAt:now,updatedAt:now});
+    });
+  }
+  recordPublish(input:{attemptId:string;status:PlanCenterPublishAttempt['state'];externalId?:string;evidenceId?:string;reason?:string}) {
+    const p=z.strictObject({attemptId:safeId,status:z.enum(['submitted','reviewing','published','rejected','unknown','failed']),externalId:safeId.optional(),evidenceId:safeId.optional(),reason:z.string().optional()}).parse(input);
+    return this.repo.transaction(()=>{
+      const old=this.store.get('publish',p.attemptId);if(!old)throw Error('NOT_FOUND');
+      if(['published','rejected','failed'].includes(old.state)) {if(p.status===old.state&&p.evidenceId===old.evidenceId)return old;throw Error('TERMINAL_PUBLISH_ATTEMPT');}
+      if(p.status!=='unknown'&&!p.evidenceId)throw Error('PUBLISH_EVIDENCE_REQUIRED');
+      if(['submitted','reviewing','published'].includes(p.status)&&!p.externalId&&!old.externalId)throw Error('PUBLISH_EXTERNAL_ID_REQUIRED');
+      const saved=this.store.put('publish',{...old,state:p.status,externalId:p.externalId??old.externalId,evidenceId:p.evidenceId??old.evidenceId,reason:p.reason,updatedAt:this.now()});this.refresh(old.runId);return saved;
+    });
+  }
+  private refresh(runId:string) {
+    const run=this.store.get('run',runId)!;if(terminalRuns.has(run.state))return;
+    const stages=this.store.all('stage').filter(a=>a.runId===run.id),publish=this.store.all('publish').filter(a=>a.runId===run.id),items=this.store.all('item').filter(i=>i.runId===run.id),now=this.now();
+    if(run.stopRequested) {
+      const outstanding=stages.some(a=>inFlight.has(a.state))||publish.some(a=>publishInFlight.has(a.state))||this.store.all('album').some(a=>a.createdByRunId===run.id&&['dispatching','unknown'].includes(a.state));
+      this.store.put('run',{...run,state:outstanding?'stopping':'stopped',updatedAt:now});return;
+    }
+    let complete=0,blocked=false,waiting=false;
+    for(const item of items) {
+      const required=this.stages(run.snapshot),next=required.find(s=>!stages.some(a=>a.itemId===item.id&&a.stage===s&&a.state==='succeeded'));
+      if(!next) {
+        const targets=run.snapshot.authorization.publish?run.snapshot.publishTargets.filter(t=>t.enabled):[],done=targets.every(t=>publish.some(a=>a.itemId===item.id&&a.platform===t.platform&&a.accountId===t.accountId&&['published','rejected','failed'].includes(a.state)));
+        if(done){complete++;this.store.put('item',{...item,state:'completed',reason:undefined,updatedAt:now});}
+        else {waiting=true;this.store.put('item',{...item,state:'waiting_publication',reason:this.capabilities().publication.available?'PUBLICATION_PENDING':'PUBLICATION_PORT_UNAVAILABLE',updatedAt:now});}
+        continue;
+      }
+      const attempt=stages.filter(a=>a.itemId===item.id&&a.stage===next).at(-1),gate=attempt?{state:attempt.state==='dispatching'?'running':attempt.state,reason:attempt.reason}:this.stageGate(run,item,next);
+      blocked ||= ['blocked','failed','not_found','unknown'].includes(gate.state);waiting ||= gate.state.startsWith('waiting');
+      this.store.put('item',{...item,...gate,updatedAt:now});
+    }
+    this.store.put('run',{...run,state:complete===items.length?'completed':blocked?'blocked':waiting?'waiting':'running',updatedAt:now});
+  }
+  private recover() {
+    this.repo.transaction(()=>{
+      const ids=new Set<string>();
+      for(const a of this.store.all('stage'))if(a.state==='dispatching'){this.store.put('stage',{...a,state:'unknown',reason:'RESTART_RECONCILE_REQUIRED',updatedAt:this.now()});ids.add(a.runId);}
+      for(const a of this.store.all('publish'))if(a.state==='dispatching'){this.store.put('publish',{...a,state:'unknown',reason:'RESTART_RECONCILE_REQUIRED',updatedAt:this.now()});ids.add(a.runId);}
+      for(const a of this.store.all('album'))if(a.state==='dispatching'){this.store.put('album',{...a,state:'unknown',reason:'RESTART_RECONCILE_REQUIRED',updatedAt:this.now()});if(a.createdByRunId)ids.add(a.createdByRunId);}
+      for(const id of ids)this.refresh(id);
+    });
+  }
+  migrateLegacy():PlanCenterMigration {
+    return this.repo.transaction(()=>{
+      const old=this.store.all('migration').at(-1);if(old?.state==='applied')return old;
+      const migration:PlanCenterMigration={id:randomUUID(),state:'applied',createdAt:this.now(),entries:[]};
+      const sources:Array<{kind:'plans'|'dailyPlans'|'production-flow';row:Record<string,any>}>=[...this.repo.all('plans').map(row=>({kind:'plans' as const,row})),...this.repo.all('dailyPlans').map(row=>({kind:'dailyPlans' as const,row})),...this.repo.all('settings').filter(row=>row.id.startsWith('production-flow:plan:')&&!row.value?.managedByPlanCenter).map(row=>({kind:'production-flow' as const,row}))];
+      for(const {kind,row} of sources) {
+        const value=kind==='production-flow'?row.value:row,legacyId=String(value.id??row.id),planId=`legacy:${kind}:${legacyId}`;
+        if(isLegacyOwned(this.repo,kind,legacyId))continue;
+        let localTime=/^([01]\d|2[0-3]):[0-5]\d$/.test(value.localTime??value.time??'')?(value.localTime??value.time):'09:00';
+        const needsConfiguration=['LEGACY_CONFIGURATION_REVIEW_REQUIRED'];
+        const zone=value.timezone;
+        if(zone) {
+          const reference=DateTime.fromISO(this.now()).setZone(zone),[hour,minute]=localTime.split(':').map(Number);
+          if(reference.isValid) {
+            const originalTime=reference.startOf('day').set({hour,minute}),beijing=originalTime.setZone('Asia/Shanghai');
+            localTime=beijing.toFormat('HH:mm');
+            const january=originalTime.set({month:1,day:1}),july=originalTime.set({month:7,day:1});
+            if(january.offset!==july.offset||originalTime.toISODate()!==beijing.toISODate())needsConfiguration.push('LEGACY_TIMEZONE_REVIEW_REQUIRED');
+          } else needsConfiguration.push('LEGACY_TIMEZONE_REVIEW_REQUIRED');
+        } else needsConfiguration.push('LEGACY_TIMEZONE_REVIEW_REQUIRED');
+        const plan=PlanCenterPlanSchema.parse({id:planId,title:value.title??value.name??'迁移计划',artistId:value.artistId??'unconfigured',enabled:!!value.enabled,schedule:{kind:'daily',localTime},count:Number.isInteger(value.count)&&value.count>0&&value.count<=20?value.count:1,theme:value.theme??'',material:{source:'dot',channel:'',identity:''},text:{threshold:value.threshold??75,maxRewrites:Math.min(2,value.maxRevisions??2),maxScoreRetries:Math.min(2,value.maxScoreRetries??2)},music:{route:'manual',versionPolicy:'first'},publishTargets:[],legacy:{kind,id:legacyId,originalEnabled:!!value.enabled},needsConfiguration,createdAt:this.now(),updatedAt:this.now()});
+        if(this.store.get('plan',planId))throw Error('MIGRATION_CONFLICT');
+        const owned=kind==='production-flow'?{...row,value:{...value,enabled:false,scheduleOwner:'plan-center'}}:{...row,enabled:false,scheduleOwner:'plan-center'};
+        const owner={id:`${kind}:${legacyId}`,kind,legacyId,planId,migrationId:migration.id};
+        const legacyRuns=this.repo.all('runs').filter(r=>r.planId===legacyId),runIds=new Set(legacyRuns.map(r=>r.id));
+        const history=kind==='plans'?{runs:legacyRuns,steps:this.repo.all('steps').filter(r=>r.planId===legacyId||runIds.has(r.runId))}:kind==='dailyPlans'?{occurrences:this.repo.all('occurrences').filter(r=>r.planId===legacyId)}:{records:this.repo.all('settings').filter(r=>(r.id.startsWith('production-flow:run:')||r.id.startsWith('production-flow:occurrence:'))&&r.value?.planId===legacyId)};
+        this.repo.save(kind==='production-flow'?'settings':kind,owned);this.store.put('plan',plan);this.store.put('cursor',{id:plan.id,lastAt:this.now()});this.store.put('owner',owner);
+        migration.entries.push({kind,sourceId:row.id,planId,original:row,ownedHash:digest(owned),planHash:digest(plan),ownerHash:digest(owner),history});
+      }
+      return this.store.put('migration',migration);
+    });
+  }
+  rollbackMigration() {
+    return this.repo.transaction(()=>{
+      const migration=this.store.all('migration').at(-1);if(!migration||migration.state!=='applied')throw Error('MIGRATION_NOT_APPLIED');
+      for(const e of migration.entries) {
+        if(this.store.all('run').some(r=>r.planId===e.planId))throw Error('MIGRATION_EXECUTED');
+        const table=e.kind==='production-flow'?'settings':e.kind,value=e.kind==='production-flow'?e.original.value:e.original,legacyId=String(value.id??e.sourceId);
+        if(digest(this.repo.maybe(table,e.sourceId))!==e.ownedHash||digest(this.store.get('plan',e.planId))!==e.planHash||digest(this.store.get('owner',`${e.kind}:${legacyId}`))!==e.ownerHash)throw Error('MIGRATION_CONFLICT');
+      }
+      for(const e of migration.entries) {
+        const value=e.kind==='production-flow'?e.original.value:e.original,legacyId=String(value.id??e.sourceId);
+        this.repo.save(e.kind==='production-flow'?'settings':e.kind,e.original);this.store.remove('plan',e.planId);this.store.remove('cursor',e.planId);this.store.remove('owner',`${e.kind}:${legacyId}`);
+      }
+      return this.store.put('migration',{...migration,state:'rolled_back'});
+    });
+  }
+}

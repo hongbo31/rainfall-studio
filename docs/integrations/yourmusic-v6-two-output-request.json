@@ -1,0 +1,12 @@
+{
+  "title": "云端测试样例",
+  "lyrics": "[Verse]\n此处替换为云端自有测试歌词\n[Chorus]\n此处替换为云端自有测试歌词",
+  "tags": "Mandarin pop ballad, warm romantic mood, intimate male vocal, acoustic guitar, soft piano, gentle drums, 88 BPM",
+  "negative_tags": "aggressive distortion, heavy metal, rap, choir",
+  "model": "chirp-v6",
+  "instrumental": false,
+  "vocal_gender": "male",
+  "duration": 180,
+  "is_max_mode": false,
+  "aug_creativity": 0
+}

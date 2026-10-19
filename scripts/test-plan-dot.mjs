@@ -1,0 +1,11 @@
+import {build} from 'esbuild';
+import {spawnSync} from 'node:child_process';
+import path from 'node:path';
+import fs from 'node:fs';
+const file=path.resolve('output/provider-wiring/plan-dot.cjs');
+const entries=['export {Repository} from "./src/core/database"; export {PlanCenterService} from "./src/core/plan-center"; export {InboxService,inboxHash} from "./src/core/inbox/service"; export {DotDeliveryStore} from "./src/core/inbox/dot-delivery-store"; export {InboxController} from "./src/core/inbox/controller";'];
+for(const source of ['src/shared/plan-dot.ts','src/core/plan-center-dot.ts'])if(fs.existsSync(source))entries.push(`export * from "./${source}";`);
+await build({stdin:{contents:entries.join('\n'),resolveDir:process.cwd()},outfile:file,bundle:true,platform:'node',format:'cjs',packages:'external'});
+fs.copyFileSync('src/core/inbox/dot-rename-exclusive.ps1',path.resolve('output/provider-wiring/dot-rename-exclusive.ps1'));
+const result=spawnSync(process.execPath,['--require',path.resolve('tests/fixtures/plan-dot-offline.cjs'),'--test','--test-reporter=tap','tests/plan-dot.test.mjs'],{stdio:'inherit',windowsHide:true,env:{...process.env,RAINFALL_PLAN_DOT_BUNDLE:file}});
+process.exit(result.status??1);

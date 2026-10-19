@@ -1,0 +1,16 @@
+// Original local tones and cover for UI verification only, never a provider result.
+const fs=require('node:fs'),path=require('node:path'),{randomUUID,createHash}=require('node:crypto');
+module.exports=async function seed(s){
+ const artistId=s.all('artists')[0].id,center=s.planCenterService(),title='离线素材验收 · 原创示例',lyrics='雨落在窗边\n我们慢慢靠近';
+ const plan=center.save({plan:{id:randomUUID(),title,artistId,schedule:{kind:'daily',localTime:'11:00'},outputs:{lyrics:true,cover:true,music:true},material:{source:'dot',channel:'isolated-ui',identity:'fixture'},text:{profileId:randomUUID(),profileRevision:1,modelId:'deepseek-flash',budgetMicros:100000,consent:true},authorization:{text:true,music:false,publish:false},music:{route:'manual',versionPolicy:'manual'}},expectedRevision:null});
+ const preview=center.preview({id:plan.id}),run=center.run({id:plan.id,expectedRevision:plan.revision,summaryHash:preview.summaryHash,requestId:randomUUID(),source:'manual'}),item=center.list().items.find(i=>i.runId===run.id);
+ center.acceptDotCandidate({itemId:item.id,evidenceId:'isolated-ui-fixture',candidate:{artistId,channel:'isolated-ui',identity:'fixture',externalItemId:item.expectedExternalItemId,title,lyrics}});
+ const score=center.claim({runId:run.id,itemId:item.id,stage:'text_score'});center.record({attemptId:score.id,status:'succeeded',evidenceId:'synthetic-ui-score',result:{source:'model',score:85}});
+ let work=s.saveWork({artistId,title,lyrics,story:'原创本地验收示例',prompt:'Two isolated local test tones; not generated music',parameters:{},rights:'仅为本地原创验收素材',ai:'assisted'});
+ function asset(bytes,kind,ext,mime,metadata){const sha256=createHash('sha256').update(bytes).digest('hex'),file=path.join(s.root,'media','sha256',sha256.slice(0,2),sha256+'.'+ext);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,bytes);return s.save('assets',{id:randomUUID(),kind,sha256,ext,mime,bytes:bytes.length,metadata});}
+ function tone(freq){const rate=8000,count=rate*2,b=Buffer.alloc(44+count*2);b.write('RIFF');b.writeUInt32LE(b.length-8,4);b.write('WAVE',8);b.write('fmt ',12);b.writeUInt32LE(16,16);b.writeUInt16LE(1,20);b.writeUInt16LE(1,22);b.writeUInt32LE(rate,24);b.writeUInt32LE(rate*2,28);b.writeUInt16LE(2,32);b.writeUInt16LE(16,34);b.write('data',36);b.writeUInt32LE(count*2,40);for(let n=0;n<count;n++)b.writeInt16LE(Math.round(Math.sin(n*freq*2*Math.PI/rate)*1600),44+n*2);return b;}
+ const a=asset(tone(220),'audio','wav','audio/wav',{format:{duration:'2'},streams:[{codec_type:'audio',sample_rate:'8000'}]}),b=asset(tone(330),'audio','wav','audio/wav',{format:{duration:'2'},streams:[{codec_type:'audio',sample_rate:'8000'}]});
+ const png=await require('sharp')(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="3000" height="3000"><rect width="3000" height="3000" fill="#352a52"/><circle cx="1900" cy="1100" r="700" fill="#9b7bbb"/><path d="M300 2200L2500 500" stroke="#edc48a" stroke-width="90"/></svg>')).png().toBuffer(),cover=asset(png,'image','png','image/png',{width:3000,height:3000});
+ work=s.save('works',{...work,assets:{audio_A:a.id,audio_B:b.id,cover:cover.id},assetHistory:[a.id,b.id,cover.id]});
+ return{planId:plan.id,runId:run.id,itemId:item.id,workId:work.id,title,ordinal:item.ordinal,audioA:a.id,audioB:b.id,cover:cover.id};
+};

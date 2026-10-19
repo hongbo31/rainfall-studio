@@ -1,0 +1,3 @@
+import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import {createRequire} from 'node:module';
+const require=createRequire(import.meta.url);
+test('TME studio defaults to unconfirmed author/AI/rights fields and labels live-page blockers',()=>{assert(fs.existsSync('src/renderer/components/TmeDraftStudio.tsx'),'Tencent draft studio UI is not implemented');const {renderTmeStudio}=require('../build/tme-ui.cjs');const html=renderTmeStudio();assert(html.includes('腾讯音乐人'));assert(html.includes('提交审核'));assert(html.includes('待校准'));assert(html.includes('原始歌词'));assert(!/\schecked(?:=|\s|>)/.test(html));assert(html.includes('未确认'));assert(html.includes('本地预检'));});

@@ -4,10 +4,16 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import sharp from "sharp";
 import type { Studio } from "./studio";
-export const ffmpeg =
-  "C:\\ffmpeg\\ffmpeg-8.1-essentials_build\\bin\\ffmpeg.exe";
-export const ffprobe =
-  "C:\\ffmpeg\\ffmpeg-8.1-essentials_build\\bin\\ffprobe.exe";
+// Fixed, trusted installation locations only: never search PATH or download tools.
+export function mediaToolPath(tool: "ffmpeg" | "ffprobe", platform = process.platform) {
+  if (tool !== "ffmpeg" && tool !== "ffprobe") throw Error("MEDIA_TOOL_UNSUPPORTED");
+  if (platform === "linux") return `/usr/bin/${tool}`;
+  if (platform === "win32")
+    return `C:\\ffmpeg\\ffmpeg-8.1-essentials_build\\bin\\${tool}.exe`;
+  throw Error("MEDIA_TOOL_PLATFORM_UNSUPPORTED");
+}
+export const ffmpeg = mediaToolPath("ffmpeg");
+export const ffprobe = mediaToolPath("ffprobe");
 export function digest(file: string) {
   const h = createHash("sha256");
   const fd = fs.openSync(file, "r");
@@ -64,6 +70,7 @@ export async function importFile(
   source: string,
   role: string,
   workId?: string,
+  beforePersist?:()=>void,
 ) {
   if (
     source.startsWith("\\\\") ||
@@ -131,6 +138,7 @@ export async function importFile(
           ? "audio/mp4"
           : "audio/" + ext;
   }
+  const persist=()=>{
   const sha256 = digest(real);
   let asset = s.all("assets").find((a) => a.sha256 === sha256);
   if (!asset) {
@@ -169,12 +177,16 @@ export async function importFile(
   if (workId) {
     const w = s.get("works", workId);
     w.assets = { ...w.assets, [role]: asset.id };
+    if (role === 'audio_A') w.lyricsConfirmation = null;
     w.assetHistory = [...new Set([...(w.assetHistory || []), asset.id])];
     s.save("works", w);
     s.repo.audit("asset.import", workId, { assetId: asset.id, role });
     s.refreshRunForWork(workId);
   }
   return asset;
+  };
+  // Guarded plan-cover imports recheck under the write lock after all image awaits.
+  return beforePersist?s.repo.transaction(()=>{beforePersist();return persist();}):persist();
 }
 export function locate(s: Studio, id: string) {
   const a = s.get("assets", id);
@@ -188,13 +200,13 @@ export function locate(s: Studio, id: string) {
     throw Error("ASSET_MISSING_OR_CORRUPT");
   return { file, mime: a.mime, bytes: a.bytes };
 }
-export async function prepareVideo(s: Studio, workId: string) {
+export async function prepareVideo(s: Studio, workId: string, recordingSlot: 'audio_A'|'audio_B' = 'audio_A') {
   const w = s.get("works", workId);
-  if (!w.assets.audio_A || !w.assets.cover) throw Error("AUDIO_COVER_REQUIRED");
+  if (!w.assets[recordingSlot] || !w.assets.cover) throw Error("AUDIO_COVER_REQUIRED");
   if (!fs.existsSync(ffmpeg)) throw Error("FFMPEG_MISSING");
-  const audio = locate(s, w.assets.audio_A),
+  const audio = locate(s, w.assets[recordingSlot]),
     cover = locate(s, w.assets.cover);
-  const key = `${w.assets.audio_A}:${w.assets.cover}:vertical-v1`;
+  const key = `${w.assets[recordingSlot]}:${w.assets.cover}:vertical-v1`;
   const found = s.all("assets").find((a) => a.derivedKey === key);
   if (found) {
     w.assets.video = found.id;

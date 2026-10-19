@@ -1,4 +1,6 @@
 import React, { createContext, useContext } from "react";
+import HelpHint from "./components/HelpHint";
+import type { PublishSelection } from "../shared/platform-config";
 export type Data = Record<string, any>;
 export interface StudioContext {
   data: Data;
@@ -10,7 +12,14 @@ export interface StudioContext {
   play: (work: any, slot?: string) => void;
   selected: string[];
   setSelected: (ids: string[]) => void;
-  importAsset: (role: string, workId?: string) => Promise<void>;
+  publishSelection?: PublishSelection;
+  setPublishSelection?: (selection: PublishSelection) => Promise<unknown>;
+  flushPublishSelection?: () => Promise<unknown>;
+  importAsset: (
+    role: string,
+    workId?: string,
+    requestId?: string,
+  ) => Promise<void>;
   exportArtifact: (kind: string, input?: any) => Promise<void>;
 }
 export const Context = createContext<StudioContext>(null!);
@@ -77,15 +86,16 @@ export function PageHead({
   action,
 }: {
   title: string;
-  sub: string;
+  sub?: string;
   action?: React.ReactNode;
 }) {
   return (
     <div className="page-head">
       <div>
-        <div className="eyebrow">RAINFALL STUDIO / LOCAL WORKSPACE</div>
-        <h1>{title}</h1>
-        <p>{sub}</p>
+        <div className="page-title">
+          <h1>{title}</h1>
+          {sub && <HelpHint label={title + "说明"}>{sub}</HelpHint>}
+        </div>
       </div>
       {action}
     </div>

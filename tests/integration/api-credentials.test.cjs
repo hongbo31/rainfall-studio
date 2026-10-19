@@ -15,6 +15,7 @@ for (const operation of [
   "writeApiCredential",
   "clearApiCredential",
   "apiCredentialStatus",
+  "checkApiConnection",
 ]) {
   test(
     "queued simulation-origin " + operation + " cannot adopt production scope",
@@ -345,7 +346,7 @@ test("credential IPC verifies source, sanitizes errors and serializes concurrent
       },
       x.service,
     );
-    assert.equal(handlers.size, 3);
+    assert.equal(handlers.size, 4);
     assert(![...handlers.keys()].some((n) => /get|read/.test(n)));
     const write = handlers.get("rainfall:api-credential:write"),
       input = { profileId: x.p.id, expectedRevision: 1, secret: "QA_FAKE" };
@@ -374,6 +375,98 @@ test("credential IPC verifies source, sanitizes errors and serializes concurrent
   } finally {
     x.s.close();
   }
+});
+
+test("YourMusic connection check sends only one authenticated history GET and returns no account content", async () => {
+  const x = await setup();
+  const secret = "QA_CONNECTION_ONLY_" + randomUUID();
+  try {
+    await x.service.writeApiCredential({profileId:x.p.id,expectedRevision:1,secret});
+    const requests=[];
+    const service=new (api().ApiCredentials)({...x.options,connectionRequest:async request=>{
+      requests.push(request);
+      return {status:200,body:{data:[{title:"PRIVATE_HISTORY",lyrics:secret}],total:1,page:1,size:1,total_pages:1}};
+    }});
+    assert.equal(typeof service.checkApiConnection,"function","read-only client connection check is missing");
+    const result=await service.checkApiConnection({profileId:x.p.id,expectedRevision:1});
+    assert.equal(result.state,"connected");
+    assert.equal(result.httpStatus,200);
+    assert.equal(result.paidGenerationRequested,false);
+    assert.equal(result.scope,"authentication_only");
+    assert.equal(requests.length,1);
+    assert.equal(requests[0].method,"GET");
+    assert.equal(requests[0].url,"https://api.yourmusic.fun/v1/music/generations/history?page=1&size=1");
+    assert.equal(requests[0].headers.Authorization,"Bearer "+secret);
+    assert.equal(requests[0].body,undefined);
+    assert(!JSON.stringify(result).includes(secret));
+    assert(!JSON.stringify(result).includes("PRIVATE_HISTORY"));
+    assert(!JSON.stringify(x.s.all("audit")).includes(secret));
+    assert.equal((await x.s.call("apiProfile.list"))[0].executionEnabled,false);
+  } finally {x.s.close()}
+});
+
+test("connection checks distinguish auth, credit, rate and malformed responses without reflecting secrets", async () => {
+  const x=await setup(), secret="QA_CHECK_ERROR_SECRET";
+  try{
+    await x.service.writeApiCredential({profileId:x.p.id,expectedRevision:1,secret});
+    for(const [httpStatus,state] of [[401,"unauthorized"],[403,"forbidden"],[402,"credits_required"],[429,"rate_limited"],[500,"unavailable"],[302,"unavailable"],[200,"invalid_response"]]){
+      const service=new (api().ApiCredentials)({...x.options,connectionRequest:async()=>({status:httpStatus,body:{message:secret}})});
+      assert.equal(typeof service.checkApiConnection,"function","read-only client connection check is missing");
+      const result=await service.checkApiConnection({profileId:x.p.id,expectedRevision:1});
+      assert.equal(result.state,state);
+      assert(!JSON.stringify(result).includes(secret));
+    }
+    const service=new (api().ApiCredentials)({...x.options,connectionRequest:async()=>{throw Error(secret)}});
+    const result=await service.checkApiConnection({profileId:x.p.id,expectedRevision:1});
+    assert.equal(result.state,"unavailable");assert.equal(result.httpStatus,null);
+    assert(!JSON.stringify(result).includes(secret));
+  }finally{x.s.close()}
+});
+
+test("connection failures expose only allowlisted diagnostic categories",async()=>{
+ const x=await setup();try{
+  await x.service.writeApiCredential({profileId:x.p.id,expectedRevision:1,secret:'QA_ONLY_DIAGNOSTIC'});
+  for(const [code,expected] of [['ENOTFOUND','HTTP_DNS_FAILED'],['SELF_SIGNED_CERT_IN_CHAIN','HTTP_TLS_FAILED'],['ERR_INVALID_CHAR','CREDENTIAL_FORMAT_INVALID'],['ECONNRESET','HTTP_REQUEST_FAILED'],['PRIVATE_CODE_SHOULD_NOT_ESCAPE','HTTP_REQUEST_FAILED']]){
+   const service=new (api().ApiCredentials)({...x.options,connectionRequest:async()=>{throw Object.assign(Error('PRIVATE_ERROR_SHOULD_NOT_ESCAPE'),{code})}});
+   const result=await service.checkApiConnection({profileId:x.p.id,expectedRevision:1});
+   assert.equal(result.failureCode,expected);assert.equal(result.httpStatus,null);
+   assert(!JSON.stringify(result).includes('PRIVATE_'));
+  }
+ }finally{x.s.close()}
+});
+
+test("connection check rejects stale revision, simulation, unsupported provider and custom URL before network", async()=>{
+  const x=await setup();let requests=0;
+  const service=new (api().ApiCredentials)({...x.options,connectionRequest:async()=>{requests++;return {status:401,body:{}}}});
+  try{
+    assert.equal(typeof service.checkApiConnection,"function","read-only client connection check is missing");
+    const identity={profileId:x.p.id,expectedRevision:1};
+    await assert.rejects(service.checkApiConnection({...identity,expectedRevision:2}),/REVISION_CONFLICT/);
+    await assert.rejects(service.checkApiConnection({...identity,url:"https://evil.invalid"}));
+    const {revision,...profile}=x.p;
+    const other=await x.s.call("apiProfile.save",{profile:{...profile,id:randomUUID(),kind:"text",providerId:"codex_cli"},expectedRevision:null});
+    await assert.rejects(service.checkApiConnection({profileId:other.id,expectedRevision:1}),/CONNECTION_CHECK_UNSUPPORTED/);
+    x.setMode("simulation");
+    await assert.rejects(service.checkApiConnection(identity),/SIMULATION_CREDENTIALS_DISABLED/);
+    assert.equal(requests,0);
+  }finally{x.s.close()}
+});
+
+test("connection IPC checks frame trust and invalidates results after workspace change",async()=>{
+  const x=await setup();let requests=0;
+  try{
+    await x.service.writeApiCredential({profileId:x.p.id,expectedRevision:1,secret:"QA_ONLY"});
+    const service=new (api().ApiCredentials)({...x.options,connectionRequest:async()=>{requests++;x.setMode("simulation");return {status:200,body:{data:[],total:0,page:1,size:1,total_pages:0}}}});
+    const handlers=new Map();
+    api().registerApiCredentialHandlers((n,f)=>handlers.set(n,f),event=>{if(event!=="trusted")throw Error("IPC_SOURCE_REJECTED")},service);
+    const handler=handlers.get("rainfall:api-credential:check");
+    assert.equal(typeof handler,"function","read-only connection IPC is missing");
+    const identity={profileId:x.p.id,expectedRevision:1};
+    assert.equal((await handler("untrusted",identity)).error.code,"IPC_SOURCE_REJECTED");
+    assert.equal(requests,0);
+    assert.equal((await handler("trusted",identity)).error.code,"WORKSPACE_CHANGED");
+    assert.equal(requests,1);
+  }finally{x.s.close()}
 });
 
 test("scope change during profile lookup freezes credential operation without touching vault", async () => {

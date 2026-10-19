@@ -7,7 +7,10 @@ export default function ManualReport({
   unit: any;
   onClose: () => void;
 }) {
-  const { call } = useStudio();
+  return <ManualReportForm key={unit.id} unit={unit} onClose={onClose}/>;
+}
+function ManualReportForm({unit,onClose}:{unit:any;onClose:()=>void}) {
+  const { call, data } = useStudio();
   const [form, setForm] = useState({
     id: unit.id,
     remoteId: unit.receipt?.remoteId || "",
@@ -20,11 +23,9 @@ export default function ManualReport({
   });
   const [confirmed, setConfirmed] = useState(false);
   return (
-    <div className="modal-backdrop">
+    <div className="inline-report">
       <form
-        className="modal"
-        role="dialog"
-        aria-modal="true"
+        className="panel"
         aria-label="人工登记回执"
         onSubmit={async (e) => {
           e.preventDefault();
@@ -33,9 +34,10 @@ export default function ManualReport({
         }}
       >
         <h2>人工登记回执与状态</h2>
+        <p>{unit.snapshot?.title || '作品'} · {unit.recordingSlot === 'audio_B' ? 'B 版' : 'A 版'} · {data?.accounts?.find((a:any)=>a.id===unit.accountId)?.name || '账号待核对'}</p>
+        <details><summary>关联记录</summary><small>{unit.id}</small></details>
         <div className="notice">
-          请先在官方后台核对。这里只保存用户录入的证据，不会提交作品，也不代表已通过
-          API 验证。
+          仅登记官方核对证据 · 不提交作品
         </div>
         <label>
           远端作品 / 投稿 ID

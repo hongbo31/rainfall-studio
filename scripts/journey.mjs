@@ -149,13 +149,13 @@ try {
   results.push(
     "DPAPI real encrypted roundtrip / identity binding / delete (synthetic secret only)",
   );
-  await nav("创作向导");
+  await nav("本地模板");
   await page.getByLabel("歌名", { exact: true }).fill(title);
   await page
     .getByLabel("故事", { exact: true })
     .fill("原创QA验证：雨停以后，在街角再次遇见。");
   await page
-    .getByRole("button", { name: "生成本地歌词与提示词 →", exact: true })
+    .getByRole("button", { name: "用本地模板起草 →", exact: true })
     .click();
   await page.getByRole("heading", { name: title, exact: true }).waitFor();
   const workId = (await snapshot()).works.find((w) => w.title === title).id;

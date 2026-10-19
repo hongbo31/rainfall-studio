@@ -1,8 +1,14 @@
+import {unifiedPublicationService,savePublicationMetadata} from "./unified-publication-integration";
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { DateTime } from "luxon";
+import {PlanCenterService,isLegacyOwned} from './plan-center';
+import {assertLegacyScheduleEditable} from './plan-center-ownership';
+import {createPlanCenterService,executePlanCenter,tickPlanCenter} from './plan-center-integration';
 import { Repository, hash, type Row, type Table } from "./database";
+import type {PlanAlbumService} from './plan-albums';
+import {createPlanAlbumService,executePlanAlbums} from './plan-albums-integration';
 import { validate, defaultsSchema } from "../shared/schemas";
 import type { Mode } from "../shared/contracts";
 import * as resources from "./resources";
@@ -24,7 +30,23 @@ import { DailyScheduler } from "./workflow/daily";
 import { selectCandidate } from "./workflow/selection";
 import { hashValue } from "./quality/scoring";
 import { InboxController } from "./inbox/controller";
+import { selectInboxMusicInput, selectedInboxMusicInput } from "./inbox/music-input";
 import { parseTextProviderProfile } from "../shared/text-providers";
+import { TmeDraftService } from './tme-drafts';
+import { CoverHandoff } from './cover-handoff';
+import {assertPlanCoverWork} from './plan-cover-work';
+import {LyricService,candidateLyricOrigin,type LyricOrigin} from './lyrics';
+import {publicationPayload} from './publication-payload';
+import {listTmeObservations, recordTmeObservation} from './tme-observations';
+import type {MusicAdapter} from './workflow/yourmusic';
+import {liveMusicGrantKey} from '../shared/live-music';
+import {LiveTextService} from './live-text';
+import {createProductionFlowService} from './production-integration';
+import type {ProductionFlowService} from './production-flow';
+import {createTmeAiPrepareService} from './tme-ai-prepare-integration';
+import type {TmeAiPrepareService} from './tme-ai-prepare';
+import {initializePlatformConfigurations,listPlatformConfigurations,savePlatformConfiguration} from './platform-config';
+import {publishSelection,savePublishSelection,publishSimple,listSimplePublicationRequests,listPublicationPendingTerms} from './simple-publication';
 export const baseDefaults = {
   genre: "流行 / 民谣",
   voice: "female",
@@ -37,6 +59,8 @@ export const baseDefaults = {
   duration: 180,
 };
 export class Studio {
+  coverHandoff() { return new CoverHandoff(this); }
+  lyricService() { return new LyricService(this); }
   repo: Repository;
   externalRequests = 0;
   now: () => Date;
@@ -46,6 +70,36 @@ export class Studio {
   private music?: MusicService;
   private daily?: DailyScheduler;
   private inbox?: InboxController;
+  private tme?: TmeDraftService;
+  private liveText?: LiveTextService;
+  private productionFlow?: ProductionFlowService;
+  private planCenter?: PlanCenterService;
+  private planAlbum?:PlanAlbumService;
+  planAlbumService(){
+    if(!this.planAlbum||this.planAlbum.repo!==this.repo)this.planAlbum=this.options.albumServiceFactory?.(this)??createPlanAlbumService(this);
+    return this.planAlbum;
+  }
+  planCenterService(){
+    if(!this.planCenter||this.planCenter.repo!==this.repo)this.planCenter=createPlanCenterService(this);
+    return this.planCenter;
+  }
+  private tmeAiPrepare?: TmeAiPrepareService;
+  tmeAiPrepareService(){
+    if(!this.tmeAiPrepare||this.tmeAiPrepare.repo!==this.repo)this.tmeAiPrepare=createTmeAiPrepareService(this);
+    return this.tmeAiPrepare;
+  }
+  productionFlowService(){
+    if(!this.productionFlow||this.productionFlow.repo!==this.repo)this.productionFlow=createProductionFlowService(this);
+    return this.productionFlow;
+  }
+  liveTextService() {
+    if(!this.liveText || this.liveText.repo!==this.repo) this.liveText=new LiveTextService(this.repo,{now:this.now});
+    return this.liveText;
+  }
+  tmeDraftService() {
+    if (!this.tme) this.tme = new TmeDraftService(this);
+    return this.tme;
+  }
   private inboxTickAt = 0;
   inboxController() {
     if (!this.inbox || this.inbox.repo !== this.repo)
@@ -125,10 +179,11 @@ export class Studio {
     if (!this.music || this.music.repo !== this.repo)
       this.music = new MusicService(this.repo, this.mode, {
         now: this.now,
+        productionAuthorization: input=>{const g=this.repo.maybe('settings',liveMusicGrantKey);return g&&g.requestId===input.requestId&&g.draftId===input.draftId&&g.pairHash===input.expectedPairHash&&g.profileId===input.accountRef&&input.modelId==='chirp-v6'&&g.creditCap===385&&g.consent===true?{maxCredits:385}:null},
         adapter:
           this.mode === "simulation"
             ? simulationMusic()
-            : new YourMusicAdapter({
+            : this.options.musicAdapter ?? new YourMusicAdapter({
                 source: "external",
                 credential: async () => {
                   throw Error("LIVE_EXECUTION_DISABLED");
@@ -178,7 +233,7 @@ export class Studio {
   constructor(
     public root: string,
     public mode: Mode,
-    options: { now?: () => Date } = {},
+    private options: { now?: () => Date;musicAdapter?:MusicAdapter;albumServiceFactory?:(studio:Studio)=>PlanAlbumService } = {},
   ) {
     this.now = options.now || (() => new Date());
     this.lastTick = this.now();
@@ -200,6 +255,7 @@ export class Studio {
         costLimit: 30000,
         candidateLimit: 10,
       });
+    initializePlatformConfigurations(this.repo);
   }
   get db() {
     return this.repo.db;
@@ -236,6 +292,7 @@ export class Studio {
     this.repo.close();
   }
   recover() {
+    for(const op of this.all('operations').filter(o=>o.kind==='music'&&o.state==='dispatching'))this.save('operations',{...op,state:'unknown',costState:'unknown',reasons:['INTERRUPTED_SUBMISSION']});
     for (const u of this.all("units")) {
       if (u.state === "COMMITTING") {
         u.state = "SUBMISSION_UNKNOWN";
@@ -285,10 +342,33 @@ export class Studio {
     this.save("series", series);
   }
   async call(method: string, input: any = {}) {
+    if(method.startsWith('planAlbums.'))return executePlanAlbums(this,method.slice('planAlbums.'.length),input);
+    if(method.startsWith('planCenter.'))return executePlanCenter(this,method,input);
     const v: any = validate(method, input);
+    if(method.startsWith('publish.')&&v.id&&['batches','units'].some(table=>this.repo.maybe(table as 'batches'|'units',v.id)?.kind==='tme_uia'))throw Error('TME_SPECIALIZED_CHANNEL_REQUIRED');
     switch (method) {
+      case 'platformConfig.list': return listPlatformConfigurations(this.repo);
+      case 'platformConfig.save': return savePlatformConfiguration(this.repo,v.config,v.expectedRevision);
+      case 'publish.selection.save': return savePublishSelection(this,v);
+      case 'publish.metadata.save': return savePublicationMetadata(this,v);
+      case 'publish.simple': return publishSimple(this,v);
+      case 'tme.observations.record': return recordTmeObservation(this,v);
+      case 'tme.observations.list': return listTmeObservations(this,v);
+      case 'lyrics.preview': return this.lyricService().preview(v.workId);
+      case 'lyrics.confirm': return this.lyricService().confirm(v);
+      case 'publication.payload': return publicationPayload(this,this.get('works',v.workId));
+      case 'cover.request': return this.coverHandoff().request(v);
+      case 'cover.list': return this.coverHandoff().list(v.workId);
+      case 'tme.preview': return this.tmeDraftService().preview(v);
+      case 'tme.prepare': return this.tmeDraftService().prepare(v);
+      case 'tme.list': return this.tmeDraftService().list();
+      case 'tme.batchPlan': return this.tmeDraftService().planBatch(v);
+      case 'tme.batches': return {batches:this.tmeDraftService().batches(),units:this.tmeDraftService().batchUnits()};
+      case 'tme.batchCancel': return this.tmeDraftService().updateBatch(v.id,{state:'TME_CANCELLED',cancelled:true});
       case "inbox.status":
         return this.inboxController().status();
+        case "inbox.bridge.pause": return this.inboxController().setBridgeEnabled(false,v.expectedRevision);
+        case "inbox.bridge.resume": return this.inboxController().setBridgeEnabled(true,v.expectedRevision);
       case "inbox.configure":
         return this.inboxController().configure(v);
       case "inbox.pause":
@@ -297,7 +377,10 @@ export class Studio {
         return {
           candidates: this.all("textCandidates"),
           drafts: this.all("drafts").filter((d) => d.source === "local-inbox"),
+          musicInput: selectedInboxMusicInput(this.repo),
         };
+      case "inbox.selectMusicInput":
+        return selectInboxMusicInput(this.repo, v.candidateId);
       case "inbox.getReceipt": {
         const channel = this.inboxController().status().channel;
         return (
@@ -324,11 +407,12 @@ export class Studio {
         return this.dailyScheduler().enable(v.id, v.expectedRevision);
       case "candidate.select":
         return selectCandidate(this.repo, v, (draft, candidate) => {
+          const lyric=candidateLyricOrigin(candidate,draft);
           const w = this.saveWork({
             artistId: draft.artistId,
             title: draft.draft.title,
             story: draft.draft.storyBeat,
-            lyrics: draft.pair.lyrics,
+            lyrics: lyric.text,
             prompt: draft.pair.musicPrompt,
             parameters: {},
             seriesId: draft.seriesId ?? undefined,
@@ -337,7 +421,7 @@ export class Studio {
                 ? "本地原创诊断音与离线示例，非 AI 歌曲"
                 : "授权依据待人工确认",
             ai: "unknown",
-          });
+          },lyric.origin);
           this.save("works", {
             ...w,
             assets: { audio_A: candidate.assetId },
@@ -363,6 +447,12 @@ export class Studio {
       }
       case "music.reconcile": {
         const service = this.musicService();
+        void service.reconcile(v.id).catch(() => undefined);
+        return { requested: true };
+      }
+      case "music.retryDownloads": {
+        const service = this.musicService();
+        service.retryDownloads(v.id);
         void service.reconcile(v.id).catch(() => undefined);
         return { requested: true };
       }
@@ -499,8 +589,12 @@ export class Studio {
         return r;
       }
       case "work.selectAsset": {
+        return this.repo.transaction(()=>{
+        const coverBinding=v.role==='cover'?assertPlanCoverWork(this,v.workId):null;
+        if(coverBinding)this.coverHandoff().verifiedSelectedReceipt(v.workId,v.assetId);
         const w = this.get("works", v.workId);
         const a = this.get("assets", v.assetId);
+        this.locate(a.id);
         if (!(w.assetHistory || []).includes(a.id))
           throw Error("ASSET_OWNERSHIP");
         if (
@@ -510,8 +604,10 @@ export class Studio {
         )
           throw Error("ASSET_ROLE");
         w.assets[v.role] = v.assetId;
+        if (v.role === 'audio_A') w.lyricsConfirmation = null;
         this.save("works", w);
         return w;
+        });
       }
       case "series.save": {
         for (const id of v.workIds) this.get("works", id);
@@ -531,6 +627,7 @@ export class Studio {
       case "plan.save":
         return this.savePlan(v);
       case "plan.toggle": {
+        if(isLegacyOwned(this.repo,'plans',v.id))throw Error('PLAN_CENTER_OWNS_SCHEDULE');
         const p = this.get("plans", v.id);
         p.enabled = v.enabled;
         this.save("plans", p);
@@ -539,6 +636,7 @@ export class Studio {
       case "plan.preview":
         return this.preview(this.get("plans", v.id));
       case "plan.run": {
+        if(isLegacyOwned(this.repo,'plans',v.id))throw Error('PLAN_CENTER_OWNS_SCHEDULE');
         const p = this.get("plans", v.id);
         return this.startCreation({
           artistId: p.artistId,
@@ -551,6 +649,8 @@ export class Studio {
       }
       case "budget.save":
         return this.save("settings", { id: "budget", ...v });
+      case "publish.quick":
+        return publishing.quick(this, v);
       case "publish.plan":
         return publishing.plan(this, v);
       case "publish.approve":
@@ -590,7 +690,7 @@ export class Studio {
         };
       }
       case "video.prepare":
-        return assets.prepareVideo(this, v.workId);
+        return assets.prepareVideo(this, v.workId, v.recordingSlot);
       case "goal.complete": {
         const run = this.all("runs").find((r) => r.workId === v.workId);
         if (run) {
@@ -620,10 +720,16 @@ export class Studio {
       );
     return {
       mode: this.mode,
+      platformConfigurations: listPlatformConfigurations(this.repo),
+      publicationRequests: listSimplePublicationRequests(this),
+      publicationPipelineJobs: this.mode === "production" ? unifiedPublicationService(this).list() : [],
+      publicationPendingTerms: listPublicationPendingTerms(this),
+      publishSelection: publishSelection(this),
       artists: this.all("artists"),
       accounts: this.all("accounts"),
       bindings: this.all("bindings"),
       works: this.all("works"),
+      tmeObservations: listTmeObservations(this),
       revisions: this.all("revisions"),
       assets: this.all("assets").map((a) => ({
         ...a,
@@ -664,7 +770,7 @@ export class Studio {
       externalRequests: this.externalRequests,
     };
   }
-  saveWork(v: any) {
+  saveWork(v: any, lyricOrigin?:LyricOrigin) {
     const old = v.id ? this.get("works", v.id) : null;
     if (old && v.expected !== old.revision) throw Error("REVISION_CONFLICT");
     const artist = this.get("artists", v.artistId);
@@ -687,6 +793,7 @@ export class Studio {
     };
     delete w.expected;
     this.repo.transaction(() => {
+      if(!old||old.lyrics!==w.lyrics||!w.lyricsVersionId)this.lyricService().record(w,lyricOrigin??{kind:'manual'});
       if (old)
         this.save("revisions", { ...old, id: randomUUID(), workId: old.id });
       this.save("works", w);
@@ -943,6 +1050,7 @@ export class Studio {
     });
   }
   savePlan(v: any) {
+    assertLegacyScheduleEditable(this.repo,'plans',v.id);
     if (!DateTime.now().setZone(v.timezone).isValid)
       throw Error("TIMEZONE_INVALID");
     const [h, m] = v.time.split(":").map(Number);
@@ -981,6 +1089,8 @@ export class Studio {
     return list;
   }
   async tick() {
+    tickPlanCenter(this);
+    if(this.mode==='production')this.productionFlowService().tick();
     if (Date.now() - this.inboxTickAt >= 5000) {
       this.inboxTickAt = Date.now();
       await this.scanInbox();
@@ -995,7 +1105,7 @@ export class Studio {
       from = this.lastTick;
     this.lastTick = now;
     if (now.getTime() - from.getTime() <= 90000 && now >= from) {
-      for (const p of this.all("plans").filter((p) => p.enabled)) {
+      for (const p of this.all("plans").filter((p) => p.enabled&&!isLegacyOwned(this.repo,'plans',p.id))) {
         const date = DateTime.fromJSDate(now, {
           zone: p.timezone,
         }).toISODate()!;
@@ -1076,8 +1186,9 @@ export class Studio {
   rollover(op: string) {
     return resources.rollover(this, op);
   }
-  importFile(source: string, role: string, workId?: string) {
-    return assets.importFile(this, source, role, workId);
+  async importFile(source: string, role: string, workId?: string, beforePersist?:()=>void) {
+    if(workId&&role==='cover'&&assertPlanCoverWork(this,workId))throw Error('COVER_HANDOFF_REQUIRED');
+    return assets.importFile(this, source, role, workId,beforePersist);
   }
   locate(id: string) {
     return assets.locate(this, id);

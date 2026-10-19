@@ -1,0 +1,20 @@
+{
+  "contractSource": "https://api.yourmusic.fun/v1/openapi.json?lang=zh",
+  "pricingSource": "https://api.yourmusic.fun/dashboard",
+  "checkedAt": "2026-10-16T11:04:24.5531722Z",
+  "contractVersion": "1.0.0",
+  "models": [
+    "chirp-v6",
+    "chirp-v6-wild",
+    "chirp-v6-mini"
+  ],
+  "defaultExample": "chirp-v6",
+  "twoOutputs": true,
+  "maxModePerSongMultiplier": 2,
+  "queriesChargeCredits": false,
+  "publishedSunoPriceNote": "{modelPrefix}-v3-5：3 积分；{modelPrefix}-v4 / {modelPrefix}-v4-5 / {modelPrefix}-v4-5+ / {modelPrefix}-v5 / {modelPrefix}-v5.5：5 积分。",
+  "priceForChirpV6": null,
+  "twoSongTotalForChirpV6": null,
+  "latestAccountEnabledModelVerified": false,
+  "conflict": "Current generation contract lists v6 variants; public pricing table only enumerates through v5.5."
+}

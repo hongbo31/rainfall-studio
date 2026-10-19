@@ -1,7 +1,10 @@
+import HelpNote from "./HelpNote";
 import React, { useEffect, useState } from "react";
-import { useStudio } from "../context";
+import { useStudio, Badge } from "../context";
+import MusicCandidates from "./MusicCandidates";
+const evaluationNames:Record<string,string>={model_pending:'等待模型评估',model_evaluating:'模型评估中',model_passed:'模型评估达标',model_failed:'未达质量阈值',model_error:'模型评估失败',model_blocked:'模型评估已阻塞',model_unknown:'结果未知，等待对账',model_stale:'素材已更新，评估失效'};
 export default function TextCandidates() {
-  const { data, call, notify } = useStudio();
+  const { data, call, notify, go } = useStudio();
   const [status, setStatus] = useState<any>({
     configured: false,
     active: false,
@@ -71,7 +74,7 @@ export default function TextCandidates() {
   return (
     <section className="panel" aria-label="自动收件箱">
       <div className="section-title">
-        <h2>dot 自动收件箱</h2>
+        <h2>文本收件箱</h2>
         <span>
           {status.active
             ? "本地自动收件已配置"
@@ -80,14 +83,16 @@ export default function TextCandidates() {
               : "通道未配置"}
         </span>
       </div>
-      <p>
+      <HelpNote label="收件方式">
         通过授权本地通道接收歌词、风格与音乐提示词。客户端运行时自动扫描；退出后待下次正常启动入库。父
         dot 离线待交付与补交需父端配置，尚未验收。
-      </p>
-      <p>
+      </HelpNote>
+      <Badge>来源待核实</Badge>
+      <div className="section-title"><span>{status.modelEvaluation==='configured'?'自动评估由计划中心调度':status.modelEvaluation==='paused'?'自动评估已暂停':'尚未配置自动评估计划'}</span><button type="button" onClick={()=>go('plans')}>到计划中心配置评估</button></div>
+      <HelpNote label="收件检查范围">
         导入只做本地检查，完整质量评分显示“待模型评分”；不会启动
         CLI、收费生成或发布。生产者自称 dot 不代表身份认证。
-      </p>
+      </HelpNote>
       <form onSubmit={(e) => void setup(e)}>
         <div className="form-grid">
           <label>
@@ -211,6 +216,118 @@ export default function TextCandidates() {
           </p>
         </details>
       )}
+      {status.packageDelivery && (
+        <details>
+          <summary>歌词与封面包收件 · 本地通道</summary>
+          <p>云端同步链路尚未验收；本地回执写入不代表云端已收到。</p>
+          <button
+            type="button"
+            disabled={busy || !status.configured}
+            onClick={async () => {
+              setBusy(true);
+              setError("");
+              try {
+                await call("inbox.bridge.chooseDirectory");
+                await refresh();
+              } catch {
+                setError(
+                  "同步目录未保存。请选择包含 incoming 和 receipts 的专用项目目录，并确认目录可用。",
+                );
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            {status.bridge?.configured
+              ? "更换可信同步目录"
+              : "选择可信同步目录"}
+          </button>
+          {!status.configured && <p>先配置本地收件通道，再选择同步目录。</p>}
+          {status.bridge?.configured ? (
+            <>
+              <p>
+                同步项目：<code>{status.bridge.projectRoot}</code> ·{" "}
+                {status.bridge.enabled && status.active
+                  ? "文件桥接已启用"
+                  : "文件桥接已暂停"}
+              </p>
+              <p>
+                只读 incoming 中的投递包；只向 receipts
+                写入本地数据库已确认的回执。
+              </p>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  setError("");
+                  try {
+                    await call(
+                      status.bridge.enabled
+                        ? "inbox.bridge.pause"
+                        : "inbox.bridge.resume",
+                      { expectedRevision: status.bridge.revision },
+                    );
+                    await refresh();
+                  } catch {
+                    setError("桥接状态未变更，请检查目录及配置版本后重试。");
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                {status.bridge.enabled ? "暂停文件桥接" : "恢复文件桥接"}
+              </button>
+              {status.bridge.states.map((s: any) => (
+                <p key={s.deliveryId}>
+                  {s.deliveryId} ·{" "}
+                  {s.state === "acknowledged"
+                    ? "回执已写入同步目录（未核实云端）"
+                    : s.state === "staged"
+                      ? "文件已校验，等待私有收件入库"
+                      : s.state === "receipt_waiting"
+                        ? "回执等待写回同步目录"
+                        : s.state === "waiting"
+                          ? "等待文件同步或目录恢复"
+                          : "桥接已拒收"}
+                  {s.reason && ` · ${s.reason}`}
+                </p>
+              ))}
+              {status.bridge.lastError && (
+                <p role="alert">文件桥接：{status.bridge.lastError}</p>
+              )}
+            </>
+          ) : (
+            <p>同步路径未配置；等待登录 Google Drive 后选择实际项目目录。</p>
+          )}
+          <p>
+            包目录：<code>{status.packageDelivery.root}</code>
+          </p>
+          <p>
+            回执目录：<code>{status.packageDelivery.receiptsRoot}</code>
+          </p>
+          <p>
+            每个投递目录包含
+            text.json、封面、manifest.json、READY.json；必须通过哈希和图片解码校验，才会显示入库成功。收件不触发音乐生成、扣费或发布。
+          </p>
+          {!status.packageDelivery.states.length && <p>暂无封面包收件记录</p>}
+          {status.packageDelivery.states.map((s: any) => (
+            <p key={s.deliveryId}>
+              {s.deliveryId} ·{" "}
+              {s.state === "imported"
+                ? "已入库 · 待模型评估"
+                : s.state === "waiting"
+                  ? "等待文件完整同步 / 稍后重试"
+                  : "已拒收"}
+              {s.reason && ` · ${s.reason}`}
+              {s.nextAttemptAt && ` · 下次检查 ${s.nextAttemptAt}`}
+            </p>
+          ))}
+          {status.packageDelivery.lastError && (
+            <p role="alert">封面包收件：{status.packageDelivery.lastError}</p>
+          )}
+        </details>
+      )}
       {(error || status.lastError) && (
         <p role="alert">{error || `收件异常：${status.lastError}`}</p>
       )}
@@ -227,23 +344,26 @@ export default function TextCandidates() {
           <input value={query} onChange={(e) => setQuery(e.target.value)} />
         </label>
       </div>
-      {!visible.length && <p>暂无文本候选。当前没有可试听音频。</p>}
+      {!visible.length && <p>暂无文本候选</p>}
       {visible.map((c: any) => {
         const d = rows.drafts.find((d: any) => d.id === c.draftId)?.draft;
         return (
           <details className="panel" key={c.id}>
             <summary>
               {d?.title ?? c.externalItemId} · v{c.externalRevision} ·
-              待模型评分
+              {evaluationNames[c.evaluationState]??c.evaluationState}
             </summary>
-            <p>
-              {c.externalItemId} · {c.isCurrent ? "当前版本" : "历史版本"} ·{" "}
-              {c.importedAt}
-            </p>
-            <p>
-              来源：本地通道 {c.source.channelId}；生产者声明{" "}
-              {c.source.producerClaim}（未单独认证）
-            </p>
+            <details>
+              <summary>来源与接收记录</summary>
+              <p>
+                {c.externalItemId} · {c.isCurrent ? "当前版本" : "历史版本"} ·{" "}
+                {c.importedAt}
+              </p>
+              <p>
+                来源：本地通道 {c.source.channelId}；生产者声明{" "}
+                {c.source.producerClaim}（未单独认证）
+              </p>
+            </details>
             <p>
               本地检查：
               {c.localCheck.status === "failed"
@@ -256,16 +376,65 @@ export default function TextCandidates() {
                 ? "等待父版本补交"
                 : "版本关联完整"}
             </p>
+            {c.evaluation&&<div><p>{evaluationNames[c.evaluationState]??c.evaluationState}{c.evaluation.score?.source==='model-scored'&&` · ${c.evaluation.score.overall} / ${c.evaluation.score.threshold}`}</p>{c.evaluation.reasons?.length>0&&<p role="status">{c.evaluation.reasons.join(' · ')}</p>}{c.evaluation.coverState==='refresh_required'&&<p>改写稿需更新匹配封面</p>}</div>}
             <p>
               {d?.language} · {d?.style} · {d?.storyBeat}
             </p>
+            {c.cover && (
+              <p>
+                封面已接收 · v{c.cover.revision} · SHA256{" "}
+                <code>{c.cover.sha256.slice(0, 12)}</code>
+              </p>
+            )}
             <pre>{d?.sections.flatMap((s: any) => s.lines).join("\n")}</pre>
             <h3>音乐提示词</h3>
             <p>{d?.musicPrompts.yourmusic.positiveStyle}</p>
-            <p>没有音频；导入未推进系列剧情，未触发生成或发布。</p>
+            <button
+              disabled={
+                busy ||
+                !c.isCurrent ||
+                c.lineageState !== "complete" ||
+                c.localCheck.status === "failed"
+              }
+              onClick={async () => {
+                setBusy(true);
+                setError("");
+                try {
+                  await call("inbox.selectMusicInput", {
+                    candidateId: c.id,
+                    confirmed: true,
+                  });
+                  await refresh();
+                  notify("已人工选入音乐输入；尚未模型评分，未提交音乐生成。");
+                } catch {
+                  setError("未能选入音乐输入，请检查候选版本和本地检查结果。");
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              人工选入音乐输入（不生成）
+            </button>
+            <Badge>文本候选 · 无音频</Badge>
           </details>
         );
       })}
+      {rows.musicInput && (
+        <section className="panel" aria-label="已人工选入的音乐输入">
+          <h3>{rows.musicInput.draft.title} · 已人工选入</h3>
+          <details>
+            <summary>来源与版本</summary>
+            <p>
+              来源：本地收件；外部版本{" "}
+              {rows.musicInput.inputSelection.externalRevision}
+              。来源模型声明尚未独立验证，尚未模型评分，生成仍受质量与预算限制。
+            </p>
+          </details>
+          <pre>{rows.musicInput.pair.lyrics}</pre>
+          <p>{rows.musicInput.pair.musicPrompt}</p>
+          <MusicCandidates draft={rows.musicInput} />
+        </section>
+      )}
     </section>
   );
 }

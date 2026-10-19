@@ -1,9 +1,16 @@
 import { z } from "zod";
+import {PlanCenterPrepareCoverWorkSchema} from './plan-center';
 import { saveApiProfileSchema } from "./api-profiles";
 import { GenerateTurnSchema, TextConfigurationSchema } from "./creation";
 import { MusicRequestSchema } from "./music";
 import { DailyPlanInputSchema, SelectionSchema } from "./daily";
 import { InboxSetupSchema } from "./inbox";
+import {PlanCenterSaveSchema,PlanCenterToggleSchema,PlanCenterIdSchema,PlanCenterRunSchema,PlanCenterStopSchema,PlanCenterRetrySchema,PlanCenterBindWorkSchema,PlanCenterSelectVersionSchema,PlanCenterConfirmMaterialsSchema} from './plan-center';
+import { TmeInputSchema } from './tme';
+import { CoverRequestSchema } from './cover-handoff';
+import { TmeObservationSchemas } from './tme-observations';
+import { SimplePublishingSchemas } from './platform-config';
+import {PlanAlbumTargetSchema,PlanAlbumSelectSchema,PlanAlbumCreateSchema,PlanAlbumRunTargetSchema,PlanAlbumOperationIdSchema,PlanAlbumAuthorizeSchema} from './plan-albums';
 export const id = z.string().uuid();
 export const defaultsSchema = z
   .object({
@@ -19,7 +26,22 @@ export const defaultsSchema = z
   })
   .refine((x) => x.bpmMin <= x.bpmMax, "BPM区间无效");
 const obj = z.record(z.string(), z.unknown());
+const recordingSelections = z.array(z.strictObject({workId:id,slot:z.enum(['audio_A','audio_B'])})).max(200);
 export const methodSchemas: Record<string, z.ZodType> = {
+  ...SimplePublishingSchemas,
+  ...TmeObservationSchemas,
+  'publish.quick': z.strictObject({workIds:z.array(id).min(1).max(100),targets:z.array(z.enum(['netease','qishui','qqmusic','kugou','douyin'])).min(1).max(5),recordings:recordingSelections,accountOverrides:z.partialRecord(z.enum(['netease','qishui','qqmusic','kugou','douyin']),id).default({})}),
+  'lyrics.preview': z.strictObject({workId:z.uuid()}),
+  'lyrics.confirm': z.strictObject({workId:z.uuid(),versionId:z.uuid(),plainHash:z.string().regex(/^[a-f0-9]{64}$/),audioHash:z.string().regex(/^[a-f0-9]{64}$/),confirmed:z.literal(true)}),
+  'publication.payload': z.strictObject({workId:z.uuid()}),
+  'cover.request': CoverRequestSchema,
+  'cover.list': z.strictObject({workId:z.uuid().optional()}),
+  'tme.preview': TmeInputSchema,
+  'tme.prepare': TmeInputSchema,
+  'tme.list': z.strictObject({}),
+  'tme.batchPlan': z.strictObject({workIds:z.array(z.uuid()).min(1).max(100),accountId:z.uuid()}),
+  'tme.batches': z.strictObject({}),
+  'tme.batchCancel': z.strictObject({id:z.uuid()}),
   "dailyPlan.save": z.strictObject({
     plan: DailyPlanInputSchema,
     expectedRevision: z.number().int().positive().nullable(),
@@ -34,12 +56,17 @@ export const methodSchemas: Record<string, z.ZodType> = {
   "music.prepare": MusicRequestSchema,
   "music.list": z.strictObject({}),
   "music.reconcile": z.strictObject({ id: z.uuid() }),
+  "music.retryDownloads": z.strictObject({ id: z.uuid() }),
   "conversation.list": z.strictObject({}),
   "textConfig.list": z.strictObject({}),
   "inbox.status": z.strictObject({}),
+  "inbox.bridge.chooseDirectory": z.strictObject({}),
+  "inbox.bridge.pause": z.strictObject({expectedRevision:z.number().int().nonnegative()}),
+  "inbox.bridge.resume": z.strictObject({expectedRevision:z.number().int().nonnegative()}),
   "inbox.configure": InboxSetupSchema,
   "inbox.pause": z.strictObject({}),
   "inbox.listCandidates": z.strictObject({}),
+  "inbox.selectMusicInput": z.strictObject({ candidateId: z.uuid(), confirmed: z.literal(true) }),
   "inbox.getReceipt": z.strictObject({
     batchId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/),
   }),
@@ -143,6 +170,7 @@ export const methodSchemas: Record<string, z.ZodType> = {
   }),
   "publish.plan": z.object({
     workIds: z.array(id).min(1).max(100),
+    recordings: recordingSelections.optional(),
     destinations: z
       .array(
         z.object({
@@ -191,10 +219,37 @@ export const methodSchemas: Record<string, z.ZodType> = {
   "exception.retry": z.object({ id }),
   "metrics.read": z.object({}),
   "cover.task": z.object({ workId: id, brief: z.string().max(10000) }),
-  "video.prepare": z.object({ workId: id }),
+  "video.prepare": z.object({ workId: id, recordingSlot:z.enum(['audio_A','audio_B']).optional() }),
   "goal.complete": z.object({ workId: id, planId: id.optional() }),
 };
 export function validate(method: string, input: unknown) {
+  if(method.startsWith('planAlbums.')){
+    const albumSchemas:Record<string,z.ZodType>={
+      'planAlbums.status':z.strictObject({}),'planAlbums.catalog':PlanAlbumTargetSchema,
+      'planAlbums.select':PlanAlbumSelectSchema,'planAlbums.prepareCreate':PlanAlbumCreateSchema,
+      'planAlbums.prepareAppend':PlanAlbumRunTargetSchema.extend({itemId:z.string().min(1).max(500)}),
+      'planAlbums.preview':PlanAlbumOperationIdSchema,
+      'planAlbums.refresh':PlanAlbumTargetSchema,'planAlbums.capabilities':PlanAlbumTargetSchema,
+      'planAlbums.confirm':PlanAlbumAuthorizeSchema,'planAlbums.reconcile':PlanAlbumOperationIdSchema,
+    };
+    if(!albumSchemas[method])throw Error('METHOD_NOT_ALLOWED');return albumSchemas[method].parse(input??{});
+  }
+  const planSchemas:Record<string,z.ZodType>={
+    'planCenter.list':z.strictObject({}),'planCenter.catalog':z.strictObject({}),
+    'planCenter.status':z.strictObject({}),'planCenter.dotStatus':z.strictObject({}),'planCenter.exportDotRequests':z.strictObject({}),
+    'planCenter.musicStatus':z.strictObject({}),'planCenter.publicationStatus':z.strictObject({}),
+    'planCenter.bindWork':PlanCenterBindWorkSchema,'planCenter.prepareCoverWork':PlanCenterPrepareCoverWorkSchema,'planCenter.selectVersion':PlanCenterSelectVersionSchema,
+    'planCenter.confirmMaterials':PlanCenterConfirmMaterialsSchema,'planCenter.materialPreview':PlanCenterIdSchema,
+    'planCenter.refreshModels':z.strictObject({profileId:z.uuid(),expectedRevision:z.number().int().positive()}),
+    'planCenter.save':PlanCenterSaveSchema,'planCenter.toggle':PlanCenterToggleSchema,
+    'planCenter.preview':PlanCenterIdSchema,'planCenter.run':PlanCenterRunSchema,
+    'planCenter.stop':PlanCenterStopSchema,'planCenter.retry':PlanCenterRetrySchema,
+    'planCenter.rollbackMigration':z.strictObject({}),'planCenter.legacyHistory':PlanCenterIdSchema,
+  };
+  if(method.startsWith('planCenter.')){
+    if(!planSchemas[method])throw Error('METHOD_NOT_ALLOWED');
+    return planSchemas[method].parse(input??{});
+  }
   const schema = methodSchemas[method];
   if (!schema) throw new Error("METHOD_NOT_ALLOWED");
   return schema.parse(input ?? {});

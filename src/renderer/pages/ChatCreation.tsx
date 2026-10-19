@@ -1,9 +1,9 @@
+import HelpNote from "../components/HelpNote";
 import React, { useEffect, useState } from "react";
 import { useStudio, PageHead, Badge, SelectArtist } from "../context";
-import TextConfiguration from "../components/TextConfiguration";
 import MusicCandidates from "../components/MusicCandidates";
-import DailyCandidates from "../components/DailyCandidates";
-import TextCandidates from "../components/TextCandidates";
+import LiveMusicWorkspace from "../components/LiveMusicWorkspace";
+import LiveTextWorkspace from "../components/LiveTextWorkspace";
 const reasonNames: Record<string, string> = {
   TEXT_CONFIGURATION_REQUIRED: "尚未选择并验证文本供应商/协议/模型",
   LIVE_EXECUTION_DISABLED: "真实服务执行尚未启用",
@@ -58,7 +58,9 @@ export default function ChatCreation() {
         budgetLimit: 100,
       });
       notify(
-        t.state === "blocked" ? "请求已保存，配置未就绪" : "已创建离线示例任务",
+        t.state === "blocked"
+          ? "想法已保存；应用内 AI 生成暂未启用，请查看待补配置或导入外部草稿。"
+          : "已创建离线示例任务",
       );
       await refresh();
     } finally {
@@ -67,17 +69,19 @@ export default function ChatCreation() {
   };
   return (
     <>
-      <PageHead
-        title="AI 聊天创作"
-        sub="每轮保留版本、固定片段、评分证据与费用状态。模拟结果不代表真实模型效果。"
-      />
-      <TextConfiguration />
-      <TextCandidates />
-      <div className="notice">
+      <PageHead title="AI 聊天创作" />
+      <LiveMusicWorkspace />
+      <LiveTextWorkspace />
+      <p className="notice">
+        {data.mode === "simulation"
+          ? "离线样本"
+          : "保存想法 · 不调用模型"}
+      </p>
+      <HelpNote label="创作模式说明">
         {data.mode === "simulation"
           ? "离线原创 fixture：固定样本与模拟评分，不使用模型或网络；fixture credit 不是货币。"
-          : "默认文本服务为 DeepSeek，可在账号设置配置。真实生成与模型评分仍未启用；外部内容可由独立本地收件通道导入。"}
-      </div>
+          : "手动准备本次文字或音乐创作，每次调用按当前确认的范围执行。账号、API与收件管理请前往配置中心。"}
+      </HelpNote>
       <div className="split">
         <section className="panel">
           <h2>创作对话</h2>
@@ -128,6 +132,7 @@ export default function ChatCreation() {
             <label>
               本轮要求
               <textarea
+                aria-label="本轮要求"
                 value={instruction}
                 onChange={(e) => setInstruction(e.target.value)}
                 required
@@ -137,15 +142,14 @@ export default function ChatCreation() {
             <label>
               固定歌词片段（每行一段）
               <textarea
+                aria-label="固定歌词片段"
                 value={lock}
                 onChange={(e) => setLock(e.target.value)}
                 placeholder="固定内容发生冲突时转人工，不静默覆盖"
               />
             </label>
             <button className="primary" disabled={busy}>
-              {data.mode === "simulation"
-                ? "运行离线样本"
-                : "保存请求并检查配置"}
+              {data.mode === "simulation" ? "运行离线样本" : "保存想法"}
             </button>
           </form>
           {turns.map((t: any) => (
@@ -156,8 +160,7 @@ export default function ChatCreation() {
                 {t.state}
               </Badge>
               <small>
-                本次自动修改 {t.revisionCount}/2 · 已确认 {t.spent} fixture
-                credit
+                已改写 {t.revisionCount}/2 · 模拟额度 {t.spent}
               </small>
               {t.reasons.map((r: string) => (
                 <p key={r}>{reasonNames[r] ?? r}</p>
@@ -180,7 +183,15 @@ export default function ChatCreation() {
           </select>
           {active ? (
             <>
-              <Badge>离线样本 · 不是真实 AI 生成</Badge>
+              <Badge>
+                {active.source === "fixture"
+                  ? "离线样本"
+                  : active.source === "deepseek-api"
+                    ? "DeepSeek 返回 · 待评分"
+                    : active.source === "local-inbox"
+                      ? "本地导入 · 来源待核实"
+                      : "来源待核实"}
+              </Badge>
               <h3>{active.draft.title}</h3>
               <p>{active.draft.storyBeat}</p>
               {active.draft.sections.map((s: any) => (
@@ -200,7 +211,7 @@ export default function ChatCreation() {
                     {report.decision.scores.C ?? "—"} / 总分{" "}
                     {report.decision.scores.S ?? "—"}
                   </p>
-                  <small>分数不代表真实听感；未授权音乐生成。</small>
+                  <HelpNote label="评分说明">分数不代表真实听感；未授权音乐生成。</HelpNote>
                   {report.primary
                     .flatMap((a: any) => a.findings)
                     .map((f: any) => (
@@ -212,9 +223,9 @@ export default function ChatCreation() {
               )}
             </>
           ) : (
-            <p>
-              完整结构通过校验后才保存为版本。尚无版本，不会假装已经创作完成。
-            </p>
+            <>
+              <p>暂无版本</p>
+            </>
           )}
         </section>
       </div>
@@ -231,7 +242,6 @@ export default function ChatCreation() {
           </div>
         </details>
       )}
-      <DailyCandidates />
     </>
   );
 }

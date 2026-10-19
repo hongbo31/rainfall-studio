@@ -1,6 +1,7 @@
+import HelpNote from "./HelpNote";
 import React, { useEffect, useState } from "react";
 import { useStudio, SelectArtist, Badge } from "../context";
-import {workflowLabel} from '../workflow-labels';
+import { workflowLabel } from "../workflow-labels";
 export default function DailyCandidates() {
   const { data, call, notify } = useStudio();
   const [rows, setRows] = useState<any>({ plans: [], occurrences: [] }),
@@ -23,10 +24,11 @@ export default function DailyCandidates() {
   const number = (s: string) => (s === "" ? null : Number(s));
   return (
     <section className="panel">
-      <h2>每日候选计划 · 默认禁用</h2>
-      <p>
+      <h2>候选计划</h2>
+      <Badge>草稿 · 未启用</Badge>
+      <HelpNote label="计划草稿说明">
         时间、候选上限与预算未填写时保持为空。保存只创建草稿，不启用日程、不注册登录启动或系统任务。关机、睡眠、注销期间不会运行。
-      </p>
+      </HelpNote>
       <form
         onSubmit={async (e) => {
           e.preventDefault();
@@ -115,10 +117,10 @@ export default function DailyCandidates() {
             />
           </label>
         </div>
-        <p>
+        <HelpNote label="候选预算说明">
           本地草稿数值只供预览；实际货币/credits、费率上界、工作区总额与账户证据未确认前不能授权收费。模拟内部测试使用独立
           fixture credit。
-        </p>
+        </HelpNote>
         <label>
           漏跑策略
           <select value={missed} onChange={(e) => setMissed(e.target.value)}>
@@ -158,10 +160,7 @@ export default function DailyCandidates() {
             {p.localTime ?? "时间待确认"} · {p.timezone}
           </h3>
           <Badge>草稿 · 未启用</Badge>
-          <p>
-            候选上限 {p.candidateLimit ?? "待确认"}，谱乐两首一组，可达到上限{" "}
-            {p.preview.maximumReachable ?? "待确认"}
-          </p>
+          <p>候选上限 {p.candidateLimit ?? "待确认"}</p>
           <ul>
             {p.preview.next.map((n: any) => (
               <li key={n.utc}>
@@ -181,7 +180,7 @@ export default function DailyCandidates() {
       {rows.occurrences.length > 0 && (
         <p>
           已记录 {rows.occurrences.length}{" "}
-          次到期/漏跑事件（来源与预算日分别存档）。
+          次到期/漏跑事件
         </p>
       )}
     </section>

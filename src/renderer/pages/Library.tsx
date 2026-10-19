@@ -1,3 +1,4 @@
+import HelpNote from "../components/HelpNote";
 import React, { useState } from "react";
 import { useStudio, PageHead, WorkCard, Badge } from "../context";
 export default function Library() {
@@ -23,11 +24,10 @@ export default function Library() {
   return (
     <>
       <PageHead
-        title="每一首，都有自己的来处。"
-        sub="音频、歌词、封面和每一次修改，留在同一个作品里。"
+        title="作品库"
         action={
           <button className="primary" onClick={() => go("create")}>
-            ＋ 新作品
+            ＋ 新建作品（本地模板）
           </button>
         }
       />
@@ -155,7 +155,9 @@ export default function Library() {
         >
           按当前选择顺序建立系列
         </button>
-        <p>先按顺序勾选作品，再保存曲序。现有系列和作品版本均保留。</p>
+        <HelpNote label="曲序说明">
+          先按顺序勾选作品，再保存曲序。现有系列和作品版本均保留。
+        </HelpNote>
       </section>
     </>
   );

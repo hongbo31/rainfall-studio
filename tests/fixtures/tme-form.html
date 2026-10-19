@@ -1,0 +1,14 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Local fixture only — Tencent draft UI contract</title>
+<style>body{font:16px system-ui;max-width:1050px;margin:30px auto;color:#223}label{display:block;margin:12px}input,textarea,select{padding:8px;min-width:350px}input[type=checkbox]{min-width:0}output{display:block;color:#086}button{padding:12px}</style>
+<h1>仅本地 Fixture · 不连接腾讯</h1><p id="artist-id">fixture-artist-1</p><p id="artist-name">Fixture artist</p>
+<label>歌曲名称<input></label><label>作词<input></label><label>作曲<input></label>
+<label><input type="checkbox">我是作词人</label><label><input type="checkbox">我是作曲人</label>
+<label for="ai-music">是否AI音乐</label><select id="ai-music"><option value=""></option><option value="yes">是</option><option value="no">否</option></select>
+<label>AI工具<input></label><label>生成日期<input></label><label>歌词<textarea></textarea></label><label>音乐人说<textarea></textarea></label>
+<label>上传音频<input type="file" id="audio"></label><label>上传封面<input type="file" id="cover"></label><label>创作证明<input type="file" id="proof"></label>
+<div id="receipts"></div><button id="save">保存草稿</button><button id="submit" disabled>提交审核 · fixture永久禁用</button><div id="draft"></div>
+<script>
+window.uploadCounts={audio:0,cover:0,proof:0};window.saveCount=0;
+for(const role of ['audio','cover','proof'])document.getElementById(role).addEventListener('change',e=>{const f=e.target.files[0];window.uploadCounts[role]++;const old=document.getElementById('receipt-'+role);if(old)old.remove();const x=document.createElement('output');x.id='receipt-'+role;x.dataset.filename=f.name;x.dataset.bytes=f.size;x.dataset.remoteId='fixture-'+role;x.textContent=f.name+' · '+f.size+' bytes';document.getElementById('receipts').append(x)});
+document.getElementById('save').addEventListener('click',()=>{window.saveCount++;document.getElementById('draft').innerHTML='<p id="draft-id">fixture-draft-1</p><p id="draft-status">draft</p><p id="draft-reason"></p>'});
+</script></html>

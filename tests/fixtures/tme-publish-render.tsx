@@ -1,0 +1,2 @@
+import React from 'react';import {renderToStaticMarkup} from 'react-dom/server';import {Context} from '../../src/renderer/context';import PublicationDiagnostics from '../../src/renderer/pages/PublicationDiagnostics';
+export function renderPublishCenter(data:any){const value:any={data,selected:[],call:()=>{throw Error('NO_CALL_IN_SSR')},notify:()=>{},go:()=>{},exportArtifact:()=>{}};return renderToStaticMarkup(<Context.Provider value={value}><PublicationDiagnostics/></Context.Provider>);}

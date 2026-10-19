@@ -1,0 +1,10 @@
+import {build} from 'esbuild';
+import {spawnSync} from 'node:child_process';
+import electron from 'electron';
+import path from 'node:path';
+const action=process.argv[2];
+if(!['authcheck','stage','status','submit','poll','materialize','native-wav','attach-cover'].includes(action))throw Error('ACTION_REJECTED');
+await build({entryPoints:['scripts/authorized-music-main.ts'],outfile:'build/authorized-music-main.cjs',bundle:true,platform:'node',target:'node24',format:'cjs',packages:'external'});
+const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;
+const result=spawnSync(electron,[path.resolve('build/authorized-music-main.cjs'),action],{env,stdio:'inherit',windowsHide:true,timeout:120000});
+process.exit(result.status??1);

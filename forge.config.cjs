@@ -1,6 +1,6 @@
 module.exports = {
   packagerConfig: {
-    asar: { unpack: "**/*.dll" },
+    asar: { unpack: "{**/*.dll,**/dot-*.ps1}" },
     afterPrune: [async ({ buildPath }) => {
       // Rebuilding native modules can recreate local paths and compiler logs.
       // Keep the runtime binary; remove intermediates only from this staging copy.

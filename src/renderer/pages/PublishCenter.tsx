@@ -1,511 +1,514 @@
-import ManualReport from "../components/ManualReport";
-import React, { useState } from "react";
-import { useStudio, PageHead, Badge, names, label, date } from "../context";
-const platforms = ["netease", "qishui", "qqmusic", "kugou", "douyin"];
+import React, { useEffect, useRef, useState } from "react";
+import { useStudio, PageHead, Badge, names, label } from "../context";
+import HelpHint from "../components/HelpHint";
+import PublicationPipelineProgress from "../components/PublicationPipelineProgress";
+import PublicationMaterialResult from "../components/PublicationMaterialResult";
+import {
+  platformTargets,
+  type PlatformTarget,
+  type PublishSelection,
+  type SimplePublicationRequest,
+  type PublicationPendingTerms,
+} from "../../shared/platform-config";
+
+const states: Record<string, string> = {
+  needs_configuration: "待配置",
+  needs_materials: "待补材料",
+  awaiting_terms_review: "待条款确认",
+  unavailable: "未接通",
+  ready: "模拟就绪",
+};
 export default function PublishCenter() {
-  const { data, call, go, selected, exportArtifact, notify } = useStudio();
-  const [map, setMap] = useState<Record<string, string>>({}),
-    [chosen, setChosen] = useState<string[]>([]),
-    [active, setActive] = useState(data.batches.at(-1)?.id || ""),
-    [approval, setApproval] = useState(false),
-    [confirmed, setConfirmed] = useState(false),
-    [showExceptions, setShowExceptions] = useState(false),
-    [manualUnit, setManualUnit] = useState<any>(null);
-  const works = data.works.filter((w: any) => selected.includes(w.id));
-  const batch = data.batches.find((b: any) => b.id === active);
-  const units = data.units.filter((u: any) => u.batchId === active);
-  const toggle = (id: string) =>
-    setChosen(
-      chosen.includes(id) ? chosen.filter((x) => x !== id) : [...chosen, id],
-    );
-  const plan = async () => {
-    if (new Set(works.map((w: any) => w.artistId)).size !== 1) {
-      notify("每批请选择同一艺人的作品，以明确账号绑定。");
-      return;
+  const {
+    data,
+    selected,
+    setSelected,
+    publishSelection,
+    setPublishSelection,
+    flushPublishSelection,
+    call,
+    refresh,
+    go,
+  } = useStudio();
+  const [fallback, setFallback] = useState<PublishSelection>(
+    () =>
+      data.publishSelection ?? {
+        workIds: selected ?? [],
+        targets: [],
+        accountOverrides: {},
+      },
+  );
+  const selection = publishSelection ?? fallback;
+  const [query, setQuery] = useState(""),
+    [queueTaskId,setQueueTaskId]=useState(''),
+    [queueAccountId,setQueueAccountId]=useState(''),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState(""),
+    [message, setMessage] = useState("");
+  const inFlight = useRef(false);
+  const [currentResult, setCurrentResult] = useState<{
+    requests: SimplePublicationRequest[];
+    reused: boolean;
+    pipeline?: any[];
+  } | null>(null);
+  const resultRef = useRef<HTMLElement>(null);
+  const currentScope = JSON.stringify({ mode: data.mode, selection });
+  const scopeRef = useRef(currentScope);
+  scopeRef.current = currentScope;
+  useEffect(() => {
+    if (currentResult) {
+      resultRef.current?.focus({ preventScroll: true });
+      resultRef.current?.scrollIntoView({ block: "nearest", behavior: "auto" });
     }
-    const destinations = chosen.map((target) => {
-      const accountId = map[target];
-      const b = data.bindings.find(
-        (b: any) =>
-          b.artistId === works[0].artistId &&
-          b.accountId === accountId &&
-          b.targets.includes(target) &&
-          b.status !== "revoked",
-      );
-      if (!b) throw Error("请选择已绑定此艺人的平台账号");
-      return {
-        target,
-        accountId,
-        bindingId: b.id,
-        kind: target === "douyin" ? "video_post" : "audio_distribution",
-      };
-    });
-    const b = await call("publish.plan", { workIds: selected, destinations });
-    setActive(b.id);
+  }, [currentResult]);
+  useEffect(() => {
+    setQueueTaskId('');
+    setQueueAccountId('');
+    setCurrentResult(null);
+    setError("");
+    setMessage("");
+  }, [data.mode]);
+  const configurations = data.platformConfigurations ?? [];
+  const save = (next: PublishSelection) => {
+    setFallback(next);
+    setError("");
+    setMessage("");
+    setCurrentResult(null);
+    if (setPublishSelection) return setPublishSelection(next);
+    setSelected?.(next.workIds);
+    return call("publish.selection.save", next);
   };
-  return (
-    <>
-      <PageHead
-        title="让作品，走向更多人。"
-        sub="把素材、身份与授权准备清楚，再认真确认每一次提交。"
-        action={
-          <button onClick={() => setShowExceptions(!showExceptions)}>
-            {showExceptions ? "返回批次" : "异常与待处理"}{" "}
-            <Badge>{data.exceptions.length}</Badge>
-          </button>
-        }
-      />
-      <div className="notice">
-        {data.mode === "simulation"
-          ? "模拟演练工作区：所有远端回执均为模拟，不会访问或投稿真实平台。"
-          : "真实本地工作区：自动投稿未接入；可完成预检、视频包装和人工材料导出。"}{" "}
-        音频发行与抖音视频投稿分别准备。
-      </div>
-      {showExceptions ? (
-        <ExceptionList />
-      ) : (
-        <>
-          <section className="panel">
-            <div className="section-title">
-              <h2>01 / 批量发布准备</h2>
-              <Badge>已选择 {selected.length} 首</Badge>
-            </div>
-            {!works.length ? (
-              <div className="empty">
-                先到作品库勾选作品。
-                <button onClick={() => go("library")}>选择作品 →</button>
-              </div>
-            ) : (
-              <>
-                <div className="selected-titles">
-                  {works.map((w: any) => (
-                    <Badge key={w.id}>{w.title}</Badge>
-                  ))}
-                </div>
-                <div className="destination-list">
-                  {platforms.map((target) => {
-                    const accounts = data.accounts.filter(
-                      (a: any) =>
-                        a.provider === target ||
-                        (["qqmusic", "kugou"].includes(target) &&
-                          a.provider === "tme"),
-                    );
-                    return (
-                      <div className="destination" key={target}>
-                        <label className="inline-check">
-                          <input
-                            type="checkbox"
-                            checked={chosen.includes(target)}
-                            onChange={() => toggle(target)}
-                          />
-                          <b>{names[target]}</b>
-                          <small>
-                            {target === "douyin"
-                              ? "视频投稿 · 需MP4"
-                              : "音频发行"}
-                          </small>
-                        </label>
-                        <select
-                          aria-label={names[target] + "账号"}
-                          value={map[target] || ""}
-                          onChange={(e) =>
-                            setMap({ ...map, [target]: e.target.value })
-                          }
-                        >
-                          <option value="">选择账号与艺人绑定</option>
-                          {accounts.map((a: any) => (
-                            <option key={a.id} value={a.id}>
-                              {a.name} · {label(a.authStatus)}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="button-row">
-                  <button
-                    className="primary"
-                    disabled={!chosen.length || chosen.some((x) => !map[x])}
-                    onClick={() => plan().catch((e) => notify(e.message))}
-                  >
-                    生成批次并预检 →
-                  </button>
-                  <button onClick={() => go("accounts")}>配置艺人与账号</button>
-                </div>
-                <p>
-                  同批作品需属于同一艺人；跨艺人分别准备，可避免账号归属混用。目标未获准仍保留阻塞原因。
-                </p>
-              </>
-            )}
-          </section>
-          {batch && (
-            <section className="panel">
-              <div className="section-title">
-                <div>
-                  <h2>02 / 预检与执行范围</h2>
-                  <p>
-                    批次 {batch.id.slice(0, 8)} · {units.length} 次提交单元 ·{" "}
-                    {
-                      data.targets.filter((t: any) => t.batchId === batch.id)
-                        .length
-                    }{" "}
-                    个目标
-                  </p>
-                </div>
-                <Badge>{label(batch.state)}</Badge>
-              </div>
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>作品 / 账号</th>
-                      <th>平台与类型</th>
-                      <th>处理状态</th>
-                      <th>审核</th>
-                      <th>上线</th>
-                      <th>详情与操作</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {units.map((u: any) => (
-                      <tr key={u.id}>
-                        <td>
-                          <b>{u.snapshot.title}</b>
-                          <small>
-                            {
-                              data.accounts.find(
-                                (a: any) => a.id === u.accountId,
-                              )?.name
-                            }
-                          </small>
-                          <small>快照 v{u.snapshot.revision}</small>
-                        </td>
-                        <td>
-                          {u.destinations.map((d: any) => (
-                            <div key={d.target}>
-                              {names[d.target]}
-                              <small>
-                                {d.kind === "video_post" ? "视频" : "音频发行"}
-                              </small>
-                            </div>
-                          ))}
-                        </td>
-                        <td>
-                          <Badge>{label(u.state)}</Badge>
-                          {data.mode === "simulation" && (
-                            <small>模拟状态</small>
-                          )}
-                        </td>
-                        <td>{label(u.review)}</td>
-                        <td>{label(u.publication)}</td>
-                        <td className="actions-cell">
-                          {u.issues.map((x: string, i: number) => (
-                            <small className="error" key={i}>
-                              {x}
-                            </small>
-                          ))}
-                          {u.reason && <small>{u.reason}</small>}
-                          {u.receipt && (
-                            <small>
-                              {u.receipt.remoteId} ·{" "}
-                              {date(u.receipt.acceptedAt)} · {u.receipt.source}
-                            </small>
-                          )}
-                          {u.state === "SUBMISSION_UNKNOWN" && (
-                            <button
-                              onClick={async () =>
-                                notify(
-                                  (
-                                    await call("publish.reconcile", {
-                                      id: u.id,
-                                    })
-                                  ).reason,
-                                )
-                              }
-                            >
-                              核对投稿
-                            </button>
-                          )}
-                          {data.mode === "simulation" &&
-                            u.state === "READY" && (
-                              <select
-                                aria-label={"演练故障 " + u.snapshot.title}
-                                value={u.fault || ""}
-                                onChange={(e) =>
-                                  e.target.value &&
-                                  call("publish.simulateFault", {
-                                    id: u.id,
-                                    kind: e.target.value,
-                                  })
-                                }
-                              >
-                                <option value="">演练：正常路径</option>
-                                <option value="network">
-                                  演练：明确未受理失败
-                                </option>
-                                <option value="unknown">演练：回执丢失</option>
-                                <option value="rejected">演练：审核驳回</option>
-                              </select>
-                            )}
-                          {![
-                            "COMMITTING",
-                            "UPLOADING",
-                            "UPLOADED",
-                            "PREPARING",
-                          ].includes(u.state) && (
-                            <button onClick={() => setManualUnit(u)}>
-                              人工登记回执与状态
-                            </button>
-                          )}
-                          <button onClick={() => go("track", u.workId)}>
-                            作品与素材
-                          </button>
-                          {u.destinations.some(
-                            (d: any) => d.kind === "video_post",
-                          ) &&
-                            !u.snapshot.assets.video && (
-                              <button
-                                onClick={() =>
-                                  call("video.prepare", { workId: u.workId })
-                                }
-                              >
-                                本地生成 MP4
-                              </button>
-                            )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <div className="button-row">
-                <button
-                  className="primary"
-                  disabled={
-                    data.mode !== "simulation" ||
-                    !units.some((u: any) => u.state === "READY")
-                  }
-                  onClick={() => {
-                    setApproval(true);
-                    setConfirmed(false);
-                  }}
-                >
-                  确认演练范围
-                </button>
-                {data.mode === "simulation" &&
-                  units.some((u: any) => u.state === "PAUSED") && (
-                    <button
-                      onClick={() =>
-                        call("publish.revalidate", { id: batch.id })
-                      }
-                    >
-                      重新预检，作废旧确认
-                    </button>
-                  )}
-                <button
-                  onClick={() =>
-                    exportArtifact("materials", { batchId: batch.id })
-                  }
-                >
-                  导出人工材料包
-                </button>
-                <button onClick={() => call("publish.pause", { id: batch.id })}>
-                  暂停
-                </button>
-                <button
-                  disabled={!batch.approved}
-                  onClick={() => call("publish.start", { id: batch.id })}
-                >
-                  继续已确认演练
-                </button>
-                <button onClick={() => call("publish.retry", { id: batch.id })}>
-                  只重试安全失败项
-                </button>
-                <button
-                  onClick={() => call("publish.cancel", { id: batch.id })}
-                >
-                  取消尚未提交项
-                </button>
-              </div>
-              <p>
-                “已提交”仅代表收到回执；审核通过和已上线分别需要独立证据。未知结果不会加入批量重试。
-              </p>
-            </section>
-          )}
-          <section className="panel">
-            <h2>批次记录</h2>
-            {[...data.batches].reverse().map((b: any) => (
-              <div className="row" key={b.id}>
-                <div>
-                  {b.workIds.length} 首作品 · {date(b.createdAt)}
-                  <small>
-                    {b.id.slice(0, 8)} · {label(b.state)} ·{" "}
-                    {b.source === "simulation" ? "模拟演练" : "本地材料准备"}
-                  </small>
-                </div>
-                <button onClick={() => setActive(b.id)}>查看</button>
-              </div>
-            ))}
-            {!data.batches.length && (
-              <p>暂无批次。选择作品后建立第一份发布计划。</p>
-            )}
-          </section>
-        </>
-      )}
-      {manualUnit && (
-        <ManualReport unit={manualUnit} onClose={() => setManualUnit(null)} />
-      )}
-      {approval && batch && (
-        <div className="modal-backdrop">
-          <section
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="approval-title"
-            className="modal"
-          >
-            <h2 id="approval-title">确认本次模拟演练</h2>
-            <div className="notice">
-              不会真实上传、扣费或发布。仅运行以下快照的本地演练。
-            </div>
-            {units
-              .filter((u: any) => u.state === "READY")
-              .map((u: any) => (
-                <div className="row" key={u.id}>
-                  <div>
-                    <b>
-                      {u.snapshot.title} · v{u.snapshot.revision}
-                    </b>
-                    <small>
-                      {
-                        data.accounts.find((a: any) => a.id === u.accountId)
-                          ?.name
-                      }{" "}
-                      →{" "}
-                      {u.destinations
-                        .map((d: any) => names[d.target])
-                        .join(" / ")}
-                    </small>
-                    <small>
-                      来源：{u.snapshot.ai}；权益：{u.snapshot.rights}
-                    </small>
-                  </div>
-                </div>
-              ))}
-            <p>快照 {batch.snapshotHash.slice(0, 24)}… · 费用 ¥0（仅模拟）</p>
-            <label className="inline-check">
-              <input
-                type="checkbox"
-                checked={confirmed}
-                onChange={(e) => setConfirmed(e.target.checked)}
-              />
-              我已核对本次作品、版本、身份、目标与演练范围
-            </label>
-            <div className="button-row">
-              <button
-                className="primary"
-                disabled={!confirmed}
-                onClick={async () => {
-                  await call("publish.approve", {
-                    id: batch.id,
-                    snapshotHash: batch.snapshotHash,
-                  });
-                  await call("publish.start", { id: batch.id });
-                  setApproval(false);
-                }}
-              >
-                开始已确认演练
-              </button>
-              <button onClick={() => setApproval(false)}>返回检查</button>
-            </div>
-          </section>
-        </div>
-      )}
-    </>
-  );
-}
-function ExceptionList() {
-  const { data, call, notify, go } = useStudio();
-  const [filter, setFilter] = useState("all");
-  const list = data.exceptions.filter(
-    (e: any) =>
-      filter === "all" ||
-      (filter === "unknown"
-        ? e.remoteOutcome === "unknown"
-        : e.code === "REVIEW_REJECTED"),
-  );
-  return (
-    <section className="panel">
-      <div className="section-title">
-        <h2>异常与待处理</h2>
-        <select value={filter} onChange={(e) => setFilter(e.target.value)}>
-          <option value="all">全部</option>
-          <option value="unknown">远端结果未知</option>
-          <option value="rejected">审核驳回</option>
-        </select>
-      </div>
-      {list.map((e: any) => {
-        const entity =
-          e.kind === "unit"
-            ? data.units.find((u: any) => u.id === e.entityId)
-            : data.runs.find((r: any) => r.id === e.entityId);
-        const work = data.works.find((w: any) => w.id === entity?.workId);
-        return (
-          <article className="exception-card" key={e.id}>
-            <div>
-              <h3>
-                {work?.title || "任务"} <Badge>{label(e.code)}</Badge>
-              </h3>
-              <p>
-                步骤：{entity?.step || entity?.state} · {date(e.at)} · 来源{" "}
-                {e.source}
-              </p>
-              <p>
-                远端是否已提交：
-                <b>
-                  {e.remoteOutcome === "unknown"
-                    ? "未知，必须核对"
-                    : e.remoteOutcome === "submitted"
-                      ? "已提交"
-                      : "未进行真实提交"}
-                </b>
-              </p>
-              <p>
-                已有资产 {work?.assetHistory?.length || 0} 个 · 真实费用未接入 ·
-                模拟费用 ¥0
-              </p>
-            </div>
-            <div className="button-row">
-              {work && (
-                <button onClick={() => go("track", work.id)}>
-                  查看素材与版本
-                </button>
-              )}
-              {entity?.state === "RETRY_WAIT" && (
-                <button onClick={() => call("exception.retry", { id: e.id })}>
-                  只重试失败步骤
-                </button>
-              )}
-              {entity?.state === "SUBMISSION_UNKNOWN" && (
-                <button
-                  onClick={async () =>
-                    notify(
-                      (await call("publish.reconcile", { id: entity.id }))
-                        .reason,
-                    )
-                  }
-                >
-                  核对，不重发
-                </button>
-              )}
-              {e.code === "REVIEW_REJECTED" && (
-                <Badge>修订后重新预检，不作网络重试</Badge>
-              )}
-            </div>
-          </article>
+  const change = (next: PublishSelection) => {
+    void save(next).catch((e: Error) => setError(e.message));
+  };
+  const configure = async (target: PlatformTarget) => {
+    try {
+      await flushPublishSelection?.();
+      go("accounts", target);
+    } catch (e: any) {
+      setError(e.message);
+    }
+  };
+  const publish = async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    setCurrentResult(null);
+    const submittedScope = currentScope;
+    try {
+      await save(selection);
+      const result = await call("publish.simple", selection);
+      if (scopeRef.current !== submittedScope) return;
+      setCurrentResult({
+        requests: result.requests ?? [],
+        reused: result.reused,
+        pipeline: result.pipeline,
+      });
+      setMessage(
+        result.pipeline?.length
+          ? "发布任务已更新"
+          : result.reused
+            ? "已重新核验"
+            : "已整理发布材料",
+      );
+    } catch (e: any) {
+      if (scopeRef.current === submittedScope)
+        setError(
+          "材料准备失败：" + (e instanceof Error ? e.message : "请重试"),
         );
-      })}
-      {!list.length && <div className="empty">暂无此类异常。</div>}
-    </section>
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+    }
+  };
+  const allRequests: SimplePublicationRequest[] =
+    data.publicationRequests ?? [];
+  const inlineRequests =
+    currentResult?.requests.map(
+      (request) =>
+        allRequests.find((latest) => latest.id === request.id) ?? {
+          ...request,
+          stale: true,
+        },
+    ) ?? [];
+  const inlineStale = inlineRequests.some((request) => request.stale);
+  const requests = allRequests
+    .filter(
+      (request, index) =>
+        !allRequests
+          .slice(index + 1)
+          .some(
+            (other) =>
+              other.workId === request.workId &&
+              other.target === request.target,
+          ),
+    )
+    .reverse();
+  const termCards = new Map<
+    string,
+    { id: string; title: string; platformLabel: string; termsText: string }
+  >();
+  for (const term of (data.publicationPendingTerms ??
+    []) as PublicationPendingTerms[])
+    termCards.set(term.id, term);
+  for (const request of requests) {
+    const terms = request.materialSnapshot?.terms;
+    if (terms && !termCards.has(terms.jobId))
+      termCards.set(terms.jobId, {
+        id: terms.jobId,
+        title: request.title,
+        platformLabel: names[request.target],
+        termsText: terms.termsText,
+      });
+  }
+  const pendingTerms = [...termCards.values()];
+  const pipelineJobs = new Map<string, any>();
+  for (const job of currentResult?.pipeline ?? [])
+    pipelineJobs.set(job.id, job);
+  for (const job of data.publicationPipelineJobs ?? [])
+    pipelineJobs.set(job.id, job);
+  const queuedJobs=[...pipelineJobs.values()];
+  const pipeline = queuedJobs.filter((job:any)=>(!queueTaskId||job.id===queueTaskId)&&(!queueAccountId||job.accountId===queueAccountId));
+  const activePipeline = queuedJobs.some((job: any) =>
+    ["queued", "preparing", "awaiting_authorization"].includes(job.state),
+  );
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  useEffect(() => {
+    if (!activePipeline) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        await refreshRef.current?.();
+      } catch {
+        /* Keep the persisted progress visible; never replay publication. */
+      }
+      if (!stopped) timer = setTimeout(poll, 1500);
+    };
+    timer = setTimeout(poll, 1500);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [activePipeline]);
+  return (
+    <div className="simple-publishing">
+      <PageHead title="发布中心" />
+      <section className="panel publish-choices" aria-label="选择歌曲和平台">
+        <fieldset
+          className="simple-publish-grid publish-selection-fields"
+          disabled={busy}
+        >
+          <div className="song-choice">
+            <div className="section-title">
+              <h2>1 · 选择歌曲</h2>
+              <Badge>{selection.workIds.length} 首已选</Badge>
+            </div>
+            <label>
+              搜索歌曲
+              <input
+                type="search"
+                aria-label="搜索歌曲"
+                placeholder="输入歌名"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+            </label>
+            <div className="simple-song-list">
+              {data.works
+                .filter((work: any) =>
+                  work.title
+                    .toLocaleLowerCase()
+                    .includes(query.toLocaleLowerCase()),
+                )
+                .map((work: any) => (
+                  <label
+                    className={
+                      "simple-song" +
+                      (selection.workIds.includes(work.id)
+                        ? " is-selected"
+                        : "")
+                    }
+                    key={work.id}
+                  >
+                    <input
+                      type="checkbox"
+                      aria-label={"选择歌曲：" + work.title}
+                      checked={selection.workIds.includes(work.id)}
+                      onChange={() =>
+                        change({
+                          ...selection,
+                          workIds: selection.workIds.includes(work.id)
+                            ? selection.workIds.filter((id) => id !== work.id)
+                            : [...selection.workIds, work.id],
+                        })
+                      }
+                    />
+                    <span>
+                      <b>{work.title}</b>
+                      <small>
+                        {data.artists.find(
+                          (artist: any) => artist.id === work.artistId,
+                        )?.name ?? "未设艺人"}{" "}
+                        · {work.assets?.audio_A ? "音频 A" : "缺少音频 A"}
+                      </small>
+                    </span>
+                  </label>
+                ))}
+            </div>
+            {!data.works.length && (
+              <button onClick={() => go("create")}>去创作</button>
+            )}
+          </div>
+          <div className="target-choice">
+            <h2>2 · 选择平台</h2>
+            <div className="simple-target-list">
+              {platformTargets.map((target) => {
+                const config = configurations.find(
+                  (item: any) => item.target === target,
+                );
+                const accounts = data.accounts.filter(
+                  (account: any) =>
+                    account.provider === target ||
+                    (["qqmusic", "kugou"].includes(target) &&
+                      account.provider === "tme"),
+                );
+                const chosen = selection.targets.includes(target);
+                const accountId =
+                  selection.accountOverrides[target] ?? config?.accountId ?? "";
+                return (
+                  <article
+                    className={"simple-target" + (chosen ? " is-selected" : "")}
+                    key={target}
+                  >
+                    <div className="simple-target-heading">
+                      <label className="inline-check">
+                        <input
+                          type="checkbox"
+                          aria-label={"发布到 " + names[target]}
+                          checked={chosen}
+                          onChange={() =>
+                            change({
+                              ...selection,
+                              targets: chosen
+                                ? selection.targets.filter(
+                                    (item) => item !== target,
+                                  )
+                                : [...selection.targets, target],
+                            })
+                          }
+                        />
+                        <b>{names[target]}</b>
+                      </label>
+                      <HelpHint label="平台说明">
+                        {target === "douyin"
+                          ? "使用作品已有视频。"
+                          : "使用原音频 A、已选封面和已有歌词。"}
+                        正式提交前需逐首确认当前条款。
+                      </HelpHint>
+                    </div>
+                    <div className="simple-target-meta">
+                      <span>
+                        {data.mode === "simulation"
+                          ? "模拟"
+                          : ["qqmusic", "kugou"].includes(target)
+                            ? "腾讯 AI 投稿"
+                            : "未接通"}
+                      </span>
+                      <button
+                        className="text-button"
+                        onClick={() => void configure(target)}
+                      >
+                        {"配置 " + names[target]}
+                      </button>
+                    </div>
+                    {chosen &&
+                      (accounts.length ? (
+                        <label className="target-account">
+                          发布账号
+                          <select
+                            aria-label={names[target] + "发布账号"}
+                            value={accountId}
+                            onChange={(event) => {
+                              const accountOverrides = {
+                                ...selection.accountOverrides,
+                              };
+                              if (event.target.value)
+                                accountOverrides[target] = event.target.value;
+                              else delete accountOverrides[target];
+                              change({ ...selection, accountOverrides });
+                            }}
+                          >
+                            <option value="">请选择账号</option>
+                            {accounts.map((account: any) => (
+                              <option key={account.id} value={account.id}>
+                                {account.name} ·{" "}
+                                {label(account.authStatus ?? "not_connected")}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : (
+                        <small className="configuration-missing">
+                          缺少账号
+                        </small>
+                      ))}
+                  </article>
+                );
+              })}
+            </div>
+          </div>
+        </fieldset>
+        <div className="simple-publish-action">
+          <h2>3 · 发布</h2>
+          <button
+            className="primary"
+            disabled={
+              busy || !selection.workIds.length || !selection.targets.length
+            }
+            onClick={() => void publish()}
+          >
+            {busy
+              ? "正在准备材料…"
+              : error
+                ? "重试准备"
+                : data.mode === "simulation"
+                  ? "发布（模拟）"
+                  : "发布"}
+          </button>
+          <HelpHint label="发布说明">
+            检查材料并准备投稿；遇到授权或条款确认时暂停。
+          </HelpHint>
+          {message && (
+            <span role="status">
+              {inlineStale ? "资料已变化，请重新检查" : message}
+            </span>
+          )}
+          {error && (
+            <span className="error" role="alert">
+              {error}
+            </span>
+          )}
+        </div>
+        {currentResult && !queuedJobs.length && (
+          <section
+            className="publication-current-result"
+            ref={resultRef}
+            tabIndex={-1}
+            role="region"
+            aria-label="本次发布材料"
+            aria-busy="false"
+          >
+            <div className="section-title">
+              <h2>本次发布材料</h2>
+              <span>
+                {inlineStale
+                  ? "待重新检查"
+                  : currentResult.reused
+                    ? "已重新核验"
+                    : "已整理"}{" "}
+                · 未上传
+              </span>
+            </div>
+            {inlineStale && (
+              <button disabled={busy} onClick={() => void publish()}>
+                重新检查
+              </button>
+            )}
+            {inlineRequests.map((request) => (
+              <PublicationMaterialResult
+                key={request.id}
+                request={request}
+                onTrack={() => go("track", request.workId)}
+                onConfigure={() => void configure(request.configurationTarget)}
+              />
+            ))}
+          </section>
+        )}
+      </section>
+      {!!queuedJobs.length&&<section className="publication-queue-filters" aria-label="发布队列筛选">
+        <label>发布任务<select data-testid="publication-task-filter" value={queueTaskId} onChange={event=>setQueueTaskId(event.target.value)}><option value="">全部任务</option>{queuedJobs.map((job:any)=><option key={job.id} value={job.id}>{job.title} · {(data.accounts??[]).find((account:any)=>account.id===job.accountId)?.name??'未指定账号'}</option>)}</select></label>
+        <label>发布账号<select data-testid="publication-account-filter" value={queueAccountId} onChange={event=>setQueueAccountId(event.target.value)}><option value="">全部账号</option>{[...new Set<string>(queuedJobs.map((job:any)=>job.accountId).filter(Boolean))].map(id=><option key={id} value={id}>{(data.accounts??[]).find((account:any)=>account.id===id)?.name??'账号待核对'}</option>)}</select></label>
+      </section>}
+      {!!pipeline.length && (
+        <PublicationPipelineProgress
+          jobs={pipeline}
+          data={data}
+          onRefresh={refresh}
+          onReconcile={(id) => call("publish.reconcile", {id})}
+          onTrack={(id) => go("track", id)}
+          onConfigure={(target) => void configure(target)}
+        />
+      )}
+      {!!queuedJobs.length&&!pipeline.length&&<p role="status">没有符合筛选的发布任务。</p>}
+      {!queuedJobs.length && (requests.length > 0 || pendingTerms.length > 0) && (
+        <section className="panel simple-request-list" aria-label="发布任务">
+          <h2>发布任务</h2>
+          {pendingTerms.map((term) => (
+            <article className="simple-request" key={"terms-" + term.id}>
+              <div className="simple-request-heading">
+                <b>
+                  {term.title} · {term.platformLabel}
+                </b>
+                <Badge>待条款确认 · 未接受条款</Badge>
+              </div>
+              <details>
+                <summary>查看条款</summary>
+                <pre>{term.termsText}</pre>
+              </details>
+            </article>
+          ))}
+          {requests.map((request) => (
+            <article
+              className="simple-request"
+              key={request.id}
+              data-request-id={request.id}
+            >
+              <div className="simple-request-heading">
+                <b>
+                  {request.title} · {names[request.target]}
+                </b>
+                <Badge>
+                  {request.stale
+                    ? "资料已变化 · 请重新检查"
+                    : request.state === "ready" &&
+                        request.source !== "simulation"
+                      ? "未接通"
+                      : (states[request.state] ?? request.summary)}
+                </Badge>
+              </div>
+              <div className="simple-request-meta">
+                <small>
+                  {request.source === "simulation" ? "模拟" : "本地检查"} ·{" "}
+                  {request.summary}
+                </small>
+                <button
+                  className="text-button"
+                  onClick={() => void configure(request.configurationTarget)}
+                >
+                  {"配置 " + names[request.configurationTarget]}
+                </button>
+              </div>
+              {!!request.issues.length && (
+                <details>
+                  <summary>查看问题</summary>
+                  <ul>
+                    {request.issues.map((issue, index) => (
+                      <li key={index}>{issue}</li>
+                    ))}
+                  </ul>
+                  <button onClick={() => go("track", request.workId)}>
+                    查看素材
+                  </button>
+                </details>
+              )}
+            </article>
+          ))}
+        </section>
+      )}
+    </div>
   );
 }

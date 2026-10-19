@@ -1,0 +1,10 @@
+import {build} from 'esbuild';
+import {spawnSync} from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+const entries=['export {Repository,hash} from "./src/core/database";export {Studio} from "./src/core/studio";export {cleanLyricText} from "./src/shared/tme-lyrics";'];
+for(const file of ['src/shared/tme-ai-prepare.ts','src/core/tme-ai-prepare.ts','src/core/tme-ai-prepare-integration.ts'])if(fs.existsSync(file))entries.push(`export * from './${file}';`);
+const bundle=path.resolve('output/tme-ai-prepare-tests/core.cjs');
+await build({stdin:{contents:entries.join('\n'),resolveDir:process.cwd()},outfile:bundle,bundle:true,platform:'node',format:'cjs',packages:'external'});
+const r=spawnSync(process.execPath,['--require',path.resolve('tests/fixtures/offline-only.cjs'),'--test','tests/tme-ai-prepare.test.mjs','tests/tme-ai-prepare-integration.test.mjs'],{stdio:'inherit',env:{...process.env,RAINFALL_TME_AI_PREPARE_BUNDLE:bundle}});
+process.exit(r.status??1);

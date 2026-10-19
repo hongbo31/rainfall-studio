@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import HelpNote from "../components/HelpNote";
+import React, { useState, useEffect, useRef } from "react";
 import { useStudio, PageHead, Cover, Badge } from "../context";
 export default function CoverStudio({ initialId }: { initialId?: string }) {
   const { data, call, importAsset, exportArtifact } = useStudio();
@@ -10,31 +11,61 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
     ),
     [task, setTask] = useState(initialWork?.coverTaskText || ""),
     [size, setSize] = useState(3000),
-    [noText, setNoText] = useState(false);
+    [noText, setNoText] = useState(true);
   const work = data.works.find((w: any) => w.id === id);
+  const selectedCover = data.assets.find(
+    (a: any) => a.id === work?.assets.cover,
+  );
+  const currentWorkId = useRef(id);
+  currentWorkId.current = id;
+  const [handoff, setHandoff] = useState<any>({ requests: [], receipts: [] }),
+    [requestId, setRequestId] = useState(""),
+    [busy, setBusy] = useState(false);
+  const load = async () => {
+    const rows = await call("cover.list", { workId: id });
+    if (currentWorkId.current === id) setHandoff(rows);
+    return rows;
+  };
+  useEffect(() => {
+    let active = true;
+    setRequestId("");
+    setHandoff({ requests: [], receipts: [] });
+    void call("cover.list", { workId: id })
+      .then((rows) => {
+        if (active) setHandoff(rows);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [id]);
+  const request = handoff.requests.find(
+    (r: any) => r.id === requestId && r.workId === id,
+  );
+  const planLocked=!!handoff.planRecovery?.locked;
   return (
     <>
-      <PageHead
-        title="让声音，也拥有画面。"
-        sub="从歌词、故事与曲风提炼封面方向，保存每一次视觉探索。"
-      />
-      <div className="notice">
-        Codex 协作：导出任务 → 在支持的会话中生成 → 导入结果。本应用没有内置免费
-        Codex 图像 API。
-      </div>
+      <PageHead title="封面工作室" />
+      <p className="notice">图片接口未配置 · 导入真实图片</p>
+      <HelpNote label="封面交接说明">
+        图片接口未配置。dot 文件交接：导出请求 → 在支持出图的会话生成 →
+        接收真实图片。本应用不会直接调用当前 dot 聊天，也没有内置免费 Codex 图像
+        API。
+      </HelpNote>
       {!work ? (
         <div className="panel empty">先创建一首作品，再来制作封面。</div>
       ) : (
         <>
           <div className="split">
             <section className="panel">
-              <h2>01 / 作品与视觉方向</h2>
+              <h2>作品与画面</h2>
               <label>
                 当前作品
                 <select
                   aria-label="封面作品"
                   value={id}
                   onChange={(e) => {
+                    currentWorkId.current = e.target.value;
                     setId(e.target.value);
                     const selected = data.works.find(
                       (w: any) => w.id === e.target.value,
@@ -66,11 +97,13 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
               <div className="button-row">
                 <button
                   className="primary"
-                  onClick={async () =>
-                    setTask(
-                      (await call("cover.task", { workId: id, brief })).text,
-                    )
-                  }
+                  onClick={async () => {
+                    const result = await call("cover.task", {
+                      workId: id,
+                      brief,
+                    });
+                    if (currentWorkId.current === id) setTask(result.text);
+                  }}
                 >
                   生成封面提示词 · 本地
                 </button>
@@ -97,13 +130,136 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
                   />
                 </label>
               )}
-              <h3>02 / 导入生成结果</h3>
-              <button onClick={() => importAsset("cover", id)}>
+              <div className="cover-handoff" data-testid="cover-handoff">
+                {planLocked&&<p role="status">{handoff.planRecovery.reason==='STOP_REQUESTED'?'本次计划已停止，封面更新已锁定。':'计划最终材料已变化或执行已结束，封面更新已锁定。'}</p>}
+                {!!handoff.planRecovery&&!planLocked&&<p className="muted">按当前最终歌词接收并选择封面后，返回计划重试封面阶段。</p>}
+                <h3>导入图片</h3>
+                <p>
+                  {handoff.receipts.length
+                    ? "已接收图片"
+                    : "等待真实图片。"}
+                </p>
+                <button
+                  className="primary"
+                  disabled={busy||planLocked}
+                  onClick={async () => {
+                    setBusy(true);
+                    try {
+                      const r = await call("cover.request", {
+                        workId: id,
+                        requestId: crypto.randomUUID(),
+                        brief,
+                        ...(task ? { prompt: task } : {}),
+                      });
+                      await load();
+                      if (currentWorkId.current === id) setRequestId(r.id);
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                >
+                  保存封面交接请求（不出图）
+                </button>
+                <HelpNote label="交接步骤">
+                  下一步：把提示词或请求文件交给支持出图的会话，拿到图片后在这里导入。
+                  保存请求只记录作品和画面要求，不会启动 dot
+                  或任何图像生成服务。
+                </HelpNote>
+                <label>
+                  当前封面请求
+                  <select
+                    aria-label="当前封面请求"
+                    value={requestId}
+                    onChange={(e) => setRequestId(e.target.value)}
+                  >
+                    <option value="">选择已保存请求</option>
+                    {handoff.requests.map((r: any) => (
+                      <option value={r.id} key={r.id}>
+                        {r.id.slice(0, 8)} ·{" "}
+                        {r.state === "received" ? "已接收图片" : "等待真实图片"}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {request && (
+                  <>
+                    <Badge>{request.state === "received" ? "已接收图片" : "等待真实图片"}</Badge>
+                    <details>
+                      <summary>请求记录</summary>
+                      请求 ID：{request.id}
+                      <br />
+                      上下文：{request.contextHash.slice(0, 12)} ·{" "}
+                    </details>
+                    <div className="button-row">
+                      <button
+                        onClick={() =>
+                          exportArtifact("coverRequest", { requestId })
+                        }
+                      >
+                        导出 dot 请求 JSON
+                      </button>
+                      <button
+                        onClick={async () => {
+                          await importAsset(
+                            "coverResultManifest",
+                            id,
+                            requestId,
+                          );
+                          await load();
+                        }}
+                        disabled={planLocked}
+                      >
+                        导入结果清单
+                      </button>
+                      <button
+                        disabled={planLocked}
+                        onClick={async () => {
+                          await importAsset("coverResultImage", id, requestId);
+                          await load();
+                        }}
+                      >
+                        接收当前请求的真实图片
+                      </button>
+                    </div>
+                  </>
+                )}
+                <HelpNote label="图片与清单要求">
+                  导入结果清单前请先选中对应请求，清单与图片放在同一目录。方形512–10000px，PNG/JPEG/WebP，最多50MiB；3000px是本地工作目标。未提供清单时记为用户导入，不推断生成来源。
+                </HelpNote>
+                {handoff.receipts
+                  .filter((r: any) => r.workId === id)
+                  .map((r: any) => (
+                    <div className="handoff-receipt" key={r.id}>
+                      <span>
+                        已接收 · {r.image.width}×{r.image.height} · 请求{" "}
+                        {r.requestId.slice(0, 8)} ·{" "}
+                        {r.source === "user-import"
+                          ? "用户导入"
+                          : "外部清单来源声明"}
+                      </span>
+                      <button
+                        disabled={planLocked||work.assets.cover === r.assetId}
+                        onClick={() =>
+                          call("work.selectAsset", {
+                            workId: id,
+                            assetId: r.assetId,
+                            role: "cover",
+                          })
+                        }
+                      >
+                        {work.assets.cover === r.assetId
+                          ? "已选为歌曲封面"
+                          : "选为歌曲封面"}
+                      </button>
+                    </div>
+                  ))}
+              </div>
+              <button disabled={!!handoff.planRecovery} title={handoff.planRecovery?'请通过当前封面交接请求接收真实图片':undefined} onClick={() => importAsset("cover", id)}>
                 ＋ 导入本地封面
               </button>
-              <p>
+              <HelpNote label="本地导入格式">
                 PNG / JPG / WebP；最多50 MiB / 100MP。原件保留，排版另存新版本。
-              </p>
+              </HelpNote>
             </section>
             <section className="panel">
               <div className="section-title">
@@ -112,8 +268,26 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
                   {work.assets.cover ? "已导入图片" : "原创占位示例"}
                 </Badge>
               </div>
-              <Cover work={work} large />
-              <h3>03 / 排版与尺寸适配</h3>
+              {work.assets.cover ? (
+                <div className="cover large">
+                  <img
+                    alt={work.title + " 封面"}
+                    src={"media://asset/" + work.assets.cover}
+                  />
+                </div>
+              ) : (
+                <Cover work={work} large />
+              )}
+              {selectedCover && (
+                <p>
+                  {selectedCover.metadata.width} ×{" "}
+                  {selectedCover.metadata.height} ·{" "}
+                  {selectedCover.parentId
+                    ? "派生版本 · 原件保留"
+                    : "导入原图"}
+                </p>
+              )}
+              <h3>排版与尺寸</h3>
               <div className="form-grid">
                 <label>
                   工作预设
@@ -145,9 +319,9 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
               >
                 导出 PNG 并保存派生版本
               </button>
-              <p>
+              <HelpNote label="尺寸与排版说明">
                 本地工作预设，各平台当前规格待核实。文字排版以导出文件为准。
-              </p>
+              </HelpNote>
             </section>
           </div>
           <section className="panel">

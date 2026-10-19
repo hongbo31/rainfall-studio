@@ -36,6 +36,16 @@ export const saveApiProfileSchema = z.strictObject({
 });
 export type ApiProfile = z.infer<typeof apiProfileSchema>;
 export type SaveApiProfileInput = z.infer<typeof saveApiProfileSchema>;
+export type ApiConnectionCheck = {
+  profileId: string;
+  providerId: "yourmusic" | "deepseek";
+  state: "connected" | "unauthorized" | "forbidden" | "credits_required" | "rate_limited" | "unavailable" | "invalid_response";
+  httpStatus: number | null;
+  failureCode: "HTTP_DNS_FAILED" | "HTTP_TLS_FAILED" | "CREDENTIAL_FORMAT_INVALID" | "HTTP_ACCESS_DENIED" | "HTTP_ADDRESS_REJECTED" | "HTTP_TIMEOUT" | "HTTP_SIZE_LIMIT" | "HTTP_REQUEST_FAILED" | null;
+  checkedAt: string;
+  scope: "authentication_only";
+  paidGenerationRequested: false;
+};
 
 // A capability catalogue, not an HTTP client. No renderer-supplied base URL.
 export const apiProviders = Object.freeze([
@@ -43,7 +53,7 @@ export const apiProviders = Object.freeze([
     id: "deepseek",
     kind: "text",
     name: "DeepSeek",
-    state: "官方配置 · 真实调用未启用",
+    state: "官方 API · 逐轮预算授权后调用",
     credentialInput: true,
     hosts: ["api.deepseek.com"],
   },

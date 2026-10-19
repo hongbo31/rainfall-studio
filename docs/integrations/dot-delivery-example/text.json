@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "batchId": "dot-delivery-format-20261018",
+  "createdAt": "2026-10-18T18:08:00Z",
+  "targetWorkspaceRef": "rainfall-personal",
+  "items": [
+    {
+      "externalItemId": "dot-original-001",
+      "revision": 1,
+      "parentRevision": null,
+      "artistRef": "creator",
+      "seriesRef": null,
+      "draft": {
+        "title": "格式样例，请替换为dot作品",
+        "topic": "请填写主题",
+        "storyBeat": "请填写故事进展",
+        "language": "中文",
+        "style": "请填写曲风",
+        "instrumental": false,
+        "sections": [
+          {
+            "id": "chorus",
+            "kind": "Chorus",
+            "lines": [
+              "请替换为dot创作的第一行",
+              "请替换为dot创作的第二行"
+            ]
+          }
+        ],
+        "hook": {
+          "sectionId": "chorus",
+          "startLine": 0,
+          "endLine": 2
+        },
+        "vocalPlan": [
+          {
+            "sectionId": "chorus",
+            "voice": "male"
+          }
+        ],
+        "musicPrompts": {
+          "suno": {
+            "positiveStyle": "请填写风格、配器、情绪、节奏和人声提示词",
+            "negativeStyle": "",
+            "durationTarget": 180,
+            "voiceArrangement": "male"
+          },
+          "yourmusic": {
+            "positiveStyle": "请填写风格、配器、情绪、节奏和人声提示词",
+            "negativeStyle": "",
+            "durationTarget": 180,
+            "voiceArrangement": "male"
+          }
+        },
+        "continuityNotes": "仅格式示例；请替换全部创作内容，不代表AI作品或已导入。"
+      },
+      "provenance": {
+        "producer": "dot-format-fixture",
+        "model": null,
+        "promptVersion": null,
+        "generatedAt": "2026-10-18T18:08:00Z"
+      }
+    }
+  ]
+}

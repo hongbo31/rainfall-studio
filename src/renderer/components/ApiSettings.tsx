@@ -1,16 +1,27 @@
 import React, { useEffect, useState } from "react";
 import { useStudio } from "../context";
+import HelpHint from "./HelpHint";
 import {
   apiProviders,
   canStoreApiCredential,
   type ApiProfile,
   type CredentialStatus,
+  type ApiConnectionCheck,
 } from "../../shared/api-profiles";
 
 const statusNames = {
   absent: "未保存 Key",
   stored_unverified: "已保存 · 未验证",
   unavailable: "安全存储不可用",
+};
+const connectionNames: Record<ApiConnectionCheck["state"], string> = {
+  connected: "认证连接成功 · 生成权限与费用未核验",
+  unauthorized: "认证失败 · 请核对 Key",
+  forbidden: "请求被拒绝 · 权限未核验",
+  credits_required: "平台返回额度不足 · 未创建任务",
+  rate_limited: "平台限流 · 未自动重试",
+  unavailable: "未能完成连接 · 请稍后手动重试",
+  invalid_response: "响应不符合已核验合同 · 连接状态未知",
 };
 
 function ProfileCard({
@@ -27,6 +38,7 @@ function ProfileCard({
   const [status, setStatus] = useState<CredentialStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [connection, setConnection] = useState<ApiConnectionCheck | null>(null);
   const { call } = useStudio();
   const provider = apiProviders.find((p) => p.id === profile.providerId)!;
   const eligible = canStoreApiCredential(profile);
@@ -49,10 +61,12 @@ function ProfileCard({
   }, [profile.id, profile.revision, simulation]);
   useEffect(() => {
     setLabel(profile.label);
-  }, [profile.label]);
+    setConnection(null);
+  }, [profile.id, profile.label, profile.revision, simulation]);
   const action = async (kind: "save" | "clear" | "label") => {
     setBusy(true);
     setError("");
+    setConnection(null);
     try {
       if (kind === "label") {
         const { revision, ...metadata } = profile;
@@ -80,6 +94,23 @@ function ProfileCard({
       }
     } catch {
       setError("操作未完成，请检查配置版本与安全存储后重试。");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const checkConnection = async () => {
+    setBusy(true);
+    setError("");
+    setConnection(null);
+    try {
+      const r = await window.rainfall.checkApiConnection({
+        profileId: profile.id,
+        expectedRevision: profile.revision,
+      });
+      if (!r.ok) throw Error("CONNECTION_CHECK_FAILED");
+      setConnection(r.value);
+    } catch {
+      setError("连接检查未完成，请检查配置版本与本机网络。");
     } finally {
       setBusy(false);
     }
@@ -165,17 +196,49 @@ function ProfileCard({
               </button>
             </div>
           </div>
-          <p className="api-help">
-            保存后清空输入框。Key 使用 Windows
-            安全存储加密，不进入备份；当前不会发起连接检测或生成请求。
-          </p>
+          <HelpHint label="凭据存储说明">
+            保存后清空输入框。Key 使用 Windows 安全存储加密，不进入备份。保存
+            Key 不会联网或创建音乐任务。
+          </HelpHint>
+          {["yourmusic", "deepseek"].includes(profile.providerId) && (
+            <div className="api-connection-check">
+              <button
+                disabled={busy || !status?.configured}
+                onClick={() => void checkConnection()}
+              >
+                检查连接（只读）
+              </button>
+              <HelpHint label="连接检查说明">
+                {profile.providerId === "deepseek"
+                  ? "仅查询官方模型列表，不发送歌词或发起生成。"
+                  : "仅查询一页生成历史并丢弃作品内容。官方说明查询不扣积分；不会启用生成或自动重试。"}
+              </HelpHint>
+              {connection && (
+                <p role="status" data-testid="api-connection-result">
+                  {connectionNames[connection.state]} · HTTP{" "}
+                  {connection.httpStatus ?? "未知"}
+                  <br />
+                  {connection.failureCode && (
+                    <>
+                      原因：{connection.failureCode}
+                      <br />
+                    </>
+                  )}
+                  检查时间：{connection.checkedAt} · 来源：
+                  {connection.providerId === "deepseek"
+                    ? "DeepSeek 官方模型列表"
+                    : "谱乐 API 历史查询"}
+                </p>
+              )}
+            </div>
+          )}
         </>
       ) : (
-        <p className="api-help">
+        <HelpHint label="凭据录入说明">
           {simulation
             ? "模拟工作区不读取或保存真实 Key"
             : "接口与模型配置完成后，再开放凭据录入。"}
-        </p>
+        </HelpHint>
       )}
       {error && (
         <p role="alert" className="api-error">
@@ -185,13 +248,15 @@ function ProfileCard({
       <div className="api-profile-foot">
         <span>自动执行：关闭</span>
         <span>余额 / 权限：未核验</span>
-        <span>配置版本 {profile.revision}</span>
+        <HelpHint label="配置版本说明">配置版本 {profile.revision}</HelpHint>
       </div>
     </article>
   );
 }
 
-export default function ApiSettings() {
+export default function ApiSettings({
+  compact = false,
+}: { compact?: boolean } = {}) {
   const { runtime } = useStudio();
   const [profiles, setProfiles] = useState<ApiProfile[]>([]);
   const [providerId, setProviderId] = useState("deepseek");
@@ -237,36 +302,36 @@ export default function ApiSettings() {
     <section className="panel api-settings" aria-labelledby="api-title">
       <div className="section-title">
         <div>
-          <span className="api-eyebrow">CREATIVE CONNECTIONS</span>
           <h2 id="api-title">API 配置</h2>
-          <p>为创作服务准备本机配置，随时掌握接入状态。</p>
         </div>
         <span className="api-status">外部服务尚未联调</span>
       </div>
-      <div className="api-service-grid">
-        <p className="notice">
-          默认文本服务：DeepSeek 官方 API。Key
-          在本机设置中填写；保存后为未验证状态，不联网、不启用执行。Codex CLI /
-          SDK、Claude Code / SDK 为独立可选项，尚未配置，不读取登录 token
-          或借用订阅作为 API。
-        </p>
-        <div className="api-service-card">
-          <span className="api-service-icon">D</span>
-          <h3>文本创作</h3>
-          <strong>DeepSeek · 官方配置</strong>
-          <p>可保存用户 API Key 与模型元数据；真实生成和模型评分尚未启用。</p>
-        </div>
-        <div className="api-service-card">
-          <span className="api-service-icon">♫</span>
-          <h3>音乐生成</h3>
-          <strong>谱乐 · 可准备本机 Key</strong>
-          <p>
-            Suno · API 合同待核验
-            <br />
-            <span>妙响 · API 接入待确认</span>
+      <details className="api-service-help">
+        <summary>服务说明</summary>
+        <div className="api-service-grid">
+          <p className="notice">
+            Key 保存在本机；保存配置不调用模型。实际调用需另行确认预算。
           </p>
+          <div className="api-service-card">
+            <span className="api-service-icon">D</span>
+            <h3>文本创作</h3>
+            <strong>DeepSeek · 官方配置</strong>
+            <p>
+              模型列表 · 文本调用 · 逐轮预算
+            </p>
+          </div>
+          <div className="api-service-card">
+            <span className="api-service-icon">♫</span>
+            <h3>音乐生成</h3>
+            <strong>谱乐 · 可准备本机 Key</strong>
+            <p>
+              Suno · API 合同待核验
+              <br />
+              <span>妙响 · API 接入待确认</span>
+            </p>
+          </div>
         </div>
-      </div>
+      </details>
       <form className="api-create" onSubmit={(e) => void create(e)}>
         <label>
           API 平台
@@ -319,11 +384,7 @@ export default function ApiSettings() {
           />
         ))}
       </div>
-      {!profiles.length && (
-        <p className="api-empty">
-          尚无 API 配置。先添加一个本机配置；准备资料不会触发生成或扣费。
-        </p>
-      )}
+      {!profiles.length && <p className="api-empty">尚无 API 配置</p>}
     </section>
   );
 }

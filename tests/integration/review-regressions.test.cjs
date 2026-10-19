@@ -5,7 +5,7 @@ const test = require("node:test"),
   { randomUUID } = require("node:crypto"),
   { execFileSync } = require("node:child_process"),
   sharp = require("sharp");
-const { Studio, materialEntries, probe } = require("../../build/core.cjs");
+const { ffmpeg, Studio, materialEntries, probe } = require("../../build/core.cjs");
 async function fixture(run = false) {
   const root = path.resolve("output/test-runs", randomUUID()),
     s = new Studio(root, "simulation", {
@@ -62,7 +62,7 @@ async function fixture(run = false) {
   const audio = path.join(root, "qa.wav"),
     cover = path.join(root, "qa.png");
   execFileSync(
-    "C:/ffmpeg/ffmpeg-8.1-essentials_build/bin/ffmpeg.exe",
+    ffmpeg,
     [
       "-v",
       "error",
@@ -131,7 +131,7 @@ test("review1: media probe rejects local playlists before opening nested referen
   const ts = path.join(root, "segment.ts"),
     playlist = path.join(root, "selected.m3u8");
   execFileSync(
-    "C:/ffmpeg/ffmpeg-8.1-essentials_build/bin/ffmpeg.exe",
+    ffmpeg,
     [
       "-v",
       "error",
