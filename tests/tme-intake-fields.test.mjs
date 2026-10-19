@@ -1,7 +1,7 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {createRequire} from 'node:module';import {build} from 'esbuild';
 await build({entryPoints:['src/main/tme/ai-intake-fields.ts'],outfile:'build/tme-intake-fields.cjs',bundle:true,platform:'node',target:'node24',format:'cjs',packages:'external'});
 const require=createRequire(import.meta.url),{fillExistingTmeAiIntakeFields,TME_AI_INTAKE_FIELDS:c}=require('../build/tme-intake-fields.cjs');
-const input={title:'便利店门口的晴天',artistName:'栩你听海',genre:'流行',consent:true};
+const input={title:'便利店门口的晴天',artistName:'离线验收艺人',genre:'流行',consent:true};
 test('wrong origin and protected published titles stop before controls are touched',async()=>{
  let touched=0;const page={url:()=> 'https://evil.invalid/',locator:()=>{touched++;throw Error('unexpected')}};
  await assert.rejects(()=>fillExistingTmeAiIntakeFields(page,input),/INTAKE_WORK_SCOPE/);assert.equal(touched,0);
