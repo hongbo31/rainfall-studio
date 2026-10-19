@@ -73,6 +73,7 @@ header .header-right > .badge { border-color: transparent; background: transpare
 .configuration-center :is(.platform-configuration, .theme-settings).panel { border: 0; background: transparent; box-shadow: none; padding: 0; margin-top: 24px; }
 .platform-configuration .platform-fields { border: 0; padding: 0; margin: 0; }
 .platform-configuration .section-title { margin-top: 0; }
+.platform-configuration .section-title .button-row { margin: 0; }
 .platform-configuration .badge { background: transparent; border-color: transparent; padding-inline: 0; }
 .configuration-center .first-setup { background: transparent; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; padding: 0 0 20px; margin-bottom: 20px; box-shadow: none; }
 .first-setup .first-setup-steps button { background: transparent; border-color: transparent; color: var(--accent); padding-inline: 4px; }
