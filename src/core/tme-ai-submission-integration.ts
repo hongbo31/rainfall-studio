@@ -2,6 +2,7 @@ import {z} from 'zod';
 import type {Studio} from './studio';
 import {TmeAiSubmissionService} from './tme-ai-submission';
 import {verifyTmeAiPrepareAssets} from './tme-ai-prepare-integration';
+import {verifyPlanTmeAppendWrite} from './tme-ai-scope';
 import {publicationPayload} from './publication-payload';
 import {ExternalTmeReceiptSchema,externalTmeReceipt,externalTmePublicJob,recordExternalTmeObservation} from './external-tme-receipt';
 const idSchema=z.strictObject({id:z.uuid()}),workSchema=z.strictObject({workId:z.uuid(),publicationTaskId:z.uuid().optional(),accountId:z.uuid().optional()});
@@ -37,10 +38,10 @@ export function inspectTmeAiSubmissionWork(s:Studio,workId:string,scope?:{public
 }
 export function tmeAiSubmissionService(s:Studio){
  const old=cached.get(s);if(old?.repo===s.repo)return old.service;
- const service=new TmeAiSubmissionService(s.repo,{now:s.now,resolvePrepared:id=>s.tmeAiPrepareService().context(id),verifyAssets:grant=>{
-  const material=inspectTmeAiSubmissionWork(s,grant.workId,grant);if(!material.readyForNative)throw Error('SUBMISSION_MATERIALS_CHANGED');
-  verifyTmeAiPrepareAssets(s,grant);
- }});cached.set(s,{repo:s.repo,service});return service;
+ const service=new TmeAiSubmissionService(s.repo,{now:s.now,resolvePrepared:id=>s.tmeAiPrepareService().context(id),verifyAssets:(grant,context)=>{
+  if(!context?.readOnly){const material=inspectTmeAiSubmissionWork(s,grant.workId,grant);if(!material.readyForNative)throw Error('SUBMISSION_MATERIALS_CHANGED');}
+  verifyTmeAiPrepareAssets(s,grant,context);
+ },verifyWrite:(grant,_phase,prepareJobId)=>verifyPlanTmeAppendWrite(s,grant,prepareJobId)});cached.set(s,{repo:s.repo,service});return service;
 }
 /** Only Main's parent Core port can provide consent and trusted native observations. */
 export function executeTmeAiSubmission(s:Studio,action:string,input:unknown={}){

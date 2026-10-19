@@ -4,6 +4,7 @@ import fs from "node:fs";
 import http from "node:http";
 import { build } from "esbuild";
 import { chromium } from "playwright-core";
+import {expect} from "@playwright/test";
 test("unified publication progress polls and keeps selected-song authorization and submission gates", async () => {
   const bundle = await build({
     entryPoints: ["tests/fixtures/publication-pipeline-ui.tsx"],
@@ -104,9 +105,7 @@ test("unified publication progress polls and keeps selected-song authorization a
       0,
     );
     await page.evaluate(() => window.setStage("reconcile_required"));
-    assert.ok(
-      (await progress.innerText()).includes("结果待核对，请勿重复提交"),
-    );
+    await expect(progress).toContainText("结果待核对，请勿重复提交");
     assert.equal(await submit.isDisabled(), true);
     assert.deepEqual(errors, []);
   } finally {

@@ -8,6 +8,56 @@ import {digest} from './assets';
 import {inspectPcmWav} from '../shared/pcm-wav';
 import {cleanLyricText} from '../shared/tme-lyrics';
 import {TmeAiPrepareMetadataSchema} from '../shared/tme-ai-prepare';
+import type {PlanAlbumBinding} from '../shared/plan-albums';
+import {CenterStore} from './plan-center/storage';
+import {planPublicationMaterialFingerprint} from './plan-center-publication';
+
+/** Rechecked at each new Core write claim; read-only inspection and original receipts do not call this gate. */
+export function verifyPlanTmeAppendWrite(s:Studio,grant:{workId:string;publicationTaskId?:string;accountId?:string;identity:{subjectHash:string};existingAlbum?:{albumId?:string;bindingId?:string}},prepareJobId?:string){
+ const links=s.all('settings').filter(r=>r.id.startsWith('plan-publication:v1:')).map(r=>r.value).filter(l=>l.workId===grant.workId&&(!grant.publicationTaskId||l.publicationTaskId===grant.publicationTaskId));
+ if(!links.length)return; // Existing standalone/legacy queue intents have no PlanCenter owner.
+ if(!grant.publicationTaskId||!grant.accountId||typeof s.planAlbumService!=='function')throw Error('ALBUM_APPEND_TASK_SCOPE');
+ const task=s.repo.maybe('settings','unified-publication:v1:'+grant.publicationTaskId)?.value;
+ if(!task||task.workId!==grant.workId||task.accountId!==grant.accountId||s.repo.maybe('accounts',grant.accountId)?.remoteSubject!==grant.identity.subjectHash)throw Error('ALBUM_APPEND_TASK_SCOPE');
+ const store=new CenterStore(s.repo),service=s.planAlbumService();
+ for(const platform of task.targets.filter((target:string)=>['qqmusic','kugou'].includes(target))){
+  const matches=links.filter(l=>l.platform===platform&&l.accountId===grant.accountId&&l.publicationTaskId===task.id);if(matches.length!==1)throw Error('ALBUM_APPEND_TASK_SCOPE');
+  const link=matches[0],run=store.get('run',link.runId);if(!run)throw Error('ALBUM_APPEND_RUN_SCOPE');
+  if(run.stopRequested||['stopping','stopped','failed','completed'].includes(run.state))throw Error('STOP_REQUESTED');
+  const plan=store.get('plan',run.planId);if(!plan||plan.revision!==run.planRevision)throw Error('PLAN_REVISION_CHANGED');
+  const op=service.status().operations.find(o=>o.kind==='append'&&o.runId===run.id&&o.publicationTaskId===task.id&&o.scope.accountId===grant.accountId&&o.scope.accountFingerprint===grant.identity.subjectHash&&(['qqmusic','kugou'].includes(o.scope.platform)));
+  if(!op||op.state!=='dispatching'||!op.authorizationHash)throw Error('ALBUM_APPEND_NOT_CLAIMED');
+  const item=store.get('item',op.itemId!);if(!item||item.runId!==run.id||item.workId!==task.workId||link.itemId!==item.id||link.albumOperationId&&link.albumOperationId!==op.id)throw Error('ALBUM_APPEND_ITEM_SCOPE');
+  const bound=service.bindingForRun({runId:run.id,platform,accountId:grant.accountId});
+  if(!bound||link.albumBindingId!==bound.id||bound.albumId!==op.albumId||grant.existingAlbum?.albumId!==bound.albumId||bound.scope.accountFingerprint!==grant.identity.subjectHash)throw Error('ALBUM_APPEND_BINDING_SCOPE');
+  if(op.prepareJobId&&op.prepareJobId!==prepareJobId||task.prepareJobId&&prepareJobId&&task.prepareJobId!==prepareJobId)throw Error('ALBUM_APPEND_PREPARATION_SCOPE');
+  if(planPublicationMaterialFingerprint(s,run,item)!==op.materialFingerprint)throw Error('ALBUM_APPEND_MATERIALS_CHANGED');
+  if(service.preview({operationId:op.id}).summaryHash!==op.authorizationHash)throw Error('ALBUM_APPEND_AUTHORIZATION_STALE');
+ }
+}
+
+/** Resolve every TME target of this exact task. This overlay is never saved to Work/defaults. */
+export function resolvePlanTmeAlbumBinding(s:Studio,tasks:Row[],accountId?:string){
+ const links=s.all('settings').filter(r=>r.id.startsWith('plan-publication:v1:')).map(r=>r.value);
+ const bindings:PlanAlbumBinding[]=[];
+ for(const row of tasks){
+  const task=row.value,taskLinks=links.filter(l=>l.publicationTaskId===task.id);
+  if(!taskLinks.length)continue;
+  if(typeof s.planAlbumService!=='function')throw Error('ALBUM_NOT_BOUND');
+  if(!accountId||task.accountId!==accountId)throw Error('ALBUM_ACCOUNT_SCOPE_CHANGED');
+  for(const platform of task.targets.filter((t:string)=>['qqmusic','kugou'].includes(t))){
+   const matching:Row[]=taskLinks.filter(l=>l.platform===platform&&l.accountId===accountId&&l.workId===task.workId);
+   if(matching.length!==1)throw Error('ALBUM_NOT_BOUND');
+   const link:Row=matching[0],binding:PlanAlbumBinding|null=s.planAlbumService().bindingForRun({runId:link.runId,platform,accountId});
+   if(!binding?.albumId||!binding.title)throw Error('ALBUM_NOT_BOUND');
+   if(binding.scope.platform!==platform||binding.scope.accountId!==accountId||binding.scope.accountFingerprint!==s.repo.maybe('accounts',accountId)?.remoteSubject)throw Error('ALBUM_ACCOUNT_SCOPE_CHANGED');
+   if(link.albumBindingId&&link.albumBindingId!==binding.id)throw Error('ALBUM_BINDING_CHANGED');
+   bindings.push(binding);
+  }
+ }
+ if(bindings.some(b=>b.albumId!==bindings[0].albumId||b.title!==bindings[0].title||b.scope.accountFingerprint!==bindings[0].scope.accountFingerprint))throw Error('ALBUM_FAMILY_BINDING_CONFLICT');
+ return bindings[0];
+}
 
 /** Local, current material resolution. This is not a grant or platform authorization. */
 export const TmeAiScopeInputSchema=z.strictObject({workId:z.uuid(),publicationTaskId:z.uuid().optional(),accountId:z.uuid().optional(),createDerivative:z.boolean().optional()});
@@ -44,10 +94,12 @@ export function resolveTmeAiPrepareScope(s:Studio,input:z.input<typeof TmeAiScop
  if(accounts.length>1)throw Error('ACCOUNT_SCOPE_AMBIGUOUS');
  const accountId=accounts[0];if(i.accountId&&accountId!==i.accountId)throw Error('PREPARATION_ACCOUNT_SCOPE');
  if(accountId){const account=s.repo.maybe('accounts',accountId);if(!account||!['tme','qqmusic','kugou'].includes(account.provider))throw Error('TARGET_ACCOUNT_MISMATCH')}
+ const albumBinding=resolvePlanTmeAlbumBinding(s,tasks,accountId);
  const artistId=w.artistId??c.artistId,artist=artistId?s.repo.maybe('artists',artistId):undefined;
  const text=(key:string,fallback?:unknown)=>typeof f[key]==='string'&&f[key].trim()?f[key]:typeof w[key]==='string'&&w[key].trim()?w[key]:fallback;
  const bool=(key:string,alias?:string)=>typeof f[key]==='boolean'?f[key]:alias&&typeof f[alias]==='boolean'?f[alias]:typeof w[key]==='boolean'?w[key]:undefined;
  const raw={title:w.title,...(text('albumMode')?{albumMode:text('albumMode')}:{}),albumTitle:text('albumTitle',text('album',c.album||w.title)),albumDescription:text('albumDescription'),artistName:text('artistName',artist?.name),lyricist:text('lyricist',c.lyricist),composer:text('composer',c.composer),ownLyrics:bool('ownLyrics','ownLyricist'),ownComposition:bool('ownComposition','ownComposer'),aiTool:text('aiTool'),generatedOn:text('generatedOn'),allowCover:bool('allowCover'),genre:text('genre',w.config?.genre||c.genre),language:text('language',w.config?.language||c.language),version:text('version','完整版'),releaseMode:text('releaseMode','审核通过即发布')};
+ if(albumBinding)Object.assign(raw,{albumMode:'existing',albumTitle:albumBinding.title});
  const parsed=TmeAiPrepareMetadataSchema.safeParse(raw),missing=parsed.success?[]:parsed.error.issues.map(issue=>String(issue.path[0]));
  if(typeof raw.generatedOn==='string'&&raw.generatedOn>s.now().toISOString().slice(0,10))missing.push('generatedOn');
  if(missing.length)throw Object.assign(Error('TME_AI_METADATA_REQUIRED:'+ [...new Set(missing)].join(',')),{code:'TME_AI_METADATA_REQUIRED'});
@@ -75,5 +127,5 @@ export function resolveTmeAiPrepareScope(s:Studio,input:z.input<typeof TmeAiScop
   }
   uploadPath=file;uploadHash=audio.sha256;
  }
- return{workId:w.id,...(i.publicationTaskId?{publicationTaskId:i.publicationTaskId}:{}),...(accountId?{accountId}:{}),variant,prepareOnly:true,sourceAudio:{assetId:audio.id,sha256:audio.sha256,variant},upload:{path:uploadPath,sha256:uploadHash!,format:'pcm_wav' as const,derivedFromSha256:audio.sha256},cover:{assetId:cover.id,sha256:cover.sha256},lyricsHash:hash(lyrics),metadata,...(metadata.albumMode==='existing'?{existingAlbum:{title:metadata.albumTitle}}:{})};
+ return{workId:w.id,...(i.publicationTaskId?{publicationTaskId:i.publicationTaskId}:{}),...(accountId?{accountId}:{}),variant,prepareOnly:true,sourceAudio:{assetId:audio.id,sha256:audio.sha256,variant},upload:{path:uploadPath,sha256:uploadHash!,format:'pcm_wav' as const,derivedFromSha256:audio.sha256},cover:{assetId:cover.id,sha256:cover.sha256},lyricsHash:hash(lyrics),metadata,...(metadata.albumMode==='existing'?{existingAlbum:{title:metadata.albumTitle,...(albumBinding?{albumId:albumBinding.albumId,bindingId:albumBinding.id}:{})}}:{})};
 }

@@ -560,7 +560,7 @@ test("real PlanCenter tick consumes exact dot delivery, scores, generates and co
   assert.equal(links[0].accountId, x.run.snapshot.publishTargets[0].accountId);
   assert.equal(links[0].publicationTaskId, tasks[0].id);
   assert.equal(links[0].onlineVerified, false);
-  assert.equal(links[0].reason, "ALBUM_APPEND_UNAVAILABLE");
+  assert.equal(links[0].reason, "ALBUM_CATALOG_REQUIRED");
   assert.equal(stage(x, "cover").state, "succeeded");
   assert.equal(stage(x, "materials").state, "succeeded");
   assert.equal(tasks[0].materialSnapshot.recordingSlot, "audio_B");

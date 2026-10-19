@@ -1,4 +1,4 @@
-import {resolveTmeAiPrepareScope,TmeAiScopeInputSchema} from './tme-ai-scope';
+import {resolveTmeAiPrepareScope,TmeAiScopeInputSchema,verifyPlanTmeAppendWrite} from './tme-ai-scope';
 import {publishSimple} from './simple-publication';
 import {unifiedPublicationService} from './unified-publication-integration';
 import {TmeAiPrepareGrantSchema} from '../shared/tme-ai-prepare';
@@ -39,8 +39,8 @@ export function verifyCurrentTmeAiScope(s:Studio,g:TmeAiPrepareGrant){
  const material=(v:any)=>({workId:v.workId,sourceAudio:v.sourceAudio,upload:v.upload,cover:v.cover,lyricsHash:v.lyricsHash,metadata:v.metadata,...(v.existingAlbum?{existingAlbum:v.existingAlbum}:{})});
  if(hash(material(current))!==hash(material(g)))throw Error('PREPARATION_GRANT_STALE');
 }
-export function verifyTmeAiPrepareAssets(s:Studio,g:TmeAiPrepareGrant){
- if(s.repo.maybe('settings','tme-ai-prepare:grant:'+g.id)?.value?.scopeSource==='current-work')verifyCurrentTmeAiScope(s,g);
+export function verifyTmeAiPrepareAssets(s:Studio,g:TmeAiPrepareGrant,context?:{readOnly?:boolean}){
+ if(!context?.readOnly&&s.repo.maybe('settings','tme-ai-prepare:grant:'+g.id)?.value?.scopeSource==='current-work')verifyCurrentTmeAiScope(s,g);
  const work=s.get('works',g.workId);
  const variant=work.selectedAudioVariant==='B'?'B':'A';
  if(work.assets?.[variant==='B'?'audio_B':'audio_A']!==g.sourceAudio.assetId||g.sourceAudio.variant!==variant)throw Error('SOURCE_AUDIO_SCOPE');
@@ -60,7 +60,7 @@ export function verifyTmeAiPrepareAssets(s:Studio,g:TmeAiPrepareGrant){
  // These hashes bind approved local originals and the approved derived PCM intent.
  // They do not assert that the official site exposes a remotely verified byte hash.
 }
-export function createTmeAiPrepareService(s:Studio){return new TmeAiPrepareService(s.repo,{now:s.now,verifyAssets:g=>verifyTmeAiPrepareAssets(s,g),verifyResumePicker:(g,dialog)=>{
+export function createTmeAiPrepareService(s:Studio){return new TmeAiPrepareService(s.repo,{now:s.now,verifyAssets:(g,context)=>verifyTmeAiPrepareAssets(s,g,context),verifyWrite:(g,_step,jobId)=>verifyPlanTmeAppendWrite(s,g,jobId),verifyResumePicker:(g,dialog)=>{
  const expected=path.dirname(s.locate(g.cover.assetId).file),same=(a:string,b:string)=>process.platform==='win32'?a.toLowerCase()===b.toLowerCase():a===b;
  if(!path.isAbsolute(dialog.actualDirectory)||!same(path.resolve(dialog.actualDirectory),path.resolve(expected))||!same(fs.realpathSync(dialog.actualDirectory),fs.realpathSync(expected)))throw Error('PICKER_DIRECTORY_SCOPE');
 },verifyResumeCrop:(g,selection)=>{
@@ -81,8 +81,6 @@ export function executeTmeAiPrepare(s:Studio,action:string,input:unknown={}){
    const tasks=unifiedPublicationService(s).list().filter(t=>t.workId===i.grant.workId&&(!taskId||t.id===taskId)&&t.targets.some((target:string)=>['qqmusic','kugou'].includes(target))&&!['published','reviewing','rejected'].includes(t.state));
    const ids=[...new Set(tasks.map(t=>t.accountId))];
    if(ids.length!==1||ids[0]!==i.accountId||tasks.some(t=>t.dispatchedAt||t.reason==='PROTECTED_PUBLISHED_WORK'))throw Error('PREPARATION_ACCOUNT_SCOPE');
-   const planLink=taskId?s.all('settings').find(r=>r.id.startsWith('plan-publication:v1:')&&r.value?.publicationTaskId===taskId)?.value:null;
-   if(planLink)throw Error(planLink.albumIntent?.mode==='existing'?'ALBUM_APPEND_UNAVAILABLE':'ALBUM_CREATE_UNAVAILABLE');
    const account=s.get('accounts',i.accountId);
    if(!['tme','qqmusic','kugou'].includes(account.provider)||account.remoteSubject&&account.remoteSubject!==i.grant.identity.subjectHash)throw Error('IDENTITY_SCOPE');
    verifyCurrentTmeAiScope(s,i.grant);

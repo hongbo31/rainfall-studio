@@ -1,3 +1,5 @@
+import {createPlanAlbumBroker} from './plan-albums';
+import {createTmeAlbumBrowserTransport} from './tme/album-browser';
 import {createPlanModelBroker} from './plan-center-models';
 import {createPlanPublicationBrokers} from './tme/plan-center-publication';
 import {
@@ -146,6 +148,18 @@ async function checkExternalReceiptBarrier(scope:any){const result=await rpc('in
 const planPublications=createPlanPublicationBrokers({prepare:{publicationBarrier:checkExternalReceiptBarrier,root,rpc:(method,input)=>rpc(method,input),port:tmeAiTransport.prepare,resolveScope:async(workId,createDerivative)=>{const result=await rpc('internal.tmeAiPrepare.resolveScope',{workId,createDerivative});if(!result.ok)throw Error(result.error.code);return result.value},available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,nativeHostHash:()=>createHash('sha256').update(fs.readFileSync(tmeAiNative.script)).digest('hex')},submission:{root,rpc:(method,input)=>rpc(method,input),available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,observe:tmeAiTransport.observe,executor:tmeAiTransport.executor}});
 const tmeAiPrepare=planPublications.prepare,tmeAiSubmission=planPublications.submission;
 const unifiedPublish=createUnifiedPublishBroker({rpc:(method,input)=>rpc(method,input),available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,publicationBarrier:checkExternalReceiptBarrier,preparationCapability:tmeAiTransport.preparationCapability,prepare:tmeAiPrepare,submission:tmeAiSubmission});
+// Catalog and creation share the exact native lock with preparation/submission.
+const albumSessions=new WeakMap<object,ReturnType<typeof createTmeAlbumBrowserTransport>>();
+const planAlbums=createPlanAlbumBroker({rpc:(method,input)=>rpc(method,input),available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,getSession:()=>{
+ const session=tmeAiCloud.existingAlbumSession();if(!session)return undefined;
+ let transport=albumSessions.get(session);
+ if(!transport){
+  const rawTransport=createTmeAlbumBrowserTransport(session);
+  transport={...rawTransport,catalog:input=>planPublications.native(()=>rawTransport.catalog(input)),select:input=>planPublications.native(()=>rawTransport.select(input)),create:input=>planPublications.native(()=>rawTransport.create(input)),reconcile:input=>planPublications.native(()=>rawTransport.reconcile(input))};
+  albumSessions.set(session,transport);
+ }
+ return{transport,account:()=>planPublications.native(()=>session.account())};
+},onAppend:()=>unifiedPublish.pump(),reconcileAppend:taskId=>unifiedPublish.reconcile(taskId)});
 setInterval(()=>{void productionFlow.pump();void unifiedPublish.pump();},2000).unref();
 const pending = new Map<
   string,
@@ -324,6 +338,8 @@ function handlers() {
           },
         };
       if(method==="planCenter.refreshModels")return{ok:true,value:await planModels.ui("refresh",parsed)};
+      if(['planAlbums.refresh','planAlbums.capabilities','planAlbums.confirm','planAlbums.reconcile'].includes(method))return{ok:true,value:await planAlbums.ui(method.slice('planAlbums.'.length),parsed)};
+
       if (method === "publish.reconcile") return {ok:true,value:await unifiedPublish.reconcile((parsed as {id:string}).id)};
       if (method === "publish.simple" && mode === 'production') {
         const result = await rpc(method, parsed);

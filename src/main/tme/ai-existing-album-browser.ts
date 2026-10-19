@@ -16,7 +16,9 @@ const unavailable='EXISTING_ALBUM_WRITE_INTEGRATION_UNVERIFIED';
 const authorization='我已阅读授权书，并确认向腾讯音乐人授权';
 const hash=(v:any)=>createHash('sha256').update(typeof v==='string'||Buffer.isBuffer(v)?v:JSON.stringify(v)).digest('hex');
 type Account={identity:{kugouId:string;qqDisplayName:string;artistName:string};binding:ReturnType<typeof TmeAiPrepareBindingSchema.parse>};
-type Options={page:Page;account:()=>Promise<Account>;now?:()=>Date;isolatedFixture?:boolean};
+/** A Main-owned fixture contract, never a renderer option or guessed production DOM field. */
+type AlbumIdReadback={source:'fixture';readSelectedAlbum:(page:Page)=>Promise<{title:string;albumId:string;subjectHash:string}>};
+type Options={page:Page;account:()=>Promise<Account>;now?:()=>Date;isolatedFixture?:boolean;albumIdReadback?:AlbumIdReadback};
 
 /** Main-only constructor. The fixture seam must never be populated from renderer input.
  * This integrated writer has not been verified live; production capability stays closed.
@@ -94,12 +96,15 @@ function session(o:Options){
   if(album){
    await one(page.locator('.album-search:visible .selected:visible .album img:visible'));
    if(await page.locator('input[type="file"][accept*="image"]').count())throw Error('EXISTING_ALBUM_COVER_NOT_READ_ONLY');
-   raw.existingAlbum={title:album,coverInherited:true,coverReadOnly:true};raw.coverState={manualSelected:false,generatorBanner:false,cropVisible:false,inherited:true,readOnly:true};
+   const contract=o.isolatedFixture===true&&o.albumIdReadback?.source==='fixture'?o.albumIdReadback:undefined;
+   const observed=contract?await contract.readSelectedAlbum(page):undefined;
+   if(observed&&(observed.title!==album||typeof observed.albumId!=='string'||!observed.albumId.trim()||observed.subjectHash!==a.who.subjectHash))throw Error('EXISTING_ALBUM_READBACK_REQUIRED');
+   raw.existingAlbum={title:album,...(observed?{albumId:observed.albumId}:{}),coverInherited:true,coverReadOnly:true};raw.coverState={manualSelected:false,generatorBanner:false,cropVisible:false,inherited:true,readOnly:true};
   }
   await account(input);return raw;
  }
- function metadata(input:any){const m=TmeAiPrepareMetadataSchema.parse(input.metadata);if(m.albumMode!=='existing'||m.version!=='完整版'||m.releaseMode!=='审核通过即发布')throw Error('EXISTING_ALBUM_MODE_REQUIRED');if(['把晚安留在门口','留一盏灯'].includes(m.title.normalize('NFKC')))throw Error('INTAKE_WORK_SCOPE');if(input.artistName&&input.artistName!==m.artistName)throw Error('ARTIST_IDENTITY_SCOPE');if(typeof input.lyricsText!=='string')throw Error('LYRICS_REQUIRED');return m}
- function verify(raw:any,input:any){const m=metadata(input);for(const k of ['title','artistName','albumTitle','lyricist','composer','ownLyrics','ownComposition','aiTool','generatedOn','allowCover','genre','language','version','releaseMode'] as const)if(raw.form?.[k]!==m[k])throw Error('METADATA_READBACK_REQUIRED');if(raw.form?.lyrics!==input.lyricsText)throw Error('METADATA_READBACK_REQUIRED');if(raw.existingAlbum?.title!==m.albumTitle)throw Error('EXISTING_ALBUM_READBACK_REQUIRED')}
+ function metadata(input:any){if(input.existingAlbum?.albumId&&!(o.isolatedFixture===true&&o.albumIdReadback?.source==='fixture'))throw Error('ALBUM_ID_READBACK_CONTRACT_REQUIRED');const m=TmeAiPrepareMetadataSchema.parse(input.metadata);if(m.albumMode!=='existing'||m.version!=='完整版'||m.releaseMode!=='审核通过即发布')throw Error('EXISTING_ALBUM_MODE_REQUIRED');if(['把晚安留在门口','留一盏灯'].includes(m.title.normalize('NFKC')))throw Error('INTAKE_WORK_SCOPE');if(input.artistName&&input.artistName!==m.artistName)throw Error('ARTIST_IDENTITY_SCOPE');if(typeof input.lyricsText!=='string')throw Error('LYRICS_REQUIRED');return m}
+ function verify(raw:any,input:any){const m=metadata(input);for(const k of ['title','artistName','albumTitle','lyricist','composer','ownLyrics','ownComposition','aiTool','generatedOn','allowCover','genre','language','version','releaseMode'] as const)if(raw.form?.[k]!==m[k])throw Error('METADATA_READBACK_REQUIRED');if(raw.form?.lyrics!==input.lyricsText)throw Error('METADATA_READBACK_REQUIRED');if(raw.existingAlbum?.title!==m.albumTitle||input.existingAlbum?.albumId&&raw.existingAlbum?.albumId!==input.existingAlbum.albumId)throw Error('EXISTING_ALBUM_READBACK_REQUIRED')}
  return{page,stamp,capability,guard,one,account,checkbox,radio,checked,observe,metadata,verify,acceptedDocument};
 }
 
@@ -124,11 +129,12 @@ export function createTmeExistingAlbumPreparePort(o:Options){
   }
   if(before.mode!=='editor')throw Error('EDITOR_REQUIRED');
   if(input.step==='fill_metadata'){
+   if(input.existingAlbum?.albumId&&before.existingAlbum&&before.existingAlbum.albumId!==input.existingAlbum.albumId)throw Error('EXISTING_ALBUM_READBACK_REQUIRED');
    // Author chips are independent facts. Do not treat the membership checkboxes as copyright declarations.
    for(const k of ['lyricist','composer','ownLyrics','ownComposition'] as const)if(before.form[k]!==m[k])throw Error('AUTHOR_CHIP_CONFLICT');
    if(before.form.allowCover!==m.allowCover||before.form.releaseMode!==m.releaseMode)throw Error('UNSUPPORTED_METADATA_CHOICE');
    await s.account(input);attempted.add(key);
-   await fillExistingTmeAiIntakeFields(s.page,{title:m.title,artistName:m.artistName,albumTitle:m.albumTitle,genre:m.genre,language:m.language,version:'完整版',aiTool:m.aiTool,generatedOn:m.generatedOn,lyrics:input.lyricsText,consent:true});
+   await fillExistingTmeAiIntakeFields(s.page,{title:m.title,artistName:m.artistName,albumTitle:m.albumTitle,genre:m.genre,language:m.language,version:'完整版',aiTool:m.aiTool,generatedOn:m.generatedOn,lyrics:input.lyricsText,...(typeof input.audioPath==='string'?{expectedAudioFileName:path.basename(input.audioPath)}:{}),consent:true});
    const snapshot=await s.observe(input);s.verify(snapshot,input);return{status:'applied',snapshot};
   }
   s.verify(before,input);
@@ -157,17 +163,17 @@ export function createTmeExistingAlbumSubmissionExecutor(o:Options){
  async function readReceipt(c:any){
   s.guard();const op=intent(c),r=op.receiptScope,a=await s.account({},true);if(a.who.subjectHash!==r.subjectHash||a.identity.artistName!==r.artistName)throw Error('IDENTITY_SCOPE');
   const pending=await readOfficialPendingSongs(s.page);const after=await s.account({},true);if(after.who.subjectHash!==r.subjectHash)throw Error('IDENTITY_SCOPE');
-  const rows=pending.rows.filter(row=>row.name===r.title&&row.albumName===r.albumTitle&&!r.baselineSongIds.includes(row.id)&&row.id!==row.albumId);
+  const rows=pending.rows.filter(row=>row.name===r.title&&row.albumName===r.albumTitle&&(!r.albumId||row.albumId===r.albumId)&&!r.baselineSongIds.includes(row.id)&&row.id!==row.albumId);
   if(rows.length!==1)throw Error('SINGLE_SONG_RECEIPT_REQUIRED');const row=rows[0];
   const observedAt=s.stamp();if(Date.parse(op.createdAt)>Date.parse(observedAt)+5000)throw Error('OFFICIAL_RECEIPT_SCOPE');
-  const data={source:'official-tencent-review-record',entityType:'song',remoteId:row.id,title:row.name,artistName:r.artistName,status:row.status,subjectHash:r.subjectHash,scopeHash:r.scopeHash,submittedAt:op.createdAt,submittedAtSource:'dispatch-intent',observedAt,url:pending.url};
+  const data={source:'official-tencent-review-record',entityType:'song',...(r.albumId?{albumId:row.albumId}:{}),remoteId:row.id,title:row.name,artistName:r.artistName,status:row.status,subjectHash:r.subjectHash,scopeHash:r.scopeHash,submittedAt:op.createdAt,submittedAtSource:'dispatch-intent',observedAt,url:pending.url};
   return TmeAiSubmissionReceiptSchema.parse({...data,evidenceHash:hash({data,albumId:row.albumId,albumName:row.albumName,baseline:r.baselineSongIds})});
  }
  async function run(c:any,phase:'accept'|'submit'){
   s.guard();const {job:j,operation:op}=c,g=grant(c);
   if(!j||!op||j.state!=='dispatching'||j.rightsConfirmed!==true||op.kind!=='tme_ai_submission'||op.state!=='dispatching'||op.phase!==phase||op.jobId!==j.id||j.operationId!==op.id||op.scopeHash!==j.scopeHash||!/^[a-f0-9]{64}$/.test(j.scopeHash))throw Error('SUBMISSION_CLAIM_REQUIRED');
   const age=Date.parse(s.stamp())-Date.parse(op.createdAt);if(!Number.isFinite(age)||age< -5000||age>300000)throw Error('SUBMISSION_CLAIM_STALE');
-  if(phase==='submit'){const r=intent({...c,operations:[op]}).receiptScope;if(j.termsAccepted!==true)throw Error('TERMS_ACCEPTANCE_REQUIRED');if(r.title!==g.metadata.title||r.albumTitle!==g.metadata.albumTitle||r.artistName!==g.metadata.artistName||r.subjectHash!==g.identity.subjectHash||hash(r.binding)!==hash(g.binding)||!s.acceptedDocument(r.termsDocumentSha256))throw Error('SUBMISSION_RECEIPT_SCOPE_REQUIRED')}
+  if(phase==='submit'){const r=intent({...c,operations:[op]}).receiptScope;if(j.termsAccepted!==true)throw Error('TERMS_ACCEPTANCE_REQUIRED');if(r.albumId!==g.existingAlbum?.albumId||r.title!==g.metadata.title||r.albumTitle!==g.metadata.albumTitle||r.artistName!==g.metadata.artistName||r.subjectHash!==g.identity.subjectHash||hash(r.binding)!==hash(g.binding)||!s.acceptedDocument(r.termsDocumentSha256))throw Error('SUBMISSION_RECEIPT_SCOPE_REQUIRED')}
   const key=j.scopeHash+':'+phase;if(attempted.has(key))return{status:'unknown',reason:'SUBMISSION_ALREADY_DISPATCHED'};if(busy)throw Error('SUBMISSION_BUSY');busy=true;
   try{
    const before=await observe(c);if(before.termsHash!==j.termsHash||before.termsDocumentSha256!==j.termsDocumentSha256)throw Error('TERMS_CHANGED');

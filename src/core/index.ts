@@ -1,4 +1,5 @@
 import {recordPlanModelEvidence,invalidatePlanModelEvidence} from './plan-center-models';
+import {executeInternalPlanAlbums} from './plan-albums-integration';
 import {executeUnifiedPublication} from "./unified-publication-integration";
 import { materialEntries } from "./materials";
 export { materialEntries };
@@ -133,6 +134,7 @@ if (port) {
   );
   let chain = Promise.resolve().then(() => studio.scanInbox());
   const execute = async (method: string, input: any) => {
+    if(method.startsWith('internal.planAlbums.'))return executeInternalPlanAlbums(studio,method.slice('internal.planAlbums.'.length),input);
     if(method==='internal.planCenter.recordModelEvidence')return recordPlanModelEvidence(studio.repo,input,studio.now().toISOString());
     if(method==='internal.planCenter.invalidateModelEvidence')return invalidatePlanModelEvidence(studio.repo,input);
     if(method==='internal.inboxBridge.configure')return studio.inboxController().configureBridge(input);

@@ -10,14 +10,15 @@ const bundle=path.resolve('output/existing-album-core-tests/core.cjs');
 await build({stdin:{contents:`export {Repository,hash} from './src/core/database';export * from './src/shared/tme-ai-prepare';export * from './src/shared/tme-ai-submission';export * from './src/core/tme-ai-prepare';export * from './src/core/tme-ai-submission';export * from './src/core/tme-ai-scope';export {verifyCurrentTmeAiScope} from './src/core/tme-ai-prepare-integration';export {publicationMetadataDefaults,savePublicationMetadata} from './src/renderer/components/PublicationMetadataForm';import React from 'react';import {renderToStaticMarkup} from 'react-dom/server';import Form from './src/renderer/components/PublicationMetadataForm';export const renderForm=(props)=>renderToStaticMarkup(<Form {...props}/>);`,loader:'tsx',resolveDir:process.cwd()},outfile:bundle,bundle:true,platform:'node',format:'cjs',packages:'external'});
 createRequire(import.meta.url)(path.resolve('tests/fixtures/offline-only.cjs'));
 const w=createRequire(import.meta.url)(bundle),sha='a'.repeat(64),uploadSha='b'.repeat(64),coverSha='c'.repeat(64),lyricsHash='d'.repeat(64),documentSha='7'.repeat(64);
-function setup(t,albumMode='existing'){
+function setup(t,albumMode='existing',albumId){
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'rainfall-existing-core-')),repo=new w.Repository(path.join(root,'library.sqlite'));
  t.after(()=>{repo.close();fs.rmSync(root,{recursive:true,force:true})});
  const now=new Date('2026-10-18T10:00:00Z'),binding={pid:100,handle:'200',started:'offline-fixture'},identity={subjectType:'official_visible_binding_fingerprint',kugouId:'1234567890',qqDisplayName:'Offline account',artistName:'Offline artist',observedAt:now.toISOString(),evidenceHash:'e'.repeat(64)};identity.subjectHash=w.tmeAiSubjectHash(identity);
  const metadata={title:'Offline new song',albumTitle:'Released fixture album',albumDescription:albumMode==='existing'?'沿用已有专辑，不修改原专辑资料。':'New album description',artistName:identity.artistName,lyricist:'Writer',composer:'Composer',ownLyrics:false,ownComposition:false,aiTool:'Offline fixture tool',generatedOn:'2026-10-17',allowCover:false,genre:'pop',language:'Chinese',version:'studio',releaseMode:'single',...(albumMode?{albumMode}:{})};
  const input={id:randomUUID(),workId:randomUUID(),identity,binding,sourceAudio:{assetId:randomUUID(),sha256:sha,variant:'A'},upload:{path:path.join(root,'fixture.wav'),sha256:uploadSha,format:'pcm_wav',derivedFromSha256:sha},cover:{assetId:randomUUID(),sha256:coverSha},lyricsHash,metadata,consent:true,...(albumMode==='existing'?{existingAlbum:{title:metadata.albumTitle}}:{})};
+ if(albumId)Object.assign(input.existingAlbum,{albumId,bindingId:'binding-fixture'});
  const service=new w.TmeAiPrepareService(repo,{now:()=>now,verifyAssets:()=>true});
- const verified=()=>({sourceAudioSha:sha,uploadSha,lyricsHash,metadataHash:w.hash(w.TmeAiPrepareMetadataSchema.parse(metadata)),albumSaved:true,...(albumMode==='existing'?{existingAlbum:{title:metadata.albumTitle,coverInherited:true,coverReadOnly:true},receiptBaseline:{songIds:['18281901','fixture-old'],source:'official-list'}}:{coverSha})});
+ const verified=()=>({sourceAudioSha:sha,uploadSha,lyricsHash,metadataHash:w.hash(w.TmeAiPrepareMetadataSchema.parse(metadata)),albumSaved:true,...(albumMode==='existing'?{existingAlbum:{title:metadata.albumTitle,coverInherited:true,coverReadOnly:true,...(albumId?{albumId}:{})},receiptBaseline:{songIds:['18281901','fixture-old'],source:'official-list'}}:{coverSha})});
  const snapshot=(extra={})=>({identity,binding,observedAt:now.toISOString(),evidenceHash:'f'.repeat(64),mode:'editor',modeText:'Offline editor',visibleSubmitButton:false,verified:verified(),...extra});
  const start=()=>{const grant=service.registerGrant(input);return service.start({grantId:grant.id,expectedRevision:grant.revision,identity,binding})};
  const advance=(job,step,after=snapshot())=>{const claim=service.claim({id:job.id,expectedRevision:job.revision,step,before:snapshot()});return service.record({id:job.id,operationId:claim.operation.id,result:{status:'verified_existing',snapshot:after}})};
@@ -73,8 +74,9 @@ test('legacy omitted mode and explicit new album still require the original cove
   job=x.service.record({id:job.id,operationId:claim.operation.id,result:{status:'applied',snapshot:x.snapshot()}});assert.equal(job.step,'save_album');
  }
 });
-function submission(t,legacy=false){
- const x=setup(t,legacy?'':'existing'),job=x.finish(),sessionId=randomUUID(),prepared=x.service.context(job.id),snapshot=()=>x.snapshot({mode:'ai_authorization',visibleSubmitButton:true,termsText:job.terms.termsText,termsHash:job.terms.termsHash,...(job.terms.termsDocumentSha256?{termsDocumentSha256:job.terms.termsDocumentSha256}:{})});
+function submission(t,legacy=false,albumId){
+ const x=setup(t,legacy?'':'existing',albumId);
+ const job=x.finish(),sessionId=randomUUID(),prepared=x.service.context(job.id),snapshot=()=>x.snapshot({mode:'ai_authorization',visibleSubmitButton:true,termsText:job.terms.termsText,termsHash:job.terms.termsHash,...(job.terms.termsDocumentSha256?{termsDocumentSha256:job.terms.termsDocumentSha256}:{})});
  const submit=new w.TmeAiSubmissionService(x.repo,{now:()=>x.now,resolvePrepared:()=>prepared,verifyAssets:()=>true});
  const review=()=>submit.review({prepareJobId:job.id,snapshot:snapshot(),contract:{available:true,reasons:[],transport:'offline-fixture'},sessionId});
  const authorize=row=>submit.authorize({id:row.id,expectedRevision:row.revision,termsHash:row.termsHash,consent:true,rightsConfirmed:true,sessionId});
@@ -119,4 +121,35 @@ test('current-work scope resolves existing album only explicitly and stale compa
  work.publicationMetadata.albumTitle='Other released album';assert.throws(()=>w.verifyCurrentTmeAiScope(studio,grant),/PREPARATION_GRANT_STALE/);work.publicationMetadata.albumTitle=x.metadata.albumTitle;
  assert.throws(()=>w.verifyCurrentTmeAiScope(studio,{...grant,existingAlbum:{title:'Forged alternate album'}}),/PREPARATION_GRANT_STALE/);
  for(const mode of ['new',undefined]){if(mode)work.publicationMetadata.albumMode=mode;else delete work.publicationMetadata.albumMode;const resolved=w.resolveTmeAiPrepareScope(studio,{workId:work.id});assert.equal('existingAlbum' in resolved,false);assert.equal(resolved.metadata.albumMode,mode)}
+});
+
+
+test('bound album IDs are required in fresh preparation proof and immutable song receipts',t=>{
+ const x=setup(t,'existing','6437318');let job=x.start();for(const step of w.tmeAiPrepareSteps.slice(0,3))job=x.advance(job,step);
+ const claim=x.service.claim({id:job.id,expectedRevision:job.revision,step:'set_cover',before:x.snapshot()});
+ for(const albumId of [undefined,'different-id'])assert.throws(()=>x.service.record({id:job.id,operationId:claim.operation.id,result:{status:'verified_existing',snapshot:x.snapshot({verified:{...x.verified(),existingAlbum:{...x.verified().existingAlbum,albumId}}})}}),/MATERIAL_EXISTING_ALBUM_PROOF_REQUIRED/);
+ const y=submission(t,false,'6437318'),accepted=y.accepted(),submit=y.claim(accepted,'submit');assert.equal(submit.operation.receiptScope.albumId,'6437318');
+ const receipt={source:'official-tencent-review-record',entityType:'song',remoteId:'fixture-new',title:y.metadata.title,artistName:y.metadata.artistName,status:'reviewing',subjectHash:y.identity.subjectHash,scopeHash:accepted.scopeHash,submittedAt:submit.operation.createdAt,observedAt:y.now.toISOString(),evidenceHash:'9'.repeat(64),url:'https://y.tencentmusic.com/#/user/manage/offline'};
+ for(const albumId of [undefined,'different-id'])assert.throws(()=>y.submit.record({id:accepted.id,operationId:submit.operation.id,result:{status:'reviewing',receipt:{...receipt,...(albumId?{albumId}:{})}}}),/OFFICIAL_RECEIPT_ALBUM_SCOPE/);
+ assert.equal(y.submit.record({id:accepted.id,operationId:submit.operation.id,result:{status:'reviewing',receipt:{...receipt,albumId:'6437318'}}}).state,'reviewing');
+});
+
+
+test('plan-linked preparation uses same-task bindings as a local overlay and rejects partial or drifted family scopes',t=>{
+ const x=setup(t),pcm=Buffer.alloc(48);pcm.write('RIFF');pcm.writeUInt32LE(40,4);pcm.write('WAVEfmt ',8);pcm.writeUInt32LE(16,16);pcm.writeUInt16LE(1,20);pcm.writeUInt16LE(1,22);pcm.writeUInt32LE(44100,24);pcm.writeUInt32LE(88200,28);pcm.writeUInt16LE(2,32);pcm.writeUInt16LE(16,34);pcm.write('data',36);pcm.writeUInt32LE(4,40);
+ const audio={id:x.input.sourceAudio.assetId,kind:'audio',sha256:w.hash(pcm)},cover={id:x.input.cover.assetId,kind:'image',sha256:coverSha},artist={id:randomUUID(),name:x.identity.artistName},account={id:randomUUID(),provider:'tme',remoteSubject:x.identity.subjectHash};
+ const work={id:x.input.workId,title:x.metadata.title,artistId:artist.id,lyrics:'Offline original lyrics',assets:{audio_A:audio.id,cover:cover.id},publicationMetadata:{...x.metadata,albumMode:'new',albumTitle:'Global default',version:'完整版',releaseMode:'审核通过即发布'}};
+ const task={id:randomUUID(),workId:work.id,accountId:account.id,targets:['qqmusic','kugou'],state:'queued'},runId=randomUUID();
+ const links=task.targets.map(platform=>({id:platform,runId,publicationTaskId:task.id,workId:work.id,accountId:account.id,platform,albumIntent:{mode:'new',title:'Bound new album'}}));
+ const tables={works:[work],artists:[artist],accounts:[account],assets:[audio,cover],settings:[{id:'unified-publication:v1:'+task.id,value:task},...links.map(link=>({id:'plan-publication:v1:'+link.id,value:link}))]};
+ const files=new Map([[audio.id,path.join(x.root,'source.wav')],[cover.id,path.join(x.root,'cover.png')]]);fs.writeFileSync(files.get(audio.id),pcm);fs.writeFileSync(files.get(cover.id),'cover');
+ const bindings=new Map(task.targets.map(platform=>[platform,{id:'binding-'+platform,albumId:'6437318',title:'Bound new album',scope:{platform,accountId:account.id,accountFingerprint:account.remoteSubject},source:'fixture',onlineVerified:false}]));
+ const studio={root:x.root,mode:'production',now:()=>x.now,get:(table,id)=>tables[table].find(row=>row.id===id),all:table=>tables[table],repo:{maybe:(table,id)=>tables[table].find(row=>row.id===id)},locate:id=>({file:files.get(id)}),planAlbumService:()=>({bindingForRun:input=>{assert.equal(input.runId,runId);return bindings.get(input.platform)}})};
+ const input={workId:work.id,publicationTaskId:task.id,accountId:account.id},before=structuredClone(tables),scope=w.resolveTmeAiPrepareScope(studio,input);
+ assert.equal(scope.metadata.albumMode,'existing');assert.equal(scope.metadata.albumTitle,'Bound new album');assert.deepEqual(scope.existingAlbum,{title:'Bound new album',albumId:'6437318',bindingId:'binding-qqmusic'});assert.deepEqual(tables,before,'metadata overlay never persists into work or settings');
+ w.verifyCurrentTmeAiScope(studio,{...scope,id:x.input.id,identity:x.identity});
+ bindings.get('kugou').albumId='different';assert.throws(()=>w.resolveTmeAiPrepareScope(studio,input),/ALBUM_FAMILY_BINDING_CONFLICT/);bindings.get('kugou').albumId='6437318';
+ const saved=bindings.get('kugou');bindings.delete('kugou');assert.throws(()=>w.resolveTmeAiPrepareScope(studio,input),/ALBUM_NOT_BOUND/);bindings.set('kugou',saved);
+ account.remoteSubject='9'.repeat(64);assert.throws(()=>w.resolveTmeAiPrepareScope(studio,input),/ALBUM_ACCOUNT_SCOPE_CHANGED/);account.remoteSubject=x.identity.subjectHash;
+ bindings.get('qqmusic').albumId='changed';assert.throws(()=>w.verifyCurrentTmeAiScope(studio,{...scope,id:x.input.id,identity:x.identity}),/ALBUM_FAMILY_BINDING_CONFLICT|PREPARATION_GRANT_STALE/);
 });

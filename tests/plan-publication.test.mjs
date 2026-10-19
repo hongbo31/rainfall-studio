@@ -22,12 +22,29 @@ function setup(t){
  const s={root,mode:'production',repo,now:()=>new Date('2026-10-19T10:00:00Z'),all:table=>repo.all(table),get:(table,id)=>repo.get(table,id),save:(table,row)=>repo.save(table,row),locate:id=>{const a=repo.get('assets',id),file=files.get(id);if(!file||sha(fs.readFileSync(file))!==a.sha256)throw Error('CORRUPT_ASSET');return{file}},planCenterService:()=>({list:()=>({runs:[run],items:[item]})}),lyricService:()=>({forWork:work=>({cleaned:work.lyrics,raw:work.lyrics,plainHash:sha(work.lyrics),alignmentConfirmed:true,audioHash:audio.sha256,warnings:[]})})};
  return {root,repo,s,work,item,run,accounts,audio,cover,files};
 }
+// Explicit test-only binding injection. The default setup retains the unbound production gate.
+function installFixtureBindings(x,{source='offline-fixture'}={}){
+ x.s.planAlbumService=()=>({status:()=>({operations:[]}),bindingForRun:input=>{
+  const target=x.run.snapshot.publishTargets.find(t=>t.enabled&&t.platform===input.platform&&t.accountId===input.accountId),account=x.repo.maybe('accounts',input.accountId);
+  if(input.runId!==x.run.id||!target||!account)return null;
+  return{id:'fixture-binding-'+input.platform+'-'+input.accountId,albumId:target.album.albumId??'fixture-created',title:'Fixture album',scope:{platform:input.platform,accountId:input.accountId,accountFingerprint:account.remoteSubject},source,onlineVerified:source==='official'};
+ }});
+}
+function installClaimableFixtureBindings(x){
+ const now=x.s.now().toISOString(),plan={id:x.run.planId,revision:1,title:'Scoped receipt fixture',artistId:x.work.artistId,schedule:{kind:'daily',localTime:'09:00'},material:{source:'manual'},text:{},music:{route:'manual'},authorization:{publish:true},publishTargets:x.run.snapshot.publishTargets};
+ Object.assign(x.run,{planRevision:1,snapshot:plan,summaryHash:'f'.repeat(64),requestId:randomUUID(),source:'debug',createdAt:now,updatedAt:now});
+ Object.assign(x.item,{planId:plan.id,ordinal:1,expectedExternalItemId:'fixture-item',state:'ready',createdAt:now,updatedAt:now});
+ for(const [kind,value] of [['plan',plan],['run',x.run],['item',x.item]])x.repo.save('settings',{id:'plan-center:'+kind+':'+value.id,value});
+ const albums=new w.PlanAlbumService(x.repo,{now:x.s.now,materialFingerprint:()=>w.planPublicationMaterialFingerprint(x.s,x.run,x.item)});x.s.planAlbumService=()=>albums;
+ for(const target of plan.publishTargets){const scope=albums.scope(target),catalog=albums.recordCatalog({scope,source:'official',completeness:'partial',observedAt:now,expiresAt:'2026-10-19T11:00:00Z',evidenceHash:'c'.repeat(64),entries:[{key:'exact',id:'fixture-album',title:'Fixture album'}]});albums.selectBinding({runId:x.run.id,platform:target.platform,accountId:target.accountId,catalogId:catalog.id,entryKey:'exact'});}
+ return albums;
+}
 test('same item/account remains one stable existing queue task, two accounts stay separate',t=>{
  const x=setup(t),before=x.repo.get('settings','simple-publishing:platform:v1:qqmusic');
  const first=w.syncPlanPublications(x.s),again=w.syncPlanPublications(x.s);
  assert.equal(first.length,2);assert.deepEqual(again.map(l=>l.publicationTaskId),first.map(l=>l.publicationTaskId));assert.equal(new Set(first.map(l=>l.publicationTaskId)).size,2);
  assert.equal(w.unifiedPublicationService(x.s).list().length,2);assert.deepEqual(x.repo.get('settings','simple-publishing:platform:v1:qqmusic'),before);assert.deepEqual(x.repo.get('works',x.work.id),x.work);
- for(const link of first){assert.equal(link.onlineVerified,false);assert.equal(link.state,'blocked');assert.equal(link.reason,'ALBUM_APPEND_UNAVAILABLE');assert.equal(link.albumIntent.albumId,'fixture-album')}
+ for(const link of first){assert.equal(link.onlineVerified,false);assert.equal(link.state,'blocked');assert.equal(link.reason,'ALBUM_CATALOG_REQUIRED');assert.equal(link.albumIntent.albumId,'fixture-album')}
 });
 test('missing work binding, stale bound material and corrupt bytes never enqueue',t=>{
  for(const change of [x=>delete x.item.workId,x=>x.item.materials.title='Changed',x=>fs.writeFileSync(x.files.get(x.audio.id),'corrupt')]){
@@ -36,11 +53,12 @@ test('missing work binding, stale bound material and corrupt bytes never enqueue
 });
 test('same account Tencent targets retain the complete existing family across repeated sync',t=>{
  const x=setup(t);x.run.snapshot.publishTargets=[x.run.snapshot.publishTargets[0],{...x.run.snapshot.publishTargets[0],platform:'kugou'}];
- const first=w.syncPlanPublications(x.s),again=w.syncPlanPublications(x.s);assert.equal(first.length,2);assert.equal(first[0].publicationTaskId,first[1].publicationTaskId);assert.equal(again[0].reason,'ALBUM_APPEND_UNAVAILABLE');
+ const first=w.syncPlanPublications(x.s),again=w.syncPlanPublications(x.s);assert.equal(first.length,2);assert.equal(first[0].publicationTaskId,first[1].publicationTaskId);assert.equal(again[0].reason,'ALBUM_CATALOG_REQUIRED');
  assert.deepEqual(w.unifiedPublicationService(x.s).byId(first[0].publicationTaskId).targets,['kugou','qqmusic']);
 });
 test('selected B uses its original recording slot without overwriting A',t=>{
  const x=setup(t),audioB={...x.audio,id:randomUUID()};x.repo.save('assets',audioB);x.files.set(audioB.id,x.files.get(x.audio.id));x.work.assets.audio_B=audioB.id;x.work.selectedAudioVariant='B';x.repo.save('works',x.work);
+ installFixtureBindings(x);
  x.item.materials.audioAssetId=audioB.id;x.item.materials.selectedVersion='B';x.item.versions.push({version:'B',assetId:audioB.id,sha256:audioB.sha256});
  const [link]=w.syncPlanPublications(x.s),scope=w.resolveTmeAiPrepareScope(x.s,{workId:x.work.id,publicationTaskId:link.publicationTaskId,accountId:link.accountId});assert.equal(scope.sourceAudio.variant,'B');assert.equal(scope.sourceAudio.assetId,audioB.id);assert.equal(x.repo.get('works',x.work.id).assets.audio_A,x.audio.id);
 });
@@ -57,17 +75,19 @@ test('unknown remains unknown and stop prevents new tasks while preserving recei
 test('verified existing service receipts map only to their exact account',t=>{
  const x=setup(t),visible={kugouId:'123456789',qqDisplayName:'Fixture account',artistName:'Fixture artist'},subjectHash=w.tmeAiSubjectHash(visible);
  x.accounts[0].remoteSubject=subjectHash;x.repo.save('accounts',x.accounts[0]);
+ const albums=installClaimableFixtureBindings(x);
  const [link]=w.syncPlanPublications(x.s),service=w.unifiedPublicationService(x.s),task=service.byId(link.publicationTaskId),prepareJobId=randomUUID();
  const identity={...visible,subjectHash,subjectType:'official_visible_binding_fingerprint',observedAt:x.s.now().toISOString(),evidenceHash:'a'.repeat(64)},binding={pid:42,handle:'101',started:'fixture'};
  const input={id:randomUUID(),...w.resolveTmeAiPrepareScope(x.s,{workId:x.work.id,publicationTaskId:task.id,accountId:x.accounts[0].id,createDerivative:true}),identity,binding,consent:true};delete input.variant;delete input.prepareOnly;
  const snapshot={identity,binding,observedAt:x.s.now().toISOString(),evidenceHash:'b'.repeat(64),mode:'ai_authorization',modeText:'Fixture terms',visibleSubmitButton:true,termsText:'Fixture terms only',termsHash:sha('Fixture terms only'),verified:{}};
  const prepared={id:prepareJobId,workId:x.work.id,grantId:input.id,state:'awaiting_terms_review',localAlbumSnapshot:{localVerified:true},terms:{termsHash:snapshot.termsHash}};
  x.repo.save('settings',{id:'tme-ai-prepare:job:'+prepareJobId,value:prepared});
- const submission=new w.TmeAiSubmissionService(x.repo,{now:x.s.now,resolvePrepared:()=>({job:prepared,grant:{input}}),verifyAssets:()=>true}),sessionId=randomUUID(),contract={available:true,reasons:[],transport:'offline-fixture'};
+ const append=albums.prepareAppend({runId:x.run.id,itemId:x.item.id,platform:link.platform,accountId:link.accountId,materialFingerprint:w.planPublicationMaterialFingerprint(x.s,x.run,x.item),publicationTaskId:task.id,prepareJobId}),appendPreview=albums.preview({operationId:append.id});albums.authorize({operationId:append.id,summaryHash:appendPreview.summaryHash,confirmed:true});albums.claim({operationId:append.id,summaryHash:appendPreview.summaryHash});
+ const submission=new w.TmeAiSubmissionService(x.repo,{now:x.s.now,resolvePrepared:()=>({job:prepared,grant:{input}}),verifyAssets:()=>true,verifyWrite:g=>w.verifyPlanTmeAppendWrite(x.s,g,prepareJobId)}),sessionId=randomUUID(),contract={available:true,reasons:[],transport:'offline-fixture'};
  let row=submission.review({prepareJobId,snapshot,contract,sessionId});row=submission.authorize({id:row.id,expectedRevision:row.revision,termsHash:row.termsHash,consent:true,rightsConfirmed:true,sessionId});
  let claimed=submission.claim({id:row.id,expectedRevision:row.revision,phase:'accept',snapshot,sessionId});row=submission.record({id:row.id,operationId:claimed.operation.id,result:{status:'accepted',snapshot,scopeHash:row.scopeHash}});
  claimed=submission.claim({id:row.id,expectedRevision:row.revision,phase:'submit',snapshot,sessionId});
- const receipt={source:'official-tencent-review-record',entityType:'song',remoteId:'100001',title:x.work.title,artistName:'Fixture artist',status:'reviewing',subjectHash,scopeHash:row.scopeHash,submittedAt:x.s.now().toISOString(),observedAt:x.s.now().toISOString(),evidenceHash:'c'.repeat(64),url:'https://y.tencentmusic.com/#/user/manage/albumlist'};
+ const receipt={source:'official-tencent-review-record',entityType:'song',remoteId:'100001',albumId:'fixture-album',title:x.work.title,artistName:'Fixture artist',status:'reviewing',subjectHash,scopeHash:row.scopeHash,submittedAt:x.s.now().toISOString(),observedAt:x.s.now().toISOString(),evidenceHash:'c'.repeat(64),url:'https://y.tencentmusic.com/#/user/manage/albumlist'};
  row=submission.record({id:row.id,operationId:claimed.operation.id,result:{status:'reviewing',receipt}});assert.equal(row.submissionByClient,true);
  service.update({id:task.id,expectedRevision:task.revision,patch:{prepareJobId,submissionJobId:row.id}});
  const projected=w.syncPlanPublications(x.s);assert.equal(projected[0].state,'reviewing');assert.equal(projected[0].onlineVerified,true);assert.equal(projected[0].receipt.remoteId,'100001');assert.equal(projected[1].onlineVerified,false);
@@ -75,6 +95,7 @@ test('verified existing service receipts map only to their exact account',t=>{
 
 test('Main scoped routing preserves independent nonce review and exact account RPC scope',async t=>{
  const x=setup(t),links=w.syncPlanPublications(x.s),grants=[],calls=[];
+ installFixtureBindings(x);
  let currentAccount=0;
  const rpc=async(method,input={})=>{
   calls.push({method,input});
@@ -120,10 +141,11 @@ test('legacy official receipts protect history but cannot attribute success with
 test('real album directory/create/append remain unavailable and no local album snapshot becomes remote success',t=>{
  const x=setup(t),caps=w.planPublicationCapabilities(x.s);for(const k of ['albumCatalog','albumCreate','albumAppend'])assert.equal(caps[k].available,false);
  assert.equal(caps.publication.available,true);x.run.snapshot.publishTargets[0].album={mode:'new',title:'New fixture album'};
- const links=w.syncPlanPublications(x.s);assert.equal(links[0].reason,'ALBUM_CREATE_UNAVAILABLE');assert.equal(links[0].onlineVerified,false);
+ const links=w.syncPlanPublications(x.s);assert.equal(links[0].reason,'ALBUM_CREATE_CONFIRMATION_REQUIRED');assert.equal(links[0].onlineVerified,false);
 });
 test('exact publication task scope resolves two accounts without global account edits',t=>{
  const x=setup(t),links=w.syncPlanPublications(x.s);assert.throws(()=>w.resolveTmeAiPrepareScope(x.s,{workId:x.work.id}),/ACCOUNT_SCOPE_AMBIGUOUS/);
+ installFixtureBindings(x);
  for(const l of links){const scope=w.resolveTmeAiPrepareScope(x.s,{workId:x.work.id,publicationTaskId:l.publicationTaskId,accountId:l.accountId});assert.equal(scope.accountId,l.accountId);assert.equal(scope.publicationTaskId,l.publicationTaskId)}
  assert.throws(()=>w.resolveTmeAiPrepareScope(x.s,{workId:x.work.id,publicationTaskId:links[0].publicationTaskId,accountId:links[1].accountId}),/ACCOUNT_SCOPE/);
 });
@@ -132,7 +154,7 @@ test('Core exact scoped grants preserve identity/material gates and do not unloc
  x.accounts.forEach((a,n)=>{a.remoteSubject=identities[n].subjectHash;x.repo.save('accounts',a)});
  const links=w.syncPlanPublications(x.s),service=w.createTmeAiPrepareService(x.s);x.s.tmeAiPrepareService=()=>service;
  const grantFor=n=>{const scope=w.resolveTmeAiPrepareScope(x.s,{workId:x.work.id,publicationTaskId:links[n].publicationTaskId,accountId:links[n].accountId,createDerivative:true});delete scope.variant;delete scope.prepareOnly;return{id:randomUUID(),...scope,identity:identities[n],binding:{pid:42,handle:'101',started:'fixture'},consent:true}};
- const blocked=grantFor(0);assert.throws(()=>w.executeTmeAiPrepare(x.s,'registerScopedGrant',{grant:blocked,accountId:links[0].accountId,publicationTaskId:links[0].publicationTaskId}),/ALBUM_APPEND_UNAVAILABLE/);assert.equal(service.listPublic().grants.length,0);
+ assert.throws(()=>grantFor(0),/ALBUM_NOT_BOUND/);assert.equal(service.listPublic().grants.length,0);
  // The same established standalone queue service supports distinct exact grants; no plan capability is enabled.
  x.repo.db.prepare("DELETE FROM settings WHERE id LIKE 'plan-publication:v1:%'").run();
  for(let n=0;n<2;n++){const grant=grantFor(n);const saved=w.executeTmeAiPrepare(x.s,'registerScopedGrant',{grant,accountId:links[n].accountId,publicationTaskId:links[n].publicationTaskId});assert.equal(saved.input.accountId,links[n].accountId);assert.equal(saved.input.publicationTaskId,links[n].publicationTaskId);w.verifyCurrentTmeAiScope(x.s,grant);}
@@ -149,6 +171,7 @@ test('Core exact scoped grants preserve identity/material gates and do not unloc
 
 test('cover timeout keeps all tasks blocked until the original native promise really settles',async t=>{
  const x=setup(t),links=w.syncPlanPublications(x.s),jobId=randomUUID(),grantId=randomUUID(),operationId=randomUUID();
+ installFixtureBindings(x);
  const scope=n=>({workId:x.work.id,publicationTaskId:links[n].publicationTaskId,accountId:links[n].accountId});
  const grant={id:grantId,input:{...scope(0),metadata:{artistName:'Fixture artist'},binding:{pid:42,handle:'101',started:'fixture'}}};
  const context={job:{id:jobId,workId:x.work.id,grantId,revision:1,state:'reconcile_required',reason:'MANUAL_COVER_ACCEPTANCE_REQUIRED',step:'set_cover',operationId},grant,operations:[{id:operationId,cropResume:{}}]};

@@ -7,6 +7,8 @@ import {PlanCenterService,isLegacyOwned} from './plan-center';
 import {assertLegacyScheduleEditable} from './plan-center-ownership';
 import {createPlanCenterService,executePlanCenter,tickPlanCenter} from './plan-center-integration';
 import { Repository, hash, type Row, type Table } from "./database";
+import type {PlanAlbumService} from './plan-albums';
+import {createPlanAlbumService,executePlanAlbums} from './plan-albums-integration';
 import { validate, defaultsSchema } from "../shared/schemas";
 import type { Mode } from "../shared/contracts";
 import * as resources from "./resources";
@@ -71,6 +73,11 @@ export class Studio {
   private liveText?: LiveTextService;
   private productionFlow?: ProductionFlowService;
   private planCenter?: PlanCenterService;
+  private planAlbum?:PlanAlbumService;
+  planAlbumService(){
+    if(!this.planAlbum||this.planAlbum.repo!==this.repo)this.planAlbum=this.options.albumServiceFactory?.(this)??createPlanAlbumService(this);
+    return this.planAlbum;
+  }
   planCenterService(){
     if(!this.planCenter||this.planCenter.repo!==this.repo)this.planCenter=createPlanCenterService(this);
     return this.planCenter;
@@ -225,7 +232,7 @@ export class Studio {
   constructor(
     public root: string,
     public mode: Mode,
-    private options: { now?: () => Date;musicAdapter?:MusicAdapter } = {},
+    private options: { now?: () => Date;musicAdapter?:MusicAdapter;albumServiceFactory?:(studio:Studio)=>PlanAlbumService } = {},
   ) {
     this.now = options.now || (() => new Date());
     this.lastTick = this.now();
@@ -334,6 +341,7 @@ export class Studio {
     this.save("series", series);
   }
   async call(method: string, input: any = {}) {
+    if(method.startsWith('planAlbums.'))return executePlanAlbums(this,method.slice('planAlbums.'.length),input);
     if(method.startsWith('planCenter.'))return executePlanCenter(this,method,input);
     const v: any = validate(method, input);
     if(method.startsWith('publish.')&&v.id&&['batches','units'].some(table=>this.repo.maybe(table as 'batches'|'units',v.id)?.kind==='tme_uia'))throw Error('TME_SPECIALIZED_CHANNEL_REQUIRED');

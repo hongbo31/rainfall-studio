@@ -1,7 +1,7 @@
 import type {Page} from 'playwright-core';
 import {z} from 'zod';
 export const TME_AI_INTAKE_FIELDS={version:'official-intake-fields-20261018',observedOn:'2026-10-18',route:'https://y.tencentmusic.com/#/user/manage/aiChoose/add',artist:'.mod_top_login .top_login__links .name',title:'input[placeholder="请输入歌曲名称，最多60字"]',genre:'input[placeholder="请选择曲风"]',genreOptions:'.el-select-dropdown:visible .el-select-dropdown__item',album:'input[placeholder="选择已发布专辑"]:visible,input[placeholder="输入专辑名称搜索"]:visible',selectedAlbum:'.album-search:visible .selected:visible .album strong',albumOptions:'.search-result-item:visible',language:'input[placeholder="请选择语种"]',aiTool:'input[placeholder="请选择或填写您的生成工具名称"]',generatedOn:'input[placeholder="请选择生成时间"]',lyrics:'textarea[placeholder^="10-20000字"]',scope:'existing-uploaded-song-fields-only',audioUpload:false,agreementAcceptance:false,formalSubmission:false} as const;
-const Input=z.strictObject({title:z.string().trim().min(1).max(60),artistName:z.string().trim().min(1).max(200),genre:z.string().trim().min(1).max(100).optional(),albumTitle:z.string().trim().min(1).max(200).optional(),language:z.string().trim().min(1).max(100).optional(),version:z.literal('完整版').optional(),aiTool:z.string().trim().min(1).max(50).optional(),generatedOn:z.iso.date().optional(),lyrics:z.string().min(10).max(20000).optional(),consent:z.literal(true)});
+const Input=z.strictObject({title:z.string().trim().min(1).max(60),artistName:z.string().trim().min(1).max(200),genre:z.string().trim().min(1).max(100).optional(),albumTitle:z.string().trim().min(1).max(200).optional(),language:z.string().trim().min(1).max(100).optional(),version:z.literal('完整版').optional(),aiTool:z.string().trim().min(1).max(50).optional(),generatedOn:z.iso.date().optional(),lyrics:z.string().min(10).max(20000).optional(),expectedAudioFileName:z.string().min(1).max(32768).optional(),consent:z.literal(true)});
 /** Incremental observed field support. It does not calibrate upload, legal terms,
  * cover cropping, metadata ownership declarations, submission, or receipts. */
 export async function fillExistingTmeAiIntakeFields(page:Page,raw:unknown){
@@ -10,7 +10,7 @@ export async function fillExistingTmeAiIntakeFields(page:Page,raw:unknown){
   if(page.url()!==c.route||['把晚安留在门口','留一盏灯'].includes(i.title.normalize('NFKC')))throw Error('INTAKE_WORK_SCOPE');
   const a=page.locator(c.artist),t=page.locator(c.title);
   if(await a.count()!==1||await t.count()!==1||(await a.innerText()).trim()!==i.artistName||await t.inputValue()!==i.title)throw Error('INTAKE_WORK_SCOPE');
-  const text=await page.locator('body').innerText();if(!text.includes(i.title+'.wav')||!text.includes('上传AI歌曲 ( 1首 )'))throw Error('ONE_EXISTING_AUDIO_REQUIRED');
+  const text=await page.locator('body').innerText();if(!text.includes(i.expectedAudioFileName??i.title+'.wav')||!text.includes('上传AI歌曲 ( 1首 )'))throw Error('ONE_EXISTING_AUDIO_REQUIRED');
  };
  await guard();
  if(i.genre){const field=page.locator(c.genre);if(await field.count()!==1)throw Error('INTAKE_FIELD_NOT_UNIQUE');if(await field.inputValue()!==i.genre){

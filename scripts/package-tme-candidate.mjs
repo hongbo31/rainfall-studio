@@ -8,12 +8,13 @@ const nightly=process.argv.includes('--nightly');
 const beijingTmeAi=process.argv.includes('--beijing-tme-ai');
 const deepCopy=process.argv.includes('--deep-copy');
 const dotBridge=process.argv.includes('--dot-bridge');
-const planCenter=process.argv.includes('--plan-center');
+const albumService=process.argv.includes('--album-service');
+const planCenter=process.argv.includes('--plan-center')||albumService;
 const uiConsistency=process.argv.includes('--ui-consistency')||deepCopy;
 const simplePublishing=process.argv.includes('--simple-publishing')||uiConsistency||dotBridge||planCenter;
 const productionFlow=process.argv.includes('--production-flow')||beijingTmeAi||simplePublishing;
 if([simplePublish,musicLive,connectionCheck,nightly,productionFlow].filter(Boolean).length>1)throw Error('CANDIDATE_SCOPE_CONFLICT');
-const purpose=planCenter?'unified-plan-center':dotBridge?'dot-delivery-bridge':deepCopy?'deep-copy-cleanup':uiConsistency?'ui-consistency':simplePublishing?'simple-publishing':beijingTmeAi?'beijing-tme-ai':productionFlow?'production-flow':nightly?'nightly-workflow':simplePublish?'simple-publish':musicLive?'music-live-once':connectionCheck?'api-connection':'tme-readiness';
+const purpose=albumService?'album-service':planCenter?'unified-plan-center':dotBridge?'dot-delivery-bridge':deepCopy?'deep-copy-cleanup':uiConsistency?'ui-consistency':simplePublishing?'simple-publishing':beijingTmeAi?'beijing-tme-ai':productionFlow?'production-flow':nightly?'nightly-workflow':simplePublish?'simple-publish':musicLive?'music-live-once':connectionCheck?'api-connection':'tme-readiness';
 const dest=path.resolve('out',purpose+'-'+commit.slice(0,12)+'-'+Date.now());
 if(!dest.startsWith(path.join(repo,'out')+path.sep)||fs.existsSync(dest))throw Error('FRESH_WORKSPACE_OUTPUT_REQUIRED');
 const runtime=path.resolve('node_modules/electron/dist'),app=path.join(dest,'resources','app');
@@ -56,5 +57,16 @@ if(planCenter){
  fs.copyFileSync('docs/superpowers/specs/2026-10-19-provider-wiring-design.md',path.join(dest,'docs','technical-design.md'));
  fs.copyFileSync('docs/release/provider-wiring-0.10.md',path.join(dest,'docs','provider-wiring.md'));
  fs.writeFileSync(path.join(dest,'README.txt'),'Rainfall Studio '+pkg.version+' unified plan center Windows portable candidate.\r\nSource: '+commit+'\r\nIsolated preview data root: '+data+'\r\nNo GUI was launched. Do not replace the formal desktop pointer with this candidate. No real music generation, terms acceptance or publishing was performed.\r\nThe plan is connected to existing managed YourMusic generation/query/download, A/B materials, dot request manifests and the unified publication queue. Validation used isolated fixture transports. Current account availability, dot external execution, real album catalog/create/append and online acceptance remain unverified or blocked. Third-party YourMusic/Suno routing is not an official Suno API connection.\r\nLaunch only after separate user authorization: RainfallStudioCandidate.exe. No installer, credentials or startup task is included.\r\n');
+}
+if(albumService){
+ Object.assign(manifest,{albumServiceImplemented:true,albumCatalogCompleteness:'partial',albumCreateAlgorithmImplemented:true,albumAppendUsesOriginalPipeline:true,productionAlbumCreateContractCalibrated:false,productionAlbumAppendContractCalibrated:false,offlineFixtureResultsAreOnlineVerified:false,actualDriveRequestsPathVerified:false,libraryDeliveryVerified:false});
+ for(const [from,to] of [
+  ['docs/superpowers/specs/2026-10-19-album-service-design.md','album-service-design.md'],
+  ['docs/acceptance/2026-10-19-album-service-status.md','album-service-status.md'],
+  ['docs/integrations/dot-plan-drive-protocol-20261019.md','dot-drive-protocol.md'],
+  ['docs/release/album-service-0.11.md','album-service-release.md'],
+ ])fs.copyFileSync(from,path.join(dest,'docs',to));
+ fs.writeFileSync(path.join(dest,'candidate-manifest.json'),JSON.stringify(manifest,null,2));
+ fs.appendFileSync(path.join(dest,'README.txt'),'\r\nAlbum service '+pkg.version+': scoped catalog/bindings, durable create/append operations, explicit confirmation and original-key reconciliation are implemented. Browser execution was tested only with intercepted fixtures. Full album directory/pagination is absent; production create/result contracts and production append write integration remain uncalibrated. Other platform album adapters are not implemented. See docs/album-service-status.md and docs/dot-drive-protocol.md. No Library save is claimed.\r\n');
 }
 console.log(JSON.stringify(manifest));

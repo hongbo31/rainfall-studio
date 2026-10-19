@@ -97,7 +97,7 @@ export function createPlanPublicationBrokers(o:{prepare:PrepareOptions;submissio
    return await (scope?pair(scope)[kind]:kind==='prepare'?legacyPrepare:legacySubmission).ui(action,legacyInput);
   }finally{if(mutating)busy=false;}
  }});
- return{prepare:broker('prepare'),submission:broker('submission'),albums:createPlanPublicationAlbumProvider()};
+ return{prepare:broker('prepare'),submission:broker('submission'),albums:createPlanPublicationAlbumProvider(),native};
 }
 
 type AlbumScope={platform:string;accountId:string;accountFingerprint:string};

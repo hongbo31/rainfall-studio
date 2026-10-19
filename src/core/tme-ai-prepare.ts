@@ -10,7 +10,7 @@ const PickerDialogSchema=z.strictObject({handle:z.string().regex(/^[1-9]\d*$/),o
 type PickerDialog=z.infer<typeof PickerDialogSchema>;
 const CropSelectionSchema=z.strictObject({path:z.string().min(1).max(32768),sha256:z.string().regex(/^[a-f0-9]{64}$/),dialogHandle:z.string().regex(/^[1-9]\d*$/),phase:z.literal('file_selected_crop_pending'),provenance:z.literal('phase_contract_reconstruction'),hostSourceHash:z.string().regex(/^[a-f0-9]{64}$/),evidenceHash:z.string().regex(/^[a-f0-9]{64}$/),remoteContentShaVerified:z.literal(false)});
 type CropSelection=z.infer<typeof CropSelectionSchema>;
-type Options={now?:()=>Date;verifyAssets?:(grant:TmeAiPrepareGrant)=>void|boolean;verifyResumePicker?:(grant:TmeAiPrepareGrant,dialog:PickerDialog)=>void|boolean;verifyResumeCrop?:(grant:TmeAiPrepareGrant,selection:CropSelection)=>void|boolean};
+type Options={now?:()=>Date;verifyAssets?:(grant:TmeAiPrepareGrant,context?:{readOnly?:boolean})=>void|boolean;verifyWrite?:(grant:TmeAiPrepareGrant,step:string,jobId:string)=>void|boolean;verifyResumePicker?:(grant:TmeAiPrepareGrant,dialog:PickerDialog)=>void|boolean;verifyResumeCrop?:(grant:TmeAiPrepareGrant,selection:CropSelection)=>void|boolean};
 /** Private Core journal. Only Main may supply native evidence or register grants. */
 export class TmeAiPrepareService {
  constructor(readonly repo:Repository,readonly options:Options={}){
@@ -35,12 +35,17 @@ export class TmeAiPrepareService {
   if(tmeAiSubjectHash(i)!==i.subjectHash||expected&&i.subjectHash!==expected.subjectHash)throw Error('IDENTITY_SCOPE');return i;
  }
  private binding(actual:Row,expected:Row){if(hash(actual)!==hash(expected))throw Error('WINDOW_BINDING_CHANGED')}
- private assets(grant:Row){
+ private assets(grant:Row,readOnly=false){
   if(externalTmeReceipt(this.repo,grant.input.workId,grant.input.sourceAudio.sha256))throw Error('OFFICIAL_RECORD_ALREADY_EXISTS');
   if(!this.options.verifyAssets)throw Error('ASSET_VERIFIER_REQUIRED');
-  const result=this.options.verifyAssets(TmeAiPrepareGrantSchema.parse(grant.input));
+  const result=this.options.verifyAssets(TmeAiPrepareGrantSchema.parse(grant.input),{readOnly});
   if(result===false)throw Error('ASSET_VERIFICATION_FAILED');
   if(result&&typeof (result as any).then==='function')throw Error('SYNCHRONOUS_ASSET_VERIFIER_REQUIRED');
+ }
+ private write(grant:Row,step:string,jobId:string){
+  if(step==='locate_intake')return;
+  if(!this.options.verifyWrite){if(this.repo.all('settings').some(r=>r.id.startsWith('plan-publication:v1:')&&r.value.workId===grant.input.workId))throw Error('ALBUM_APPEND_WRITE_VERIFIER_REQUIRED');return;}
+  const result=this.options.verifyWrite(TmeAiPrepareGrantSchema.parse(grant.input),step,jobId);if(result===false)throw Error('ALBUM_APPEND_WRITE_REJECTED');if(result&&typeof(result as any).then==='function')throw Error('SYNCHRONOUS_WRITE_VERIFIER_REQUIRED');
  }
  private snapshot(s:TmeAiPrepareSnapshot,grant:Row){this.fresh(s.observedAt);this.identity(s.identity,grant.input.identity);this.binding(s.binding,grant.input.binding)}
  registerGrant(raw:unknown){
@@ -83,7 +88,7 @@ export class TmeAiPrepareService {
    if(job.state==='reconcile_required')throw Error('RECONCILIATION_REQUIRED');
    if(job.state!=='ready'||job.step!==i.step)throw Error('PREPARE_STEP_SCOPE');
    if(i.step==='advance_to_terms'&&!job.localAlbumSnapshot?.localVerified)throw Error('LOCAL_ALBUM_SNAPSHOT_REQUIRED');
-   this.snapshot(i.before,grant);this.assets(grant);
+   this.snapshot(i.before,grant);this.write(grant,i.step,job.id);this.assets(grant);
    if(i.before.mode==='unknown'||i.before.mode==='ai_authorization')throw Error('PREPARE_PAGE_SCOPE');
    const operation={id:randomUUID(),operationKey:prefix+job.id+':'+i.step,kind:'tme_ai_prepare',jobId:job.id,grantId:grant.id,familyKey:grant.familyKey,step:i.step,state:'dispatching',before:i.before,createdAt:this.stamp()};
    if(this.repo.all('operations').some(o=>o.operationKey===operation.operationKey))throw Error('STEP_ALREADY_CLAIMED');
@@ -100,7 +105,7 @@ export class TmeAiPrepareService {
   if(index>=2&&(v.metadataHash!==hash(a.metadata)||v.lyricsHash!==a.lyricsHash))throw Error('MATERIAL_METADATA_PROOF_REQUIRED');
   if(index>=3){
    if(a.metadata.albumMode==='existing'){
-    if(!a.existingAlbum||a.existingAlbum.title!==a.metadata.albumTitle||v.existingAlbum?.title!==a.existingAlbum.title||v.existingAlbum?.coverInherited!==true||v.existingAlbum?.coverReadOnly!==true)throw Error('MATERIAL_EXISTING_ALBUM_PROOF_REQUIRED');
+    if(!a.existingAlbum||a.existingAlbum.title!==a.metadata.albumTitle||v.existingAlbum?.title!==a.existingAlbum.title||a.existingAlbum.albumId&&v.existingAlbum?.albumId!==a.existingAlbum.albumId||v.existingAlbum?.coverInherited!==true||v.existingAlbum?.coverReadOnly!==true)throw Error('MATERIAL_EXISTING_ALBUM_PROOF_REQUIRED');
    }else if(v.coverSha!==a.cover.sha256)throw Error('MATERIAL_COVER_PROOF_REQUIRED');
   }
   if(index>=4&&v.albumSaved!==true)throw Error('MATERIAL_ALBUM_SAVE_PROOF_REQUIRED');
@@ -121,7 +126,7 @@ export class TmeAiPrepareService {
     this.repo.save('operations',{...op,state:'unknown',result:i.result,ackHash,completedAt:this.stamp()});
     return this.patch(job,{state:'reconcile_required',reason:i.result.reason??'NATIVE_OUTCOME_UNKNOWN'});
    }
-   this.assets(grant);this.verifyStep(op.step,i.result.snapshot,grant);
+   this.assets(grant,true);this.verifyStep(op.step,i.result.snapshot,grant);
    if(op.step==='advance_to_terms'&&!job.localAlbumSnapshot?.localVerified)throw Error('LOCAL_ALBUM_SNAPSHOT_REQUIRED');
    this.repo.save('operations',{...op,state:'complete',result:i.result,ackHash,completedAt:this.stamp()});
    const final=op.step==='advance_to_terms',s=i.result.snapshot;
@@ -154,7 +159,7 @@ export class TmeAiPrepareService {
    if(job.state!=='reconcile_required'||op.state!=='unknown'||job.step!=='set_cover'||op.step!=='set_cover'||job.reason!==i.reason)throw Error('PICKER_RESUME_SCOPE');
    const knownUntouched=(op.result?.status==='unknown'&&op.result.reason===i.reason)||(op.interruptHash&&op.reason===i.reason);
    if(!knownUntouched)throw Error('PICKER_RESUME_SCOPE');
-   this.snapshot(i.snapshot,grant);this.assets(grant);
+   this.snapshot(i.snapshot,grant);this.write(grant,'set_cover',job.id);this.assets(grant);
    if(i.snapshot.mode!=='editor'||i.snapshot.visibleSubmitButton)throw Error('PICKER_RESUME_PAGE_SCOPE');
    if(new Date(i.snapshot.observedAt).getTime()<new Date(op.completedAt??op.interruptedAt??op.createdAt).getTime())throw Error('PICKER_RESUME_STALE');
    // Chromium may host its owned native dialog in a different browser process.
@@ -181,7 +186,7 @@ export class TmeAiPrepareService {
    if(grant.suspended||job.reason==='RESTORED_REQUIRES_REVIEW')throw Error('RESTORED_REQUIRES_REVIEW');
    if(!op.pickerResume||job.state!=='reconcile_required'||op.state!=='unknown'||job.step!=='set_cover'||op.step!=='set_cover'||job.reason!==reason)throw Error('CROP_RESUME_SCOPE');
    if(!((op.result?.status==='unknown'&&op.result.reason===reason)||(op.interruptHash&&op.reason===reason)))throw Error('CROP_RESUME_SCOPE');
-   this.snapshot(i.snapshot,grant);this.assets(grant);
+   this.snapshot(i.snapshot,grant);this.write(grant,'set_cover',job.id);this.assets(grant);
    if(i.snapshot.mode!=='editor'||i.snapshot.visibleSubmitButton)throw Error('CROP_RESUME_PAGE_SCOPE');
    if(new Date(i.snapshot.observedAt).getTime()<new Date(op.completedAt??op.interruptedAt??op.createdAt).getTime())throw Error('CROP_RESUME_STALE');
    if(i.selection.sha256!==grant.input.cover.sha256||i.selection.dialogHandle!==op.pickerResume.dialog.handle)throw Error('CROP_SELECTION_SCOPE');
@@ -208,7 +213,7 @@ export class TmeAiPrepareService {
    if(grant.suspended||job.reason==='RESTORED_REQUIRES_REVIEW')throw Error('RESTORED_REQUIRES_REVIEW');
    if(!op.cropResume||!op.pickerResume||job.operationId!==op.id||job.state!=='reconcile_required'||op.state!=='unknown'||job.step!=='set_cover'||op.step!=='set_cover'||!['NATIVE_CONTROL_CONTRACT_FAILED','MANUAL_COVER_ACCEPTANCE_REQUIRED'].includes(reason))throw Error('COVER_RECONCILIATION_SCOPE');
    if(!((op.result?.status==='unknown'&&op.result.reason===reason)||(op.interruptHash&&op.reason===reason)))throw Error('COVER_RECONCILIATION_SCOPE');
-   this.snapshot(i.snapshot,grant);this.assets(grant);
+   this.snapshot(i.snapshot,grant);this.assets(grant,true);
    if(i.snapshot.mode!=='editor'||i.snapshot.visibleSubmitButton)throw Error('COVER_RECONCILIATION_PAGE_SCOPE');
    if(new Date(i.snapshot.observedAt).getTime()<new Date(op.completedAt??op.interruptedAt??op.cropResume.createdAt).getTime())throw Error('COVER_RECONCILIATION_STALE');
    this.verifyStep('set_cover',i.snapshot,grant);
@@ -229,7 +234,7 @@ export class TmeAiPrepareService {
    if(grant.suspended||job.reason==='RESTORED_REQUIRES_REVIEW')throw Error('RESTORED_REQUIRES_REVIEW');
    if(job.operationId!==op.id||job.state!=='reconcile_required'||op.state!=='unknown'||job.step!=='save_album'||op.step!=='save_album'||!['NATIVE_CONTROL_CONTRACT_FAILED','MANUAL_COVER_ACCEPTANCE_REQUIRED'].includes(reason))throw Error('ALBUM_RECONCILIATION_SCOPE');
    if(!((op.result?.status==='unknown'&&op.result.reason===reason)||(op.interruptHash&&op.reason===reason)))throw Error('ALBUM_RECONCILIATION_SCOPE');
-   this.snapshot(i.snapshot,grant);this.assets(grant);
+   this.snapshot(i.snapshot,grant);this.assets(grant,true);
    if(i.snapshot.mode!=='editor'||i.snapshot.visibleSubmitButton)throw Error('ALBUM_RECONCILIATION_PAGE_SCOPE');
    if(new Date(i.snapshot.observedAt).getTime()<new Date(op.completedAt??op.interruptedAt??op.createdAt).getTime())throw Error('ALBUM_RECONCILIATION_STALE');
    // Compatibility field albumSaved means only that local album materials were journaled.
@@ -250,7 +255,7 @@ export class TmeAiPrepareService {
    if(grant.suspended||job.reason==='RESTORED_REQUIRES_REVIEW')throw Error('RESTORED_REQUIRES_REVIEW');
    if(job.operationId!==op.id||job.state!=='reconcile_required'||op.state!=='unknown'||job.step!=='advance_to_terms'||op.step!=='advance_to_terms'||job.reason!==reason||!job.localAlbumSnapshot?.localVerified)throw Error('TERMS_RECONCILIATION_SCOPE');
    if(!((op.result?.status==='unknown'&&op.result.reason===reason)||(op.interruptHash&&op.reason===reason)))throw Error('TERMS_RECONCILIATION_SCOPE');
-   this.snapshot(i.snapshot,grant);this.assets(grant);this.verifyStep('advance_to_terms',i.snapshot,grant);
+   this.snapshot(i.snapshot,grant);this.assets(grant,true);this.verifyStep('advance_to_terms',i.snapshot,grant);
    if(new Date(i.snapshot.observedAt).getTime()<new Date(op.completedAt??op.interruptedAt??op.createdAt).getTime())throw Error('TERMS_RECONCILIATION_STALE');
    const s=i.snapshot,result={status:'verified_existing',snapshot:s},readOnlyTermsReconciliation={createdAt:this.stamp(),reconciliationHash,snapshot:s,original:op};
    this.repo.save('operations',{...op,state:'complete',result,ackHash:hash(result),completedAt:this.stamp(),readOnlyTermsReconciliation});

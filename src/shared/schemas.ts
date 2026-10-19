@@ -9,6 +9,7 @@ import { TmeInputSchema } from './tme';
 import { CoverRequestSchema } from './cover-handoff';
 import { TmeObservationSchemas } from './tme-observations';
 import { SimplePublishingSchemas } from './platform-config';
+import {PlanAlbumTargetSchema,PlanAlbumSelectSchema,PlanAlbumCreateSchema,PlanAlbumRunTargetSchema,PlanAlbumOperationIdSchema,PlanAlbumAuthorizeSchema} from './plan-albums';
 export const id = z.string().uuid();
 export const defaultsSchema = z
   .object({
@@ -221,6 +222,17 @@ export const methodSchemas: Record<string, z.ZodType> = {
   "goal.complete": z.object({ workId: id, planId: id.optional() }),
 };
 export function validate(method: string, input: unknown) {
+  if(method.startsWith('planAlbums.')){
+    const albumSchemas:Record<string,z.ZodType>={
+      'planAlbums.status':z.strictObject({}),'planAlbums.catalog':PlanAlbumTargetSchema,
+      'planAlbums.select':PlanAlbumSelectSchema,'planAlbums.prepareCreate':PlanAlbumCreateSchema,
+      'planAlbums.prepareAppend':PlanAlbumRunTargetSchema.extend({itemId:z.string().min(1).max(500)}),
+      'planAlbums.preview':PlanAlbumOperationIdSchema,
+      'planAlbums.refresh':PlanAlbumTargetSchema,'planAlbums.capabilities':PlanAlbumTargetSchema,
+      'planAlbums.confirm':PlanAlbumAuthorizeSchema,'planAlbums.reconcile':PlanAlbumOperationIdSchema,
+    };
+    if(!albumSchemas[method])throw Error('METHOD_NOT_ALLOWED');return albumSchemas[method].parse(input??{});
+  }
   const planSchemas:Record<string,z.ZodType>={
     'planCenter.list':z.strictObject({}),'planCenter.catalog':z.strictObject({}),
     'planCenter.status':z.strictObject({}),'planCenter.dotStatus':z.strictObject({}),'planCenter.exportDotRequests':z.strictObject({}),

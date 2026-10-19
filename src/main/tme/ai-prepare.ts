@@ -36,7 +36,7 @@ export function nativeSnapshot(raw:any,verified:any={}):TmeAiPrepareSnapshot {
 }
 function verifyExistingAlbum(raw:any,g:any){
  const proof=raw.existingAlbum;
- if(g.existingAlbum?.title!==g.metadata.albumTitle||proof?.title!==g.existingAlbum?.title||proof?.coverInherited!==true||proof?.coverReadOnly!==true)throw Error('EXISTING_ALBUM_READBACK_REQUIRED');
+ if(g.existingAlbum?.title!==g.metadata.albumTitle||proof?.title!==g.existingAlbum?.title||g.existingAlbum?.albumId&&proof?.albumId!==g.existingAlbum.albumId||proof?.coverInherited!==true||proof?.coverReadOnly!==true)throw Error('EXISTING_ALBUM_READBACK_REQUIRED');
  return TmeAiPrepareSnapshotSchema.shape.verified.parse({existingAlbum:proof}).existingAlbum;
 }
 export function verifyNativeMetadata(raw:any,g:any,lyricsText:string){
