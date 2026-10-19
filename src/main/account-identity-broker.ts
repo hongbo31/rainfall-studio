@@ -1,6 +1,12 @@
 import {z} from 'zod';
 import {AccountIdentityPublicActions,AccountIdentitySelectionSchema,AccountIdentityObservationSchema} from '../shared/account-identity';
 import type {OfficialStableIdentity} from './tme/official-stable-identity';
+/** Preserve actionable identity failures across the public IPC boundary without
+ * exposing raw provider responses, account names or exception messages. */
+export async function accountIdentityUiResponse(run:()=>Promise<unknown>){
+ try{return{ok:true as const,value:await run()}}
+ catch(error){const code=error instanceof Error&&/^[A-Z0-9_]{1,100}$/.test(error.message)?error.message:'IDENTITY_OPERATION_FAILED';return{ok:false as const,error:{code,message:'身份操作未完成，请核对官方会话与本地映射。'}}}
+}
 type Session={readStableIdentity:()=>Promise<OfficialStableIdentity&{sessionRef:string}>;stableIdentitySessionValid:(ref:string)=>boolean|Promise<boolean>};
 const request=z.discriminatedUnion('action',[
  z.strictObject({kind:z.literal('account-identity-request'),id:z.uuid(),action:z.literal('read'),scope:AccountIdentitySelectionSchema}),

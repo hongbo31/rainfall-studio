@@ -43,7 +43,7 @@ import {createProductionFlowBroker,blockedTmePublicationPort} from './production
 import {createTmeAiPrepareBroker,TmeAiNativePort,nativeSnapshot} from './tme/ai-prepare';
 import {createTmeAiSubmissionBroker} from './tme/ai-submission';
 import {TmeAiCloudSessionManager} from './tme/ai-cloud-session';
-import {createAccountIdentityBroker} from './account-identity-broker';
+import {createAccountIdentityBroker,accountIdentityUiResponse} from './account-identity-broker';
 import {createUnifiedPublishBroker,createTmeAiTransportProvider} from './tme/unified-publish';
 import {externalReceiptBarrier,persistExternalReceiptBarrier,persistExternalReceiptStop} from './tme/external-receipt-barrier';
 import {installNativeDiagnostics} from './native-diagnostics';
@@ -331,7 +331,7 @@ function handlers() {
     safe(async () => {
       trusted(e);
       const parsed = validate(method, input);
-      if(method.startsWith('accountIdentity.'))return{ok:true,value:await accountIdentity.ui(method.slice('accountIdentity.'.length),parsed)};
+      if(method.startsWith('accountIdentity.'))return accountIdentityUiResponse(()=>accountIdentity.ui(method.slice('accountIdentity.'.length),parsed));
       if(method==='directoryTasks.chooseDirectory')return chooseDirectoryTaskSource(parsed,{
         capture:()=>({mode,generation:coreGeneration,epoch:importEpoch,available:!switching&&!closing}),
         choose:()=>dialog.showOpenDialog(window,{title:'选择任务请求目录',properties:['openDirectory']}),rpc,

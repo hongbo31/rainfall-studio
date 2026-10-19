@@ -1,5 +1,13 @@
 const test=require('node:test'),assert=require('node:assert/strict'),path=require('node:path'),{randomUUID}=require('node:crypto');
 const api=require(process.env.RAINFALL_IDENTITY_WIRING_BUNDLE);
+test('public identity response preserves safe actionable codes and hides arbitrary exception text',async()=>{
+ assert.equal(typeof api.accountIdentityUiResponse,'function');
+ const disconnected=await api.accountIdentityUiResponse(async()=>{throw Error('CLOUD_BROWSER_SESSION_REQUIRED')});
+ assert.equal(disconnected.ok,false);assert.equal(disconnected.error.code,'CLOUD_BROWSER_SESSION_REQUIRED');
+ const unsafe=await api.accountIdentityUiResponse(async()=>{throw Error('private response / account name / token')});
+ assert.equal(unsafe.ok,false);assert.equal(unsafe.error.code,'IDENTITY_OPERATION_FAILED');assert.ok(!JSON.stringify(unsafe).includes('private response'));
+ assert.deepEqual(await api.accountIdentityUiResponse(async()=>({bindingState:'pending_verification'})),{ok:true,value:{bindingState:'pending_verification'}});
+});
 function fixture(t,sessionOverride){
  assert.equal(typeof api.createAccountIdentityBroker,'function','production Main identity broker must exist');assert.equal(typeof api.createAccountIdentityBridge,'function','out-of-chain identity reply bridge must exist');
  let available=true,generation=1,connected=false,session='session-one',reads=0,remoteAccountId='610001',remoteArtistId='720002',hold,sessionHold;
