@@ -1,4 +1,6 @@
+import {AccountIdentityPublishScopeSchema} from './account-identity';
 import { z } from 'zod';
+import {GenerationRoutingSchema,RouteSnapshotSchema} from './generation-config';
 import { InboxId } from './inbox';
 import { FlowMusicCreditPolicySchema } from './production-flow';
 
@@ -15,8 +17,10 @@ export const PlanCenterAlbumSelectionSchema = z.discriminatedUnion('mode', [
   z.strictObject({ mode: z.literal('existing'), albumId: id }),
   z.strictObject({ mode: z.literal('new'), title: z.string().trim().min(1).max(200), description: z.string().max(2000).optional() }),
 ]);
-export const PlanCenterPublishTargetSchema = z.strictObject({ platform: id, accountId: id, enabled: z.boolean().default(true), album: PlanCenterAlbumSelectionSchema });
+export const PlanCenterPublishTargetSchema = z.strictObject({ identityBindingId:z.uuid().optional(),identitySnapshot:AccountIdentityPublishScopeSchema.omit({externalState:true}).optional(),platform: id, accountId: id, enabled: z.boolean().default(true), album: PlanCenterAlbumSelectionSchema });
 export const PlanCenterPlanSchema = z.strictObject({
+  artistSnapshot:z.strictObject({id:z.string(),revision:z.number().int().positive(),name:z.string(),defaults:z.record(z.string(),z.unknown())}).optional(),
+  origin:z.enum(['plan','manual']).optional(),routing:GenerationRoutingSchema.optional(),routeSnapshot:RouteSnapshotSchema.optional(),storyContext:z.strictObject({storyBeat:z.string().max(10000),storyStage:z.string().max(1000).default('')}).optional(),
   id, revision: revision.default(1), title: z.string().trim().min(1).max(200), artistId: id,
   enabled: z.boolean().default(false), timezone: z.literal('Asia/Shanghai').default('Asia/Shanghai'),
   schedule: PlanCenterScheduleSchema, count: z.number().int().min(1).max(20).default(1),

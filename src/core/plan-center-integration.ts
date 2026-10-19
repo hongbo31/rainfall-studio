@@ -8,7 +8,7 @@ import {syncPlanPublications,planPublicationStatus,planPublicationCapabilities} 
 import {bindPlanWork,selectPlanVersion,confirmPlanMaterials,planAssetsCatalog,planMaterialPreview,syncPlanMaterials,adoptPlanIncomingCover} from './plan-center-assets';
 import {syncPlanMusic,stopPlanMusic,planMusicExternalOutcome} from './plan-center-music';
 import {tickPlanMusic} from './plan-center-music-stages';
-import {tickProviderPlanText,stopProviderPlanText,providerTextService} from './provider-plan-text';
+import {tickProviderPlanText,stopProviderPlanText,providerTextService,materializeProviderTextFinal} from './provider-plan-text';
 import {PlanCenterSaveSchema,PlanCenterToggleSchema,PlanCenterIdSchema,PlanCenterRunSchema,PlanCenterStopSchema,PlanCenterRetrySchema} from '../shared/plan-center';
 import type {PlanCenterStageAttempt} from '../shared/plan-center';
 const isAttempt=(value:unknown):value is PlanCenterStageAttempt=>!!value&&typeof (value as any).id==='string';
@@ -178,6 +178,7 @@ export function tickPlanCenter(s:Studio){
     else service.record({attemptId:attempt.id,status:run.snapshot.material.source==='provider'?'waiting':'failed',reason:'COVER_REQUIRED'});
     });
    }else if(next.stage==='materials'&&['ready','dispatching'].includes(next.state)){
+    materializeProviderTextFinal(s,run,service.list().items.find(i=>i.id===item.id)!);
     if(run.snapshot.outputs.music||run.snapshot.authorization.publish){const material=syncPlanMaterials(s,run,service.list().items.find(i=>i.id===item.id)!);if(!material.ready)continue;}
     localAttempt(s,run.id,item.id,'materials',next,attempt=>{
      const current=service.list().items.find(i=>i.id===item.id)!;

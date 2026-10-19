@@ -1,3 +1,4 @@
+import AccountBinding from './AccountBinding';
 import React, { useRef, useState } from "react";
 import { useStudio, names, label, Badge } from "../context";
 import HelpHint from "./HelpHint";
@@ -197,6 +198,7 @@ export default function PlatformConfigurationPanel({
           </p>
         )}
       </form>
+      <AccountBinding artistId={draft.artistId} accountId={draft.accountId}/>
     </section>
   );
 }

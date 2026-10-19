@@ -1,3 +1,4 @@
+import {assertPlanIdentity} from './plan-identity';
 import {hasPlanAlbumAdapter} from '../shared/plan-albums';
 import type {Studio} from './studio';
 import type {PlanCenterItem,PlanCenterRun} from '../shared/plan-center';
@@ -88,6 +89,7 @@ export function syncPlanPublications(s:Studio):PlanPublicationLink[]{
     const originalBinding=link.albumBindingSnapshot??(binding?PlanPublicationAlbumBindingSchema.parse({id:binding.id,albumId:binding.albumId,title:binding.title,scope:binding.scope,source:binding.source,onlineVerified:binding.onlineVerified}):undefined);
     link={...link,albumBindingId:link.albumBindingId??binding?.id,albumBindingSnapshot:originalBinding,albumOperationId:append?.id??link.albumOperationId??create?.id};
     if(!stopped&&!link.publicationTaskId){
+     assertPlanIdentity(s,run,target);
      if(!platformTargets.includes(target.platform as PlatformTarget))throw Error('PLATFORM_EXECUTOR_UNAVAILABLE');
      // Tencent's existing service groups QQ/Kugou into one recording family. Enqueue that
      // complete account family together so a later target cannot replace its sibling.

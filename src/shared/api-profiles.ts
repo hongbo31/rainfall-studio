@@ -13,7 +13,7 @@ export type TextPricing = z.infer<typeof TextPricingSchema>;
 const apiProfileMetadataSchema = z
   .strictObject({
     id: z.uuid(),
-    kind: z.enum(["text", "music"]),
+    kind: z.enum(["text", "image", "music"]),
     providerId: z.enum([
       "text_pending",
       "deepseek",
@@ -23,6 +23,7 @@ const apiProfileMetadataSchema = z
       "yourmusic",
       "suno",
       "miaoxiang",
+      "image_pending", "dot_image", "local_image",
     ]),
     label: z.string().trim().min(1).max(100),
     modelId: z.string().trim().min(1).max(200).nullable(),
@@ -31,11 +32,7 @@ const apiProfileMetadataSchema = z
     executionEnabled: z.literal(false),
   })
   .refine(
-    (p) =>
-      (p.kind === "text") ===
-      ["text_pending", "deepseek", "doubao", "codex_cli", "claude_code"].includes(
-        p.providerId,
-      ),
+    (p) => p.kind === (["text_pending","deepseek","doubao","codex_cli","claude_code"].includes(p.providerId)?'text':['image_pending','dot_image','local_image'].includes(p.providerId)?'image':'music'),
     {
       message: "PROFILE_KIND_MISMATCH",
     },
@@ -104,6 +101,9 @@ export const apiProviders = Object.freeze([
     credentialInput: false,
     hosts: [],
   },
+  {id:'local_image',kind:'image',name:'本地图片导入',state:'真实图片导入 · 不调用模型',credentialInput:false,hosts:[]},
+  {id:'dot_image',kind:'image',name:'dot 外部出图后导入',state:'外部会话生成 · 客户端不直接调用',credentialInput:false,hosts:[]},
+  {id:'image_pending',kind:'image',name:'图片 API（待接入）',state:'图像适配器未接入',credentialInput:false,hosts:[]},
   {
     id: "yourmusic",
     kind: "music",

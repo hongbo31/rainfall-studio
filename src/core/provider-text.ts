@@ -1,3 +1,4 @@
+import {planCreativeContext} from './generation-config';
 import {randomUUID} from 'node:crypto';
 import type {Repository} from './database';
 import {apiProfileSchema,type ApiProfile} from '../shared/api-profiles';
@@ -32,7 +33,7 @@ export class ProviderTextService{
   const snapshot=run.snapshot,text=snapshot.text;
   if(snapshot.material?.source!=='provider'||snapshot.artistId!==p.artistId||snapshot.authorization?.text!==true||text?.consent!==true||p.consent!==true)throw Error('TEXT_PLAN_AUTHORIZATION_REQUIRED');
   for(const k of ['profileId','budgetMicros','maxOutputTokens','threshold','maxRewrites','maxScoreRetries'] as const)if((k==='maxOutputTokens'?(text[k]??2048):text[k])!==p[k])throw Error('TEXT_PLAN_SCOPE');
-  if(snapshot.theme!==p.theme||snapshot.styleTemplate!==p.styleTemplate||(text.profileRevision!==undefined&&text.profileRevision!==p.profileRevision)||(text.modelId!==undefined&&text.modelId!==p.modelId))throw Error('TEXT_PLAN_SCOPE');
+  if(planCreativeContext(snapshot).theme!==p.theme||planCreativeContext(snapshot).styleTemplate!==p.styleTemplate||(text.profileRevision!==undefined&&text.profileRevision!==p.profileRevision)||(text.modelId!==undefined&&text.modelId!==p.modelId))throw Error('TEXT_PLAN_SCOPE');
   const raw=this.repo.maybe('settings','api-profile:'+p.profileId);if(!raw)throw Error('TEXT_PROFILE_REQUIRED');
   const profile=apiProfileSchema.parse({...raw,id:p.profileId});
   if(profile.revision!==p.profileRevision||profile.modelId!==p.modelId||profile.kind!=='text'||!['deepseek','doubao'].includes(profile.providerId))throw Error('TEXT_PROFILE_REVISION_CHANGED');
@@ -133,7 +134,7 @@ function checkedProof(repo:Repository,jobId:string,expected:ProviderTextExpected
  if(!run||!item||!owner||item.runId!==run.id||owner.runId!==run.id||owner.itemId!==item.id||owner.stage!=='text_generate'||run.planId!==job.planId||run.planRevision!==job.planRevision||run.snapshot.artistId!==job.artistId||run.snapshot.material?.source!=='provider'||run.snapshot.authorization?.text!==true)throw Error('TEXT_PROOF_PLAN_SCOPE');
  const text=run.snapshot.text;
  for(const k of ['profileId','profileRevision','modelId','budgetMicros','maxOutputTokens','threshold','maxRewrites','maxScoreRetries','consent'] as const){const value=k==='maxOutputTokens'?(text[k]??2048):text[k];if(value!==undefined&&value!==job[k])throw Error('TEXT_PROOF_PLAN_SCOPE');}
- if(run.snapshot.theme!==job.theme||run.snapshot.styleTemplate!==job.styleTemplate)throw Error('TEXT_PROOF_PLAN_SCOPE');
+ if(planCreativeContext(run.snapshot).theme!==job.theme||planCreativeContext(run.snapshot).styleTemplate!==job.styleTemplate)throw Error('TEXT_PROOF_PLAN_SCOPE');
  if(final){if(job.state!=='complete'||!scoreOperation||!job.score||!version.score||job.scoreOperationId!==scoreOperation.id||job.generationOperationId!==generationOperation.id||hashValue(job.score)!==hashValue(version.score))throw Error('TEXT_PROOF_FINAL_REQUIRED');
   const scored=verifyOp(scoreOperation);verifyRequest(scoreOperation);if(scoreOperation.phase!=='score'||scoreOperation.request.revisionId!==version.id||scoreOperation.request.pairHash!==version.pairHash)throw Error('TEXT_PROOF_SCORE_SCOPE');
   const score=parseProviderTextScore(JSON.parse(scored.content!),{revisionId:version.id,threshold:job.threshold,pair:version.pair,intent:job.theme});if(!score.passed||hashValue(score)!==hashValue(job.score))throw Error('TEXT_PROOF_SCORE');

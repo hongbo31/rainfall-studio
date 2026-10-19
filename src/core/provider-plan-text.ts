@@ -1,3 +1,4 @@
+import {planCreativeContext} from './generation-config';
 import type {Repository} from './database';
 import type {Studio} from './studio';
 import type {PlanCenterRun,PlanCenterItem,PlanCenterStageAttempt} from '../shared/plan-center';
@@ -18,7 +19,7 @@ export function providerPlanProof(repo:Repository,run:PlanCenterRun,item:PlanCen
  const expected={ownerKey:generation.id,runId:run.id,itemId:item.id,artistId:run.snapshot.artistId,profileId:text.profileId,profileRevision:text.profileRevision};
  const proof=(complete?verifyProviderTextProof:verifyProviderTextGeneration)(repo,jobId,expected);
  const job=proof.job;
- if(job.planId!==run.planId||job.planRevision!==run.planRevision||job.theme!==run.snapshot.theme||job.styleTemplate!==run.snapshot.styleTemplate||job.modelId!==text.modelId||job.threshold!==text.threshold||job.maxRewrites!==text.maxRewrites||job.maxScoreRetries!==text.maxScoreRetries||job.maxOutputTokens!==(text.maxOutputTokens??2048)||job.budgetMicros!==text.budgetMicros||!text.consent||!run.snapshot.authorization.text)throw Error('PROVIDER_PLAN_GRANT_MISMATCH');
+ if(job.planId!==run.planId||job.planRevision!==run.planRevision||job.theme!==planCreativeContext(run.snapshot).theme||job.styleTemplate!==planCreativeContext(run.snapshot).styleTemplate||job.modelId!==text.modelId||job.threshold!==text.threshold||job.maxRewrites!==text.maxRewrites||job.maxScoreRetries!==text.maxScoreRetries||job.maxOutputTokens!==(text.maxOutputTokens??2048)||job.budgetMicros!==text.budgetMicros||!text.consent||!run.snapshot.authorization.text)throw Error('PROVIDER_PLAN_GRANT_MISMATCH');
  return proof;
 }
 
@@ -84,7 +85,7 @@ export function tickProviderPlanText(s:Studio,run:PlanCenterRun,item:PlanCenterI
   if(!run.snapshot.authorization.text||!text.consent)throw Error('TEXT_GRANT_REQUIRED');
   const ownerKey=generation.id;
   binding=s.repo.transaction(()=>{
-   const job=service.prepare({ownerKey,runId:run.id,itemId:item.id,artistId:run.snapshot.artistId,profileId:text.profileId!,profileRevision:text.profileRevision!,modelId:text.modelId!,budgetMicros:text.budgetMicros!,maxOutputTokens:text.maxOutputTokens??2048,theme:run.snapshot.theme,styleTemplate:run.snapshot.styleTemplate,threshold:text.threshold,maxRewrites:text.maxRewrites,maxScoreRetries:text.maxScoreRetries,consent:true});
+   const job=service.prepare({ownerKey,runId:run.id,itemId:item.id,artistId:run.snapshot.artistId,profileId:text.profileId!,profileRevision:text.profileRevision!,modelId:text.modelId!,budgetMicros:text.budgetMicros!,maxOutputTokens:text.maxOutputTokens??2048,...planCreativeContext(run.snapshot),threshold:text.threshold,maxRewrites:text.maxRewrites,maxScoreRetries:text.maxScoreRetries,consent:true});
    const value={jobId:job.id,ownerKey,runId:run.id,itemId:item.id,artistId:run.snapshot.artistId};
    s.repo.save('settings',{id:bindingKey(item.id),value});return value;
   });
@@ -107,4 +108,10 @@ export function tickProviderPlanText(s:Studio,run:PlanCenterRun,item:PlanCenterI
  }else if(job.state==='unknown')record(current,'unknown',{providerJobId:job.id},job.operationId??undefined,'PROVIDER_OUTCOME_UNKNOWN');
  else if(['blocked','rejected','stopped'].includes(job.state))record(current,'failed',{providerJobId:job.id},job.operationId??undefined,job.reason??'PROVIDER_TEXT_BLOCKED');
  return true;
+}
+
+/** Preserve the verified lyrics-only result as a library draft; no audio is implied. */
+export function materializeProviderTextFinal(s:Studio,run:PlanCenterRun,item:PlanCenterItem){
+ if(!run.snapshot.routing||run.snapshot.material.source!=='provider'||run.snapshot.outputs.cover||run.snapshot.outputs.music)return item.workId;
+ return s.repo.transaction(()=>{const current=s.planCenterService().list().items.find(i=>i.id===item.id);if(!current||current.runId!==run.id)throw Error('PROVIDER_PLAN_SCOPE');if(current.workId)return current.workId;if(run.stopRequested)throw Error('STOP_REQUESTED');const proof=providerPlanFinal(s.repo,run,current),v=proof.version;const work=s.saveWork({artistId:run.snapshot.artistId,title:v.draft.title,lyrics:v.pair.lyrics,prompt:v.pair.musicPrompt,story:run.snapshot.storyContext?.storyBeat??run.snapshot.theme,parameters:run.snapshot.artistSnapshot?.defaults??{},rights:'待人工确认授权',ai:'generated'},{kind:'generation_input'});s.save('works',{...work,artistSnapshot:run.snapshot.artistSnapshot,storyContext:run.snapshot.storyContext,routeSnapshot:run.snapshot.routeSnapshot});s.planCenterService().bindWork({itemId:item.id,workId:work.id,versions:[]});s.repo.audit('providerPlan.textWork.created',work.id,{providerJobId:proof.job.id,finalDraftId:v.id,runId:run.id,itemId:item.id,audioGenerated:false});return work.id;});
 }

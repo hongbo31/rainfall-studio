@@ -73,12 +73,12 @@ function ProfileCard({
     setOutputPrice(profile.textPricing?String(profile.textPricing.outputMicrosPerMillionTokens/1_000_000):'');setPriceSource(profile.textPricing?.source??'');setPriceVersion(profile.textPricing?.version??'');setResponseModels(profile.textPricing?.responseModelIds.join(', ')??'');
     setConnection(null);
   }, [profile.id, profile.label, profile.revision, simulation]);
-  const action = async (kind: "save" | "clear" | "label" | "text") => {
+  const action = async (kind: "save" | "clear" | "label" | "text" | "model") => {
     setBusy(true);
     setError("");
     setConnection(null);
     try {
-      if (kind === "label" || kind==='text') {
+      if (kind === "label" || kind==='text'||kind==='model') {
         const { revision, ...metadata } = profile;
         let textMetadata={};
         if(kind==='text'){
@@ -87,7 +87,7 @@ function ProfileCard({
           textMetadata={modelId:modelId.trim()||null,textPricing:hasPrice?{currency,modelId:modelId.trim(),inputMicrosPerMillionTokens:Math.round(Number(inputPrice)*1_000_000),outputMicrosPerMillionTokens:Math.round(Number(outputPrice)*1_000_000),source:priceSource.trim(),version:priceVersion.trim(),responseModelIds:(responseModels.trim()?responseModels.split(','):[modelId]).map(v=>v.trim()).filter(Boolean)}:null};
         }
         await call("apiProfile.save", {
-          profile: { ...metadata, label,...textMetadata },
+          profile: { ...metadata, label,...textMetadata,...(kind==='model'?{modelId:modelId.trim()||null}:{}) },
           expectedRevision: revision,
         });
         await refresh();
@@ -188,6 +188,8 @@ function ProfileCard({
         <button disabled={busy||!modelId.trim()} onClick={()=>void action('text')}>保存模型与计费</button>
         {profile.providerId==='doubao'&&<HelpHint label="豆包连接说明">使用火山方舟 API Key，与 DeepSeek、图片服务分别配置。未提供免费认证探测；保存后保持未验证，真实生成仅按已授权计划执行。</HelpHint>}
       </div>}
+      {profile.kind==='music'&&<div className="api-profile-fields"><label>底层音乐模型 ID<input aria-label="底层音乐模型 ID" value={modelId} maxLength={200} disabled={busy} onChange={e=>setModelId(e.target.value)} placeholder="填写渠道实际支持的模型 ID"/></label><button disabled={busy||!modelId.trim()} onClick={()=>void action('model')}>保存音乐模型</button><p className="muted">渠道：{provider.name}。模型可用性、价格和生成授权仍需核实；配置默认值不触发请求。</p></div>}
+      {profile.kind==='image'&&<p className="notice">{profile.providerId==='image_pending'?'图片 API 尚未实现，执行保持关闭。':'外部出图 / 本地图片导入；客户端不直接调用图片模型。'} Codex 辅助出图通过外部会话完成，没有免费直连图像 API。</p>}
       {eligible && !simulation ? (
         <>
           <div className="api-profile-fields api-secret-row">
@@ -276,7 +278,7 @@ function ProfileCard({
         </p>
       )}
       <div className="api-profile-foot">
-        <span>自动执行：关闭</span>
+        <span>执行按任务授权与适配器能力检查</span>
         <span>余额 / 权限：未核验</span>
         <HelpHint label="配置版本说明">配置版本 {profile.revision}</HelpHint>
       </div>
@@ -284,137 +286,18 @@ function ProfileCard({
   );
 }
 
-export default function ApiSettings({
-  compact = false,
-}: { compact?: boolean } = {}) {
-  const { runtime } = useStudio();
-  const [profiles, setProfiles] = useState<ApiProfile[]>([]);
-  const [providerId, setProviderId] = useState("deepseek");
-  const [label, setLabel] = useState("");
-  const [busy, setBusy] = useState(false),
-    [error, setError] = useState("");
-  const simulation = runtime.mode === "simulation";
-  const refresh = async () => {
-    const r = await window.rainfall.call("apiProfile.list");
-    if (!r.ok) throw Error("PROFILE_LIST_FAILED");
-    setProfiles(r.value);
-  };
-  useEffect(() => {
-    void refresh().catch(() => setError("无法加载配置，请重新打开账号设置。"));
-  }, [runtime.mode]);
-  const create = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
-    setError("");
-    const provider = apiProviders.find((p) => p.id === providerId)!;
-    try {
-      const r = await window.rainfall.call("apiProfile.save", {
-        profile: {
-          id: crypto.randomUUID(),
-          kind: provider.kind,
-          providerId,
-          label: label.trim(),
-          modelId: null,
-          executionEnabled: false,
-        },
-        expectedRevision: null,
-      });
-      if (!r.ok) throw Error("PROFILE_SAVE_FAILED");
-      setLabel("");
-      await refresh();
-    } catch {
-      setError("配置未保存，请检查名称后重试。");
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <section className="panel api-settings" aria-labelledby="api-title">
-      <div className="section-title">
-        <div>
-          <h2 id="api-title">API 配置</h2>
-        </div>
-        <span className="api-status">外部服务尚未联调</span>
-      </div>
-      <details className="api-service-help">
-        <summary>服务说明</summary>
-        <div className="api-service-grid">
-          <p className="notice">
-            Key 保存在本机；保存配置不调用模型。实际调用需另行确认预算。
-          </p>
-          <div className="api-service-card">
-            <span className="api-service-icon">D</span>
-            <h3>文本创作</h3>
-            <strong>DeepSeek · 官方配置</strong>
-            <p>
-              模型列表 · 文本调用 · 逐轮预算
-            </p>
-          </div>
-          <div className="api-service-card">
-            <span className="api-service-icon">♫</span>
-            <h3>音乐生成</h3>
-            <strong>谱乐 · 可准备本机 Key</strong>
-            <p>
-              Suno · API 合同待核验
-              <br />
-              <span>妙响 · API 接入待确认</span>
-            </p>
-          </div>
-        </div>
-      </details>
-      <form className="api-create" onSubmit={(e) => void create(e)}>
-        <label>
-          API 平台
-          <select
-            aria-label="API 平台"
-            disabled={busy}
-            value={providerId}
-            onChange={(e) => setProviderId(e.target.value)}
-          >
-            {apiProviders.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-                {!p.credentialInput ? "（待配置 / 核验）" : ""}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          配置名称
-          <input
-            aria-label="配置名称"
-            value={label}
-            disabled={busy}
-            maxLength={100}
-            placeholder="例如：个人音乐创作"
-            onChange={(e) => setLabel(e.target.value)}
-          />
-        </label>
-        <button
-          className="primary"
-          disabled={busy || !label.trim()}
-          type="submit"
-        >
-          创建 API 配置
-        </button>
-      </form>
-      {simulation && <p className="notice">模拟工作区不读取或保存真实 Key</p>}
-      {error && (
-        <p role="alert" className="api-error">
-          {error}
-        </p>
-      )}
-      <div className="api-profiles">
-        {profiles.map((p) => (
-          <ProfileCard
-            key={p.id}
-            profile={p}
-            refresh={refresh}
-            simulation={simulation}
-          />
-        ))}
-      </div>
-      {!profiles.length && <p className="api-empty">尚无 API 配置</p>}
-    </section>
-  );
+const groups=[{id:'text',label:'歌词与提示词',hint:'DeepSeek / 豆包。每个配置独立保存模型、价格与 Key 引用。'},{id:'image',label:'封面图片',hint:'选择外部出图后导入；未接入的图片 API 保持关闭。'},{id:'music',label:'音乐生成',hint:'生成渠道与底层音乐模型分别配置，执行前检查真实可用性。'}] as const;
+export default function ApiSettings({compact=false}:{compact?:boolean}={}){
+ const {runtime,call}=useStudio();const[profiles,setProfiles]=useState<ApiProfile[]>([]),[role,setRole]=useState<'text'|'image'|'music'>('text'),[providerId,setProviderId]=useState('deepseek'),[label,setLabel]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState(''),[defaults,setDefaults]=useState<any>(null);const simulation=runtime.mode==='simulation';
+ const refresh=async()=>{const[p,d]=await Promise.all([call('apiProfile.list'),call('generationConfig.read')]);setProfiles(p);setDefaults(d)};
+ useEffect(()=>{void refresh().catch(e=>setError(e.code??e.message))},[runtime.mode]);
+ const act=async(fn:()=>Promise<unknown>)=>{setBusy(true);setError('');try{await fn();await refresh()}catch(e:any){setError(e.code??e.message)}finally{setBusy(false)}};
+ const create=(e:React.FormEvent)=>{e.preventDefault();void act(async()=>{await call('apiProfile.save',{profile:{id:crypto.randomUUID(),kind:role,providerId,label:label.trim(),modelId:null,executionEnabled:false},expectedRevision:null});setLabel('')})};
+ const visible=profiles.filter(p=>p.kind===role),group=groups.find(g=>g.id===role)!;
+ return <section className="panel api-settings" aria-label="生成 API 配置"><div className="section-title"><h2>生成 API 配置</h2><span className="api-status">配置不触发生成</span></div>
+ <div className="button-row" role="tablist" aria-label="生成类型">{groups.map(g=><button key={g.id} role="tab" aria-selected={role===g.id} className={role===g.id?'primary':''} onClick={()=>{setRole(g.id);setProviderId(apiProviders.find(p=>p.kind===g.id)!.id);setLabel('');setError('')}}>{g.label}</button>)}</div>
+ <p className="muted">{group.hint}</p><label>默认{group.label}<select aria-label={'默认'+group.label} disabled={busy||!defaults} value={defaults?.roles[role]??''} onChange={e=>void act(()=>call('generationConfig.save',{role,profileId:e.target.value||null,expectedRevision:defaults.revision}))}><option value="">未配置 · 执行前需处理</option>{visible.map(p=><option key={p.id} value={p.id}>{p.label} · {apiProviders.find(v=>v.id===p.providerId)?.name} · {p.modelId??(role==='image'?'外部导入':'模型待配置')}</option>)}</select></label><p className="muted">三类默认值彼此独立。已创建任务保留配置快照；默认值变化后，旧计划需编辑并重新核对授权。</p>
+ <form className="api-create" onSubmit={create}><label>提供商 / 渠道<select aria-label="API 平台" disabled={busy} value={providerId} onChange={e=>setProviderId(e.target.value)}>{apiProviders.filter(p=>p.kind===role).map(p=><option key={p.id} value={p.id}>{p.name}{!p.credentialInput?' · 外部导入 / 待接入':''}</option>)}</select></label><label>配置名称<input aria-label="配置名称" value={label} disabled={busy} maxLength={100} onChange={e=>setLabel(e.target.value)} placeholder="例如：个人创作默认配置"/></label><button className="primary" disabled={busy||!label.trim()} type="submit">添加 API 配置</button></form>
+ {simulation&&<p className="notice">模拟工作区不读取或保存真实 Key</p>}{error&&<p role="alert" className="api-error">{error}</p>}<div className="api-profiles">{visible.map(p=><ProfileCard key={p.id} profile={p} refresh={refresh} simulation={simulation}/>)}</div>{!visible.length&&<p className="api-empty">尚无{group.label}配置，先选择提供商或导入方式。</p>}
+ </section>;
 }

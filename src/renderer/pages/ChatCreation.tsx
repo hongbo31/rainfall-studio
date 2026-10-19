@@ -4,6 +4,7 @@ import { useStudio, PageHead, Badge, SelectArtist } from "../context";
 import MusicCandidates from "../components/MusicCandidates";
 import LiveMusicWorkspace from "../components/LiveMusicWorkspace";
 import LiveTextWorkspace from "../components/LiveTextWorkspace";
+import ManualCreation from '../components/ManualCreation';
 const reasonNames: Record<string, string> = {
   TEXT_CONFIGURATION_REQUIRED: "尚未选择并验证文本供应商/协议/模型",
   LIVE_EXECUTION_DISABLED: "真实服务执行尚未启用",
@@ -70,6 +71,8 @@ export default function ChatCreation() {
   return (
     <>
       <PageHead title="AI 聊天创作" />
+      <ManualCreation />
+      <details className="panel"><summary>历史创作与旧任务（保留原路线）</summary>
       <LiveMusicWorkspace />
       <LiveTextWorkspace />
       <p className="notice">
@@ -242,6 +245,7 @@ export default function ChatCreation() {
           </div>
         </details>
       )}
+      </details>
     </>
   );
 }

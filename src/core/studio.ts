@@ -1,3 +1,6 @@
+import {AccountIdentityService} from './account-identity';
+import {readGenerationConfig,saveGenerationConfig} from './generation-config';
+import {prepareManualCreation,listManualCreations} from './manual-creation';
 import {unifiedPublicationService,savePublicationMetadata} from "./unified-publication-integration";
 import fs from "node:fs";
 import {DirectoryTaskController} from './directory-tasks';
@@ -68,6 +71,9 @@ export class Studio {
   now: () => Date;
   lastTick: Date;
   closing = false;
+  private identity?:AccountIdentityService;
+  private identityRepo?:Repository;
+  accountIdentityService(){if(!this.identity||this.identityRepo!==this.repo){this.identity=new AccountIdentityService(this.repo,{now:this.now});this.identityRepo=this.repo;}return this.identity;}
   private creative?: CreationService;
   private music?: MusicService;
   private daily?: DailyScheduler;
@@ -359,6 +365,7 @@ export class Studio {
     if(method.startsWith('planAlbums.'))return executePlanAlbums(this,method.slice('planAlbums.'.length),input);
     if(method.startsWith('planCenter.'))return executePlanCenter(this,method,input);
     const v: any = validate(method, input);
+    if(method.startsWith('accountIdentity.'))return this.accountIdentityService().execute(method.slice('accountIdentity.'.length),v);
     if(method.startsWith('directoryTasks.')){
       const controller=this.directoryTasks(),action=method.slice('directoryTasks.'.length);
       if(action==='status')return controller.status();
@@ -371,6 +378,10 @@ export class Studio {
     }
     if(method.startsWith('publish.')&&v.id&&['batches','units'].some(table=>this.repo.maybe(table as 'batches'|'units',v.id)?.kind==='tme_uia'))throw Error('TME_SPECIALIZED_CHANNEL_REQUIRED');
     switch (method) {
+      case 'generationConfig.read': return readGenerationConfig(this.repo);
+      case 'generationConfig.save': return saveGenerationConfig(this.repo,v);
+      case 'manualCreation.prepare': return prepareManualCreation(this,v);
+      case 'manualCreation.list': return listManualCreations(this);
       case 'platformConfig.list': return listPlatformConfigurations(this.repo);
       case 'platformConfig.save': return savePlatformConfiguration(this.repo,v.config,v.expectedRevision);
       case 'publish.selection.save': return savePublishSelection(this,v);

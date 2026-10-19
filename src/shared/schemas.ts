@@ -1,3 +1,5 @@
+import {AccountIdentityPublicActions} from './account-identity';
+import {GenerationConfigSchemas} from './generation-config';
 import { z } from "zod";
 import {DirectoryTaskSchemas} from './directory-tasks';
 import {PlanCenterPrepareCoverWorkSchema} from './plan-center';
@@ -21,6 +23,8 @@ export const defaultsSchema = z
     bpmMin: z.number().int().min(20).max(300),
     bpmMax: z.number().int().min(20).max(300),
     coverStyle: z.string().max(2000),
+    instruments: z.string().max(1000).optional(),
+    seriesStory: z.string().max(4000).optional(),
     language: z.string().max(100),
     mood: z.string().max(200),
     duration: z.number().int().min(10).max(1800),
@@ -29,6 +33,8 @@ export const defaultsSchema = z
 const obj = z.record(z.string(), z.unknown());
 const recordingSelections = z.array(z.strictObject({workId:id,slot:z.enum(['audio_A','audio_B'])})).max(200);
 export const methodSchemas: Record<string, z.ZodType> = {
+  ...GenerationConfigSchemas,
+  ...Object.fromEntries(Object.entries(AccountIdentityPublicActions).map(([action,schema])=>['accountIdentity.'+action,schema])),
   ...DirectoryTaskSchemas,
   ...SimplePublishingSchemas,
   ...TmeObservationSchemas,

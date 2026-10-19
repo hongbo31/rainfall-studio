@@ -44,7 +44,8 @@ export function preparePlanCoverWork(s:Studio,raw:unknown){
   const previous=s.repo.maybe('settings',key(item.id));
   if(previous){assertPlanCoverWork(s,previous.value.workId);return{workId:previous.value.workId};}
   if(item.workId)throw Error('WORK_ALREADY_BOUND');
-  const work=s.saveWork({artistId:run.snapshot.artistId,title:final.title,lyrics:final.lyrics,story:'',prompt:final.musicPrompt,parameters:{},rights:'待人工确认授权',ai:'unknown'},{kind:'generation_input'});
+  const work=s.saveWork({artistId:run.snapshot.artistId,title:final.title,lyrics:final.lyrics,story:run.snapshot.storyContext?.storyBeat??run.snapshot.theme,prompt:final.musicPrompt,parameters:run.snapshot.artistSnapshot?.defaults??{},rights:'待人工确认授权',ai:'unknown'},{kind:'generation_input'});
+  if(run.snapshot.artistSnapshot)s.save('works',{...work,artistSnapshot:run.snapshot.artistSnapshot,storyContext:run.snapshot.storyContext,routeSnapshot:run.snapshot.routeSnapshot});
   const sourceCover=s.repo.maybe('textCandidates',sourceCandidateId)?.cover;
   const binding=bindingSchema.parse({runId:run.id,itemId:item.id,artistId:run.snapshot.artistId,workId:work.id,finalDraftId:final.draftId,finalPairHash:final.pairHash,rawLyricsHash:hash(final.lyrics),titleHash:hash(final.title),scoreAttemptId:score.id,sourceCandidateId,...(sourceCover?.sha256?{sourceCoverSha256:sourceCover.sha256}:{}),createdAt:s.now().toISOString(),source:'plan-final-cover'});
   s.planCenterService().bindWork({itemId:item.id,workId:work.id,versions:[]});
