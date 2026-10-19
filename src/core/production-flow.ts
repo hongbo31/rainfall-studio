@@ -1,8 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { DateTime } from "luxon";
+import { z } from "zod";
 import { hash, type Repository, type Row } from "./database";
 import { cleanLyricText } from "../shared/tme-lyrics";
 import { listApiProfiles } from "./api-profiles";
+import { assertLegacyScheduleEditable } from "./plan-center-ownership";
+import { isLegacyOwned } from "./plan-center/storage";
+import {
+  importedFlowCandidate,
+  inboxEvaluationSource,
+  syncInboxEvaluation,
+} from "./production-flow-inbox";
 import { hashValue } from "./quality/scoring";
 import { deepSeekSystemPrompt } from "./workflow/deepseek";
 import { resolveDailyTime } from "./workflow/daily";
@@ -27,6 +35,8 @@ import {
   FlowBlockSchema,
   FlowRecordSchema,
   FlowUseManualAssetsSchema,
+  FlowTextGrantSchema,
+  ProductionFlowPlanSchema,
   type FlowAsset,
 } from "../shared/production-flow";
 import {
@@ -36,6 +46,20 @@ import {
 } from "./production-flow-local";
 
 const prefix = "production-flow:";
+const managedInboxInput = z.strictObject({
+  ownerKey: z.string().trim().min(1).max(1000),
+  budgetScope: z.string().trim().min(1).max(1000).optional(),
+  candidateId: z.uuid(),
+  artistId: z.uuid(),
+  text: FlowTextGrantSchema,
+  threshold: z.number().min(0).max(100).default(75),
+  maxRevisions: z.number().int().min(0).max(2).default(2),
+  maxScoreRetries: z.number().int().min(0).max(2).default(2),
+});
+function managedInboxId(value: string) {
+  const digest = hash(value);
+  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
+}
 type Options = {
   now?: () => Date;
   createWork?: (run: Row, candidate: Row) => { workId: string };
@@ -96,8 +120,11 @@ export class ProductionFlowService {
     return this.repo.maybe("settings", prefix + kind + ":" + id)?.value;
   }
   private put(kind: string, value: Row) {
-    this.repo.save("settings", { id: prefix + kind + ":" + value.id, value });
-    return value;
+    return this.repo.transaction(() => {
+      this.repo.save("settings", { id: prefix + kind + ":" + value.id, value });
+      if (kind === "run") syncInboxEvaluation(this.repo, value);
+      return value;
+    });
   }
   private rows(kind: string) {
     return this.repo
@@ -139,11 +166,96 @@ export class ProductionFlowService {
         .filter((o) => o.kind === "production_flow" && o.runId === id),
     };
   }
+  /** Internal adapter: one stable plan-center stage owns one text-only evaluation. */
+  startManagedInboxEvaluation(raw: unknown) {
+    const input = managedInboxInput.parse(raw);
+    return this.repo.transaction(() => {
+      const key = hash(input.ownerKey),
+        inputHash = hashValue(input);
+      const previous = this.maybe("managed-inbox", key);
+      if (previous) {
+        if (
+          previous.ownerKey !== input.ownerKey ||
+          previous.inputHash !== inputHash
+        )
+          throw Error("MANAGED_INBOX_EVALUATION_CONFLICT");
+        return this.get("run", previous.runId);
+      }
+      const planId = managedInboxId(input.ownerKey + ":plan");
+      if (this.maybe("plan", planId))
+        throw Error("MANAGED_INBOX_EVALUATION_CONFLICT");
+      const plan = ProductionFlowPlanSchema.parse({
+        id: planId,
+        artistId: input.artistId,
+        title: "Inbox text evaluation",
+        theme: "Evaluate the imported song revision",
+        timezone: "Asia/Shanghai",
+        localTime: null,
+        inboxEvaluation: true,
+        candidateMode: "deepseek",
+        scoreMode: "deepseek",
+        text: input.text,
+        autoContinue: true,
+        threshold: input.threshold,
+        maxRevisions: input.maxRevisions,
+        maxScoreRetries: input.maxScoreRetries,
+      });
+      inboxEvaluationSource(this.repo, plan, input.candidateId);
+      this.repo.get("artists", input.artistId);
+      this.put("plan", {
+        ...plan,
+        enabled: true,
+        revision: 1,
+        authorizationRevision: 1,
+        managedByPlanCenter: true,
+        managedBudgetScope: input.budgetScope ?? null,
+        managedOwnerKey: input.ownerKey,
+        managedCandidateId: input.candidateId,
+        updatedAt: this.now().toISOString(),
+      });
+      const run = this.trigger({
+        planId,
+        requestId: managedInboxId(input.ownerKey + ":request"),
+        inboxCandidateId: input.candidateId,
+      });
+      this.put("managed-inbox", {
+        id: key,
+        ownerKey: input.ownerKey,
+        inputHash,
+        planId,
+        runId: run.id,
+      });
+      return run;
+    });
+  }
+  stopManagedInboxEvaluation(ownerKey: string) {
+    z.string().trim().min(1).max(1000).parse(ownerKey);
+    return this.repo.transaction(() => {
+      const mapping = this.maybe("managed-inbox", hash(ownerKey));
+      if (!mapping || mapping.ownerKey !== ownerKey) return null;
+      const plan = this.get("plan", mapping.planId),
+        run = this.get("run", mapping.runId);
+      this.put("plan", {
+        ...plan,
+        enabled: false,
+        authorizationRevision: null,
+      });
+      if (["completed", "unknown"].includes(run.state)) return run;
+      if (run.paused) return run;
+      return this.patch(run, {
+        paused: true,
+        state: run.state === "dispatching" ? "dispatching" : "blocked",
+        reasons: ["PLAN_CENTER_STOPPED"],
+      });
+    });
+  }
   savePlan(raw: unknown) {
     const { plan, expectedRevision } = FlowSavePlanSchema.parse(raw);
+    assertLegacyScheduleEditable(this.repo, "production-flow", plan.id);
     return this.repo.transaction(() => {
       this.repo.get("artists", plan.artistId);
       const old = this.maybe("plan", plan.id);
+      if (old?.managedByPlanCenter) throw Error("MANAGED_PLAN_INTERNAL_ONLY");
       if ((old?.revision ?? null) !== expectedRevision)
         throw Error("REVISION_CONFLICT");
       if (old && old.artistId !== plan.artistId) throw Error("ARTIST_SCOPE");
@@ -160,8 +272,19 @@ export class ProductionFlowService {
     const i = FlowEnableSchema.parse(raw);
     return this.repo.transaction(() => {
       const p = this.get("plan", i.id);
+      if (p.managedByPlanCenter) throw Error("MANAGED_PLAN_INTERNAL_ONLY");
+      assertLegacyScheduleEditable(this.repo, "production-flow", p.id);
       if (p.revision !== i.expectedRevision) throw Error("REVISION_CONFLICT");
-      if (!p.localTime) throw Error("SCHEDULE_TIME_REQUIRED");
+      if (!p.localTime && !p.inboxEvaluation)
+        throw Error("SCHEDULE_TIME_REQUIRED");
+      if (p.inboxEvaluation) {
+        const channel = this.repo.maybe("settings", "inbox-channel");
+        if (
+          !channel?.enabled ||
+          !Object.values(channel.channel.artistRefs).includes(p.artistId)
+        )
+          throw Error("INBOX_CHANNEL_REQUIRED");
+      }
       const saved = this.put("plan", {
         ...p,
         enabled: true,
@@ -191,11 +314,31 @@ export class ProductionFlowService {
     return this.repo.transaction(() => {
       const prior = this.rows("run").find((r) => r.requestId === i.requestId);
       if (prior) {
-        if (prior.planId !== i.planId) throw Error("IDEMPOTENCY_CONFLICT");
+        if (
+          prior.planId !== i.planId ||
+          (prior.inboxCandidateId ?? undefined) !== i.inboxCandidateId
+        )
+          throw Error("IDEMPOTENCY_CONFLICT");
         return prior;
       }
       const p = this.get("plan", i.planId),
         date = this.date(p);
+      if (!p.managedByPlanCenter)
+        assertLegacyScheduleEditable(this.repo, "production-flow", p.id);
+      if (p.managedCandidateId && p.managedCandidateId !== i.inboxCandidateId)
+        throw Error("MANAGED_INBOX_EVALUATION_CONFLICT");
+      if (!!p.inboxEvaluation !== !!i.inboxCandidateId)
+        throw Error("INBOX_EVALUATION_SOURCE_REQUIRED");
+      if (
+        p.inboxEvaluation &&
+        (!p.enabled || p.authorizationRevision !== p.revision)
+      )
+        throw Error("INBOX_EVALUATION_DISABLED");
+      const imported = i.inboxCandidateId
+        ? inboxEvaluationSource(this.repo, p, i.inboxCandidateId)
+        : null;
+      if (imported?.candidate.evaluation?.runId)
+        throw Error("INBOX_EVALUATION_ALREADY_STARTED");
       if (
         this.rows("run").filter(
           (r) => r.planId === p.id && r.budgetDate === date,
@@ -203,10 +346,11 @@ export class ProductionFlowService {
       )
         throw Error("DAILY_RUN_LIMIT");
       const id = randomUUID();
-      return this.put("run", {
+      const run: Row = {
         id,
         requestId: i.requestId,
         planId: p.id,
+        budgetScope: p.managedBudgetScope ?? p.id,
         planRevision: p.revision,
         plan: structuredClone(p),
         artistId: p.artistId,
@@ -237,14 +381,68 @@ export class ProductionFlowService {
         reasons: [],
         history: [{ stage: "candidate", at: this.now().toISOString() }],
         createdAt: this.now().toISOString(),
-      });
+      };
+      if (imported) {
+        run.inboxCandidateId = imported.candidate.id;
+        run.inboxItemHash = imported.candidate.itemHash;
+        run.inboxSourceDraftId = imported.draft.id;
+        run.inboxSourceHash = imported.sourceHash;
+        run.plan.theme = imported.draft.draft.storyBeat || p.theme;
+        run.candidate = importedFlowCandidate(
+          this.repo,
+          run,
+          imported.candidate.id,
+        );
+        run.versions = [run.candidate];
+        run.candidateApproved = true;
+        run.stage = "score";
+      }
+      return this.put("run", run);
     });
   }
   tick() {
     for (const plan of this.rows("plan").filter(
-      (p) => p.enabled && p.authorizationRevision === p.revision,
+      (p) =>
+        p.enabled &&
+        p.authorizationRevision === p.revision &&
+        !p.managedByPlanCenter &&
+        !isLegacyOwned(this.repo, "production-flow", p.id),
     )) {
       try {
+        if (plan.inboxEvaluation) {
+          for (const candidate of this.repo
+            .all("textCandidates")
+            .filter(
+              (c) =>
+                c.artistId === plan.artistId &&
+                c.isCurrent &&
+                c.lineageState === "complete" &&
+                c.localCheck?.status !== "failed" &&
+                !c.evaluation?.runId,
+            )) {
+            try {
+              this.trigger({
+                planId: plan.id,
+                requestId: candidate.id,
+                inboxCandidateId: candidate.id,
+              });
+            } catch (error) {
+              this.repo.save("textCandidates", {
+                ...candidate,
+                evaluationState: "model_blocked",
+                evaluation: {
+                  state: "model_blocked",
+                  reasons: [
+                    error instanceof Error
+                      ? error.message
+                      : "INBOX_EVALUATION_BLOCKED",
+                  ],
+                },
+              });
+            }
+          }
+          continue;
+        }
         const clock = this.maybe("clock", plan.id),
           now = this.now(),
           stamp = now.toISOString();
@@ -322,8 +520,29 @@ export class ProductionFlowService {
     return this.list();
   }
   private assertPlan(run: Row) {
-    if (this.get("plan", run.planId).revision !== run.planRevision)
+    const plan = this.get("plan", run.planId);
+    if (
+      !plan.managedByPlanCenter &&
+      isLegacyOwned(this.repo, "production-flow", plan.id)
+    )
+      throw Error("PLAN_CENTER_OWNS_SCHEDULE");
+    if (plan.revision !== run.planRevision)
       throw Error("PLAN_REVISION_CHANGED");
+    if (run.inboxCandidateId) {
+      if (!plan.enabled || plan.authorizationRevision !== plan.revision)
+        throw Error("INBOX_EVALUATION_DISABLED");
+      const source = inboxEvaluationSource(
+        this.repo,
+        plan,
+        run.inboxCandidateId,
+      );
+      if (
+        source.candidate.itemHash !== run.inboxItemHash ||
+        source.draft.id !== run.inboxSourceDraftId ||
+        (run.inboxSourceHash && source.sourceHash !== run.inboxSourceHash)
+      )
+        throw Error("INBOX_EVALUATION_SOURCE_CHANGED");
+    }
   }
   private profile(run: Row, type: "text" | "music") {
     const grant = run.plan[type];
@@ -549,6 +768,12 @@ export class ProductionFlowService {
             });
             return { run, task: null };
           }
+          if (
+            run.inboxCandidateId &&
+            run.plan.inboxEvaluation &&
+            run.plan.autoContinue
+          )
+            run = this.patch(run, { candidateApproved: true });
           if (!run.candidateApproved)
             return {
               run: this.patch(run, {
@@ -710,6 +935,13 @@ export class ProductionFlowService {
     });
   }
   private afterScore(run: Row, score: Row) {
+    if (run.inboxCandidateId && score.passed)
+      return this.patch(run, {
+        score,
+        stage: "score",
+        state: "completed",
+        reasons: [],
+      });
     if (score.passed)
       return this.patch(run, {
         score,
@@ -886,10 +1118,15 @@ export class ProductionFlowService {
       });
     });
   }
-  private budgetUsed(planId: string, date: string, unit: string) {
+  private budgetUsed(budgetScope: string, date: string, unit: string) {
     return this.repo
       .all("workflowLedger")
-      .filter((e) => e.planId === planId && e.date === date && e.unit === unit)
+      .filter(
+        (e) =>
+          (e.budgetScope ?? e.planId) === budgetScope &&
+          e.date === date &&
+          e.unit === unit,
+      )
       .reduce(
         (n, e) =>
           n +
@@ -908,6 +1145,7 @@ export class ProductionFlowService {
       operationId: op.id,
       runId: run.id,
       planId: run.planId,
+      budgetScope: op.budgetScope ?? run.plan.managedBudgetScope ?? run.planId,
       date: op.budgetDate,
       scope:
         op.unit === "usd_micro_estimate"
@@ -936,6 +1174,7 @@ export class ProductionFlowService {
       let reserved = 0,
         unit: string | null = null;
       const budgetDate = this.date(run.plan);
+      const budgetScope = run.plan.managedBudgetScope ?? run.planId;
       if (
         [
           "text_generate",
@@ -978,7 +1217,7 @@ export class ProductionFlowService {
                 run.textReservedMicros ||
             reserved >
               run.plan.text.budgetMicros -
-                this.budgetUsed(run.planId, budgetDate, unit)
+                this.budgetUsed(budgetScope, budgetDate, unit)
           )
             throw Error("TEXT_BUDGET_INSUFFICIENT");
         } else {
@@ -993,7 +1232,7 @@ export class ProductionFlowService {
                 run.musicReservedCredits ||
             reserved >
               run.plan.music.budgetCredits -
-                this.budgetUsed(run.planId, budgetDate, unit)
+                this.budgetUsed(budgetScope, budgetDate, unit)
           )
             throw Error("MUSIC_BUDGET_INSUFFICIENT");
         }
@@ -1012,6 +1251,7 @@ export class ProductionFlowService {
         kind: "production_flow",
         runId: run.id,
         planId: run.planId,
+        budgetScope,
         taskType: actual.type,
         accountRef: actual.profileId ?? run.plan.publication?.accountId ?? null,
         provider: actual.type.startsWith("text")
@@ -1222,8 +1462,10 @@ export class ProductionFlowService {
               candidateApproved: false,
             };
             {
-              state = "awaiting_approval";
-              reasons = ["CANDIDATE_REVIEW_REQUIRED"];
+              state = run.inboxCandidateId ? "ready" : "awaiting_approval";
+              reasons = run.inboxCandidateId
+                ? []
+                : ["CANDIDATE_REVIEW_REQUIRED"];
             }
           } else if (run.revisionCount < run.plan.maxRevisions) {
             change = { stage: "revise" };
@@ -1248,7 +1490,9 @@ export class ProductionFlowService {
           state =
             change.scoreRetries > run.plan.maxScoreRetries
               ? "failed"
-              : "blocked";
+              : run.inboxCandidateId
+                ? "ready"
+                : "blocked";
           reasons = ["TEXT_SCORE_INVALID"];
         }
       } else if (result.type === "music_submit") {

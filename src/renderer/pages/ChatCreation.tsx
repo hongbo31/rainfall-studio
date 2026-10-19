@@ -1,11 +1,7 @@
 import HelpNote from "../components/HelpNote";
 import React, { useEffect, useState } from "react";
 import { useStudio, PageHead, Badge, SelectArtist } from "../context";
-import TextConfiguration from "../components/TextConfiguration";
 import MusicCandidates from "../components/MusicCandidates";
-import DailyCandidates from "../components/DailyCandidates";
-import ProductionFlowWorkspace from "../components/ProductionFlowWorkspace";
-import TextCandidates from "../components/TextCandidates";
 import LiveMusicWorkspace from "../components/LiveMusicWorkspace";
 import LiveTextWorkspace from "../components/LiveTextWorkspace";
 const reasonNames: Record<string, string> = {
@@ -74,11 +70,8 @@ export default function ChatCreation() {
   return (
     <>
       <PageHead title="AI 聊天创作" />
-      {data.mode === "production" && <ProductionFlowWorkspace />}
       <LiveMusicWorkspace />
       <LiveTextWorkspace />
-      <TextConfiguration />
-      <TextCandidates />
       <p className="notice">
         {data.mode === "simulation"
           ? "离线样本"
@@ -87,7 +80,7 @@ export default function ChatCreation() {
       <HelpNote label="创作模式说明">
         {data.mode === "simulation"
           ? "离线原创 fixture：固定样本与模拟评分，不使用模型或网络；fixture credit 不是货币。"
-          : "每日候选与评分重试见上方生产流水线；真实模型需要 Key 和预算授权。下方对话用于保存想法。Codex/Claude 仅预留配置，dot 通过人工导出与文件导入，不会自动唤起。"}
+          : "手动准备本次文字或音乐创作，每次调用按当前确认的范围执行。账号、API与收件管理请前往配置中心。"}
       </HelpNote>
       <div className="split">
         <section className="panel">
@@ -249,7 +242,6 @@ export default function ChatCreation() {
           </div>
         </details>
       )}
-      {data.mode === "simulation" && <DailyCandidates />}
     </>
   );
 }

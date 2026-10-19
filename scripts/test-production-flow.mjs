@@ -9,6 +9,8 @@ const file = path.resolve("output/production-flow-build/flow.cjs"),
 for (const p of [
   "src/shared/production-flow.ts",
   "src/core/production-flow.ts",
+  "src/core/production-flow-inbox.ts",
+  "src/core/inbox/controller.ts",
 ])
   if (fs.existsSync(p)) entries.push(`export * from "./${p}";`);
 await build({

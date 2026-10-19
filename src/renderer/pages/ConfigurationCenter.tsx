@@ -6,12 +6,15 @@ import {
 } from "../../shared/platform-config";
 import PlatformConfigurationPanel from "../components/PlatformConfigurationPanel";
 import ApiSettings from "../components/ApiSettings";
+import TextConfiguration from "../components/TextConfiguration";
+import TextCandidates from "../components/TextCandidates";
 import Accounts from "./Accounts";
 import PublicationDiagnostics from "./PublicationDiagnostics";
 
 const categories = [
   ["platforms", "发布平台"],
   ["models", "模型 API"],
+  ["inbox", "收件管理"],
   ["artists", "艺人与预算"],
   ["diagnostics", "诊断与历史"],
 ] as const;
@@ -115,7 +118,12 @@ export default function ConfigurationCenter({
             </div>
           </>
         ) : category === "models" ? (
-          <ApiSettings compact />
+          <>
+            <ApiSettings compact />
+            <TextConfiguration />
+          </>
+        ) : category === "inbox" ? (
+          <TextCandidates />
         ) : category === "artists" ? (
           <Accounts showApi={false} compact />
         ) : (

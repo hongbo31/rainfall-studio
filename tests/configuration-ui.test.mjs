@@ -28,7 +28,7 @@ test("configuration categories and independent target form expose real defaults 
     "诊断与历史",
   ])
     assert.ok(html.includes(text), text);
-  assert.equal((html.match(/role="tab"/g) || []).length, 9);
+  assert.equal((html.match(/role="tab"/g) || []).length, 10);
   const platform = renderPlatform();
   for (const text of [
     "QQ 音乐配置",

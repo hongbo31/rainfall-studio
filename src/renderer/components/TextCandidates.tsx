@@ -2,8 +2,9 @@ import HelpNote from "./HelpNote";
 import React, { useEffect, useState } from "react";
 import { useStudio, Badge } from "../context";
 import MusicCandidates from "./MusicCandidates";
+const evaluationNames:Record<string,string>={model_pending:'等待模型评估',model_evaluating:'模型评估中',model_passed:'模型评估达标',model_failed:'未达质量阈值',model_error:'模型评估失败',model_blocked:'模型评估已阻塞',model_unknown:'结果未知，等待对账',model_stale:'素材已更新，评估失效'};
 export default function TextCandidates() {
-  const { data, call, notify } = useStudio();
+  const { data, call, notify, go } = useStudio();
   const [status, setStatus] = useState<any>({
     configured: false,
     active: false,
@@ -87,6 +88,7 @@ export default function TextCandidates() {
         dot 离线待交付与补交需父端配置，尚未验收。
       </HelpNote>
       <Badge>来源待核实</Badge>
+      <div className="section-title"><span>{status.modelEvaluation==='configured'?'自动评估由计划中心调度':status.modelEvaluation==='paused'?'自动评估已暂停':'尚未配置自动评估计划'}</span><button type="button" onClick={()=>go('plans')}>到计划中心配置评估</button></div>
       <HelpNote label="收件检查范围">
         导入只做本地检查，完整质量评分显示“待模型评分”；不会启动
         CLI、收费生成或发布。生产者自称 dot 不代表身份认证。
@@ -349,7 +351,7 @@ export default function TextCandidates() {
           <details className="panel" key={c.id}>
             <summary>
               {d?.title ?? c.externalItemId} · v{c.externalRevision} ·
-              待模型评分
+              {evaluationNames[c.evaluationState]??c.evaluationState}
             </summary>
             <details>
               <summary>来源与接收记录</summary>
@@ -374,6 +376,7 @@ export default function TextCandidates() {
                 ? "等待父版本补交"
                 : "版本关联完整"}
             </p>
+            {c.evaluation&&<div><p>{evaluationNames[c.evaluationState]??c.evaluationState}{c.evaluation.score?.source==='model-scored'&&` · ${c.evaluation.score.overall} / ${c.evaluation.score.threshold}`}</p>{c.evaluation.reasons?.length>0&&<p role="status">{c.evaluation.reasons.join(' · ')}</p>}{c.evaluation.coverState==='refresh_required'&&<p>改写稿需更新匹配封面</p>}</div>}
             <p>
               {d?.language} · {d?.style} · {d?.storyBeat}
             </p>

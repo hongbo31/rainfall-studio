@@ -165,6 +165,10 @@ if (port) {
     if(method==='internal.liveMusic.retryDownloads'){const c=liveMusicContext(studio);if(!c)throw Error('LIVE_ATTEMPT_REQUIRED');return studio.musicService().retryDownloads(c.operation.id)}
     if(method==='internal.liveMusic.recover'){const c=liveMusicContext(studio,input.id);if(!c)throw Error('LIVE_ATTEMPT_REQUIRED');return studio.musicService().recoverAccepted(c.operation.id,input.result)}
     if (method === "internal.pauseAutomation") {
+      const center=studio.planCenterService();
+      for(const p of center.list().plans.filter(p=>p.enabled))center.toggle({id:p.id,expectedRevision:p.revision,enabled:false});
+      for(const r of center.list().runs.filter(r=>!['completed','stopped'].includes(r.state)))center.stop({runId:r.id});
+      for(const p of studio.all('plans').filter(p=>p.enabled))studio.save('plans',{...p,enabled:false});
       if(studio.mode==='production')studio.productionFlowService().pauseAll();
       for (const p of studio.all("dailyPlans"))
         studio.save("dailyPlans", { ...p, state: "paused", enabled: false });

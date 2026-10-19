@@ -4,6 +4,7 @@ import { GenerateTurnSchema, TextConfigurationSchema } from "./creation";
 import { MusicRequestSchema } from "./music";
 import { DailyPlanInputSchema, SelectionSchema } from "./daily";
 import { InboxSetupSchema } from "./inbox";
+import {PlanCenterSaveSchema,PlanCenterToggleSchema,PlanCenterIdSchema,PlanCenterRunSchema,PlanCenterStopSchema,PlanCenterRetrySchema} from './plan-center';
 import { TmeInputSchema } from './tme';
 import { CoverRequestSchema } from './cover-handoff';
 import { TmeObservationSchemas } from './tme-observations';
@@ -220,6 +221,17 @@ export const methodSchemas: Record<string, z.ZodType> = {
   "goal.complete": z.object({ workId: id, planId: id.optional() }),
 };
 export function validate(method: string, input: unknown) {
+  const planSchemas:Record<string,z.ZodType>={
+    'planCenter.list':z.strictObject({}),'planCenter.catalog':z.strictObject({}),
+    'planCenter.save':PlanCenterSaveSchema,'planCenter.toggle':PlanCenterToggleSchema,
+    'planCenter.preview':PlanCenterIdSchema,'planCenter.run':PlanCenterRunSchema,
+    'planCenter.stop':PlanCenterStopSchema,'planCenter.retry':PlanCenterRetrySchema,
+    'planCenter.rollbackMigration':z.strictObject({}),'planCenter.legacyHistory':PlanCenterIdSchema,
+  };
+  if(method.startsWith('planCenter.')){
+    if(!planSchemas[method])throw Error('METHOD_NOT_ALLOWED');
+    return planSchemas[method].parse(input??{});
+  }
   const schema = methodSchemas[method];
   if (!schema) throw new Error("METHOD_NOT_ALLOWED");
   return schema.parse(input ?? {});

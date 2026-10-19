@@ -3,6 +3,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { DateTime } from "luxon";
+import {PlanCenterService,isLegacyOwned} from './plan-center';
+import {assertLegacyScheduleEditable} from './plan-center-ownership';
+import {createPlanCenterService,executePlanCenter,tickPlanCenter} from './plan-center-integration';
 import { Repository, hash, type Row, type Table } from "./database";
 import { validate, defaultsSchema } from "../shared/schemas";
 import type { Mode } from "../shared/contracts";
@@ -67,6 +70,11 @@ export class Studio {
   private tme?: TmeDraftService;
   private liveText?: LiveTextService;
   private productionFlow?: ProductionFlowService;
+  private planCenter?: PlanCenterService;
+  planCenterService(){
+    if(!this.planCenter||this.planCenter.repo!==this.repo)this.planCenter=createPlanCenterService(this);
+    return this.planCenter;
+  }
   private tmeAiPrepare?: TmeAiPrepareService;
   tmeAiPrepareService(){
     if(!this.tmeAiPrepare||this.tmeAiPrepare.repo!==this.repo)this.tmeAiPrepare=createTmeAiPrepareService(this);
@@ -326,6 +334,7 @@ export class Studio {
     this.save("series", series);
   }
   async call(method: string, input: any = {}) {
+    if(method.startsWith('planCenter.'))return executePlanCenter(this,method,input);
     const v: any = validate(method, input);
     if(method.startsWith('publish.')&&v.id&&['batches','units'].some(table=>this.repo.maybe(table as 'batches'|'units',v.id)?.kind==='tme_uia'))throw Error('TME_SPECIALIZED_CHANNEL_REQUIRED');
     switch (method) {
@@ -605,6 +614,7 @@ export class Studio {
       case "plan.save":
         return this.savePlan(v);
       case "plan.toggle": {
+        if(isLegacyOwned(this.repo,'plans',v.id))throw Error('PLAN_CENTER_OWNS_SCHEDULE');
         const p = this.get("plans", v.id);
         p.enabled = v.enabled;
         this.save("plans", p);
@@ -613,6 +623,7 @@ export class Studio {
       case "plan.preview":
         return this.preview(this.get("plans", v.id));
       case "plan.run": {
+        if(isLegacyOwned(this.repo,'plans',v.id))throw Error('PLAN_CENTER_OWNS_SCHEDULE');
         const p = this.get("plans", v.id);
         return this.startCreation({
           artistId: p.artistId,
@@ -1026,6 +1037,7 @@ export class Studio {
     });
   }
   savePlan(v: any) {
+    assertLegacyScheduleEditable(this.repo,'plans',v.id);
     if (!DateTime.now().setZone(v.timezone).isValid)
       throw Error("TIMEZONE_INVALID");
     const [h, m] = v.time.split(":").map(Number);
@@ -1064,6 +1076,7 @@ export class Studio {
     return list;
   }
   async tick() {
+    tickPlanCenter(this);
     if(this.mode==='production')this.productionFlowService().tick();
     if (Date.now() - this.inboxTickAt >= 5000) {
       this.inboxTickAt = Date.now();
@@ -1079,7 +1092,7 @@ export class Studio {
       from = this.lastTick;
     this.lastTick = now;
     if (now.getTime() - from.getTime() <= 90000 && now >= from) {
-      for (const p of this.all("plans").filter((p) => p.enabled)) {
+      for (const p of this.all("plans").filter((p) => p.enabled&&!isLegacyOwned(this.repo,'plans',p.id))) {
         const date = DateTime.fromJSDate(now, {
           zone: p.timezone,
         }).toISODate()!;

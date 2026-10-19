@@ -86,7 +86,7 @@ export function localFlowDraft(
 export function flowCandidate(
   run: Row,
   draftInput: unknown,
-  source: "local_template" | "deepseek-api",
+  source: "local_template" | "deepseek-api" | "local-inbox",
   provenance: Row = {},
 ) {
   const draft = parseDraft(draftInput),
@@ -115,7 +115,9 @@ export function flowCandidate(
       promptVersion:
         source === "local_template"
           ? "local-template-v1"
-          : "deepseek-creative-json-v1",
+          : source === "local-inbox"
+            ? provenance.promptVersion
+            : "deepseek-creative-json-v1",
     },
     lockedSpans: [],
     capability: {
@@ -131,7 +133,12 @@ export function flowCandidate(
   return {
     id,
     source,
-    method: source === "local_template" ? "rule_based" : "model",
+    method:
+      source === "local_template"
+        ? "rule_based"
+        : source === "local-inbox"
+          ? "imported"
+          : "model",
     revision: run.revisionCount,
     parentCandidateId: run.candidate?.id ?? null,
     draft,

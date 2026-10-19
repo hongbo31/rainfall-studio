@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 import "./ui-system.css";
+import "./plan-center.css";
+import PlanCenter from "./pages/PlanCenter";
 import HelpHint from "./components/HelpHint";
 import { clientVersionLabel } from "./client-version";
 import { Context, Badge } from "./context";
@@ -20,11 +22,12 @@ import {
 } from "../shared/platform-config";
 import ChatCreation from "./pages/ChatCreation";
 const pages = [
-  ["chat", "✦", "AI 聊天创作"],
-  ["overview", "◒", "总览"],
-  ["create", "✧", "本地模板"],
+  ["plans", "◷", "计划中心"],
+  ["chat", "♫", "创作中心"],
+  ["overview", "◫", "总览"],
+  ["create", "✎", "手动模板"],
   ["library", "▤", "作品库"],
-  ["cover", "◩", "封面工作室"],
+  ["cover", "▧", "封面工作室"],
   ["publish", "↗", "发布中心"],
   ["insights", "▥", "数据看板"],
   ["accounts", "⚙", "配置中心"],
@@ -108,7 +111,7 @@ function App() {
     const r = await window.rainfall.call(method, input);
     if (!r.ok) {
       notify(r.error.message);
-      throw Error(r.error.message);
+      throw Object.assign(Error(r.error.message),{code:r.error.code});
     }
     await refresh();
     return r.value;
@@ -179,6 +182,7 @@ function App() {
   const title = pages.find((x) => x[0] === page)?.[2] || "作品详情";
   return (
     <Context.Provider value={context}>
+      {runtime.previewFixture&&<div className="plan-fixture-ribbon">离线交互演示 · 全部账号与数据为隔离测试样本</div>}
       {switching && (
         <div className="mode-screen" role="status">
           <h2>正在切换独立工作区…</h2>
@@ -268,7 +272,9 @@ function App() {
           </div>
         </header>
         <div id="content">
-          {page === "chat" ? (
+          {page === "plans" ? (
+            <PlanCenter />
+          ) : page === "chat" ? (
             <ChatCreation />
           ) : page === "overview" ? (
             <Overview />

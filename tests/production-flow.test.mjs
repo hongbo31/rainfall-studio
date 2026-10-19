@@ -973,3 +973,657 @@ test("global pause blocks every unfinished run and preserves an in-flight receip
   assert.equal(saved.textSpentMicros, 270);
   assert.equal(x.service.next({ id: run.id }).task, null);
 });
+function inboxStart(x, patch = {}) {
+  const id = randomUUID(),
+    draftId = randomUUID(),
+    channelId = randomUUID();
+  x.repo.save("settings", {
+    id: "inbox-channel",
+    enabled: true,
+    revision: 1,
+    channel: {
+      id: channelId,
+      workspaceId: randomUUID(),
+      workspaceRef: "test",
+      artistRefs: { creator: x.plan.artistId },
+      seriesRefs: {},
+    },
+  });
+  x.repo.save("drafts", {
+    id: draftId,
+    artistId: x.plan.artistId,
+    seriesId: null,
+    source: "local-inbox",
+    draft: draft(),
+  });
+  x.repo.save("textCandidates", {
+    id,
+    draftId,
+    artistId: x.plan.artistId,
+    seriesId: null,
+    source: { channelId, provenance: { model: null, promptVersion: null } },
+    isCurrent: true,
+    lineageState: "complete",
+    evaluationState: "model_pending",
+    localCheck: {
+      status: "pending",
+      issues: [{ code: "CAPABILITY_UNKNOWN", evidence: [] }],
+    },
+    externalItemId: "offline-original",
+    externalRevision: 1,
+    itemHash: "a".repeat(64),
+  });
+  const p = x.service.savePlan({
+    plan: {
+      ...x.plan,
+      inboxEvaluation: true,
+      localTime: null,
+      candidateMode: "deepseek",
+      scoreMode: "deepseek",
+      text: x.text,
+      autoContinue: true,
+      ...patch,
+    },
+    expectedRevision: null,
+  });
+  x.service.enable({ id: p.id, expectedRevision: p.revision });
+  return { id, draftId, p };
+}
+function evaluationReceipt(claim, level = 80, invalid = false) {
+  const request = claim.task.request;
+  const phrase = request.pair.lyrics
+    .split("\n")
+    .find((s) => s.length >= 4 && !s.startsWith("["));
+  return {
+    type: "text_score",
+    result: {
+      operationId: claim.operation.id,
+      revisionId: request.revisionId,
+      requestedModelId: "deepseek-flash",
+      status: invalid ? "invalid" : "complete",
+      providerRequestId: "offline-score-" + claim.operation.id,
+      providerModel: "deepseek-flash",
+      finishReason: invalid ? "length" : "stop",
+      usage: {
+        prompt_tokens: 100,
+        completion_tokens: 200,
+        prompt_cache_hit_tokens: 0,
+        prompt_cache_miss_tokens: 100,
+      },
+      estimatedCostMicros: 270,
+      priceVersion: "deepseek-peak-usd-2026-10-16",
+      score: invalid
+        ? null
+        : {
+            revisionId: request.revisionId,
+            dimensions: { lyrics: level, style: level, coherence: level },
+            overall: level,
+            findings: [
+              '[lyrics] "' +
+                phrase +
+                '" supports the stated scene with concrete details and consistent tone.',
+            ],
+            threshold: request.threshold,
+            passed: level >= request.threshold,
+            source: "model-scored",
+            calibration: "not_human_calibrated",
+          },
+      reasons: invalid ? ["TEXT_FINISH_NOT_STOP"] : [],
+      httpStatus: 200,
+    },
+  };
+}
+function recordInboxScore(x, run, level = 80, invalid = false) {
+  const claim = claimNext(x, run.id);
+  assert.equal(claim.task.type, "text_score");
+  x.service.record({
+    id: run.id,
+    operationId: claim.operation.id,
+    result: evaluationReceipt(claim, level, invalid),
+  });
+  return x.service.context(run.id).run;
+}
+function recordInboxRewrite(x, run) {
+  const claim = claimNext(x, run.id);
+  assert.equal(claim.task.type, "text_generate");
+  x.service.record({
+    id: run.id,
+    operationId: claim.operation.id,
+    result: {
+      type: "text_generate",
+      result: {
+        operationId: claim.operation.id,
+        requestedModelId: "deepseek-flash",
+        status: "complete",
+        providerRequestId: "offline-rewrite-" + claim.operation.id,
+        providerModel: "deepseek-flash",
+        finishReason: "stop",
+        usage: {
+          prompt_tokens: 100,
+          completion_tokens: 200,
+          prompt_cache_hit_tokens: 0,
+          prompt_cache_miss_tokens: 100,
+        },
+        estimatedCostMicros: 270,
+        priceVersion: "deepseek-peak-usd-2026-10-16",
+        draft: draft(),
+        reasons: [],
+        httpStatus: 200,
+      },
+    },
+  });
+  return x.service.context(run.id).run;
+}
+
+test("inbox evaluation automatically scores a current imported revision without human approval or music work", (t) => {
+  const x = setup(t),
+    s = inboxStart(x);
+  x.service.tick();
+  const runs = x.service.list().runs;
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0].inboxCandidateId, s.id);
+  assert.equal(x.service.next({ id: runs[0].id }).task.type, "text_score");
+  const done = recordInboxScore(x, runs[0]);
+  assert.equal(done.state, "completed");
+  assert.equal(x.works(), 0);
+  assert.equal(x.repo.all("works").length, 0);
+  const c = x.repo.get("textCandidates", s.id);
+  assert.equal(c.evaluationState, "model_passed");
+  assert.equal(c.evaluation.score.source, "model-scored");
+  assert.equal(c.evaluation.score.overall, 80);
+  assert.equal(c.draftId, s.draftId);
+  assert.equal(
+    x.repo.all("operations").every((o) => o.taskType === "text_score"),
+    true,
+  );
+  x.service.tick();
+  assert.equal(x.service.list().runs.length, 1);
+});
+test("inbox quality failure automatically rewrites and rescores at most twice, preserving the imported draft", (t) => {
+  const x = setup(t),
+    s = inboxStart(x);
+  const original = structuredClone(x.repo.get("drafts", s.draftId));
+  x.service.tick();
+  let run = x.service.list().runs[0];
+  run = recordInboxScore(x, run, 30);
+  assert.equal(run.stage, "revise");
+  for (let n = 0; n < 2; n++) {
+    run = recordInboxRewrite(x, run);
+    assert.notEqual(run.state, "awaiting_approval");
+    run = recordInboxScore(x, run, 30);
+  }
+  assert.equal(run.state, "failed");
+  assert.ok(run.reasons.includes("REVISION_LIMIT"));
+  assert.equal(run.revisionCount, 2);
+  assert.equal(
+    x.repo.get("textCandidates", s.id).evaluationState,
+    "model_failed",
+  );
+  assert.deepEqual(x.repo.get("drafts", s.draftId), original);
+  assert.equal(x.repo.all("operations").length, 5);
+  assert.equal(x.works(), 0);
+  assert.equal(x.service.next({ id: run.id }).task, null);
+});
+test("inbox invalid model response retries only bounded scoring, while unknown outcomes never replay", (t) => {
+  const x = setup(t),
+    s = inboxStart(x, { maxScoreRetries: 1 });
+  x.service.tick();
+  let run = x.service.list().runs[0];
+  run = recordInboxScore(x, run, 80, true);
+  assert.equal(run.state, "ready");
+  run = recordInboxScore(x, run, 80, true);
+  assert.equal(run.state, "failed");
+  assert.equal(x.repo.all("operations").length, 2);
+  assert.equal(x.works(), 0);
+  assert.equal(
+    x.repo.get("textCandidates", s.id).evaluationState,
+    "model_error",
+  );
+});
+test("inbox evaluation cannot use rule scores, music grants, missing consent or publication grants", (t) => {
+  const x = setup(t);
+  for (const patch of [
+    { scoreMode: "rule_based" },
+    { music: x.music },
+    { publication: x.publication },
+    { text: null },
+    { autoContinue: false },
+    { candidateMode: "local_template" },
+  ])
+    assert.throws(() =>
+      x.service.savePlan({
+        plan: {
+          ...x.plan,
+          inboxEvaluation: true,
+          candidateMode: "deepseek",
+          scoreMode: "deepseek",
+          text: x.text,
+          autoContinue: true,
+          ...patch,
+        },
+        expectedRevision: null,
+      }),
+    );
+  assert.equal(x.repo.all("operations").length, 0);
+});
+test("inbox source edit and pause prevent further claims, without disabling other plans", (t) => {
+  const x = setup(t),
+    s = inboxStart(x);
+  x.service.tick();
+  const run = x.service.list().runs[0];
+  x.repo.save("textCandidates", {
+    ...x.repo.get("textCandidates", s.id),
+    isCurrent: false,
+  });
+  assert.throws(() => claimNext(x, run.id), /INBOX_EVALUATION_SOURCE_CHANGED/);
+  assert.equal(x.repo.all("operations").length, 0);
+});
+test("inbox evaluation budget is enforced before any request and a pending platform limit is not a quality failure", (t) => {
+  const x = setup(t),
+    s = inboxStart(x, { text: { ...x.text, budgetMicros: 1 } });
+  x.service.tick();
+  const run = x.service.list().runs[0];
+  assert.equal(x.service.next({ id: run.id }).task.type, "text_score");
+  assert.throws(() => claimNext(x, run.id), /TEXT_BUDGET_INSUFFICIENT/);
+  assert.equal(x.repo.all("operations").length, 0);
+  assert.equal(x.works(), 0);
+});
+
+test("inbox unknown scoring freezes the profile across restart and never starts another request", (t) => {
+  const x = setup(t),
+    s = inboxStart(x);
+  x.service.tick();
+  const run = x.service.list().runs[0],
+    claim = claimNext(x, run.id);
+  x.service.record({
+    id: run.id,
+    operationId: claim.operation.id,
+    result: {
+      type: "text_score",
+      status: "unknown",
+      reason: "NETWORK_OUTCOME_UNKNOWN",
+    },
+  });
+  const restarted = new w.ProductionFlowService(x.repo, x.options);
+  restarted.tick();
+  const current = restarted.context(run.id).run;
+  assert.equal(current.state, "unknown");
+  assert.equal(restarted.next({ id: run.id }).task, null);
+  assert.throws(
+    () => restarted.retry({ id: run.id, expectedRevision: current.revision }),
+    /OUTCOME_UNKNOWN/,
+  );
+  assert.equal(x.repo.all("operations").length, 1);
+  assert.equal(
+    x.repo.get("textCandidates", s.id).evaluationState,
+    "model_unknown",
+  );
+  assert.ok(current.textReservedMicros > 0);
+});
+
+test("inbox scoring keeps platform capability pending and never overwrites the original cover", (t) => {
+  const x = setup(t),
+    s = inboxStart(x);
+  const original = x.repo.get("drafts", s.draftId);
+  x.repo.save("drafts", {
+    ...original,
+    cover: { assetId: randomUUID(), sha256: sha },
+  });
+  const saved = structuredClone(x.repo.get("drafts", s.draftId));
+  x.service.tick();
+  let run = recordInboxScore(x, x.service.list().runs[0], 30);
+  run = recordInboxRewrite(x, run);
+  run = recordInboxScore(x, run, 85);
+  const candidate = x.repo.get("textCandidates", s.id);
+  assert.equal(run.state, "completed");
+  assert.equal(candidate.evaluation.coverState, "refresh_required");
+  assert.equal(candidate.localCheck.status, "pending");
+  assert.equal(candidate.localCheck.issues[0].code, "CAPABILITY_UNKNOWN");
+  assert.deepEqual(x.repo.get("drafts", s.draftId), saved);
+  assert.notEqual(candidate.evaluation.currentDraftId, s.draftId);
+  assert.equal(
+    x.repo.get("drafts", candidate.evaluation.currentDraftId).source,
+    "inbox-evaluation",
+  );
+  assert.equal(
+    x.repo.get("drafts", candidate.evaluation.currentDraftId).cover,
+    undefined,
+  );
+});
+
+test("inbox source body mutation, channel pause and plan disable each prevent a new claim", (t) => {
+  for (const change of ["draft", "channel", "plan"]) {
+    const x = setup(t),
+      s = inboxStart(x);
+    x.service.tick();
+    const run = x.service.list().runs[0];
+    if (change === "draft") {
+      const source = x.repo.get("drafts", s.draftId);
+      x.repo.save("drafts", {
+        ...source,
+        draft: { ...source.draft, title: "Changed after import" },
+      });
+    } else if (change === "channel") {
+      const channel = x.repo.get("settings", "inbox-channel");
+      x.repo.save("settings", { ...channel, enabled: false });
+    } else x.service.disable({ id: s.p.id, expectedRevision: s.p.revision });
+    assert.throws(
+      () => claimNext(x, run.id),
+      /INBOX_EVALUATION_(SOURCE_CHANGED|DISABLED)/,
+    );
+    assert.equal(x.repo.all("operations").length, 0);
+  }
+});
+
+test("inbox requests share profile concurrency and reserve the plan daily budget before dispatch", (t) => {
+  const x = setup(t),
+    s = inboxStart(x, { maxRunsPerDay: 2 });
+  const candidate = x.repo.get("textCandidates", s.id),
+    otherId = randomUUID();
+  x.repo.save("textCandidates", {
+    ...candidate,
+    id: otherId,
+    externalItemId: "offline-other",
+  });
+  x.service.tick();
+  const [first, second] = x.service.list().runs;
+  const claimed = claimNext(x, first.id);
+  assert.throws(() => claimNext(x, second.id), /FLOW_PROVIDER_BUSY/);
+  x.service.record({
+    id: first.id,
+    operationId: claimed.operation.id,
+    result: evaluationReceipt(claimed),
+  });
+  assert.equal(claimNext(x, second.id).task.type, "text_score");
+  assert.equal(x.repo.all("operations").length, 2);
+  assert.ok(x.repo.all("workflowLedger").some((e) => e.kind === "reserve"));
+});
+
+test("inbox default scoring retries stop after the initial response and two invalid retries", (t) => {
+  const x = setup(t);
+  inboxStart(x);
+  x.service.tick();
+  let run = x.service.list().runs[0];
+  for (let i = 0; i < 3; i++) run = recordInboxScore(x, run, 80, true);
+  assert.equal(run.state, "failed");
+  assert.equal(run.scoreRetries, 3);
+  assert.equal(run.revisionCount, 0);
+  assert.equal(x.repo.all("operations").length, 3);
+  assert.throws(
+    () => x.service.retry({ id: run.id, expectedRevision: run.revision }),
+    /SCORE_RETRY_LIMIT/,
+  );
+});
+
+function managedInboxStart(x, overrides = {}) {
+  const s = inboxStart(x);
+  x.service.disable({ id: s.p.id, expectedRevision: s.p.revision });
+  const input = {
+    ownerKey: "plan-center:offline-run:item:score:1",
+    candidateId: s.id,
+    artistId: x.plan.artistId,
+    text: x.text,
+    threshold: 75,
+    maxRevisions: 2,
+    maxScoreRetries: 2,
+    ...overrides,
+  };
+  return { ...s, input, run: x.service.startManagedInboxEvaluation(input) };
+}
+
+test("managed inbox entry is stable, text-only and excluded from legacy candidate scheduling", (t) => {
+  const x = setup(t),
+    s = managedInboxStart(x);
+  const candidate = x.repo.get("textCandidates", s.id);
+  x.repo.save("textCandidates", {
+    ...candidate,
+    id: randomUUID(),
+    externalItemId: "unowned",
+    evaluation: null,
+  });
+  x.service.tick();
+  assert.equal(x.service.list().runs.length, 1);
+  assert.equal(x.service.startManagedInboxEvaluation(s.input).id, s.run.id);
+  const plan = x.service.context(s.run.id).plan;
+  assert.equal(plan.managedByPlanCenter, true);
+  assert.equal(plan.managedCandidateId, s.id);
+  assert.equal(plan.localTime, null);
+  assert.equal(plan.music, null);
+  assert.equal(plan.publication, null);
+  assert.throws(
+    () =>
+      x.service.startManagedInboxEvaluation({
+        ...s.input,
+        text: { ...x.text, budgetMicros: 999 },
+      }),
+    /MANAGED_INBOX_EVALUATION_CONFLICT/,
+  );
+  assert.throws(
+    () => x.service.startManagedInboxEvaluation({ ...s.input, threshold: 76 }),
+    /MANAGED_INBOX_EVALUATION_CONFLICT/,
+  );
+  const run = recordInboxScore(x, s.run);
+  assert.equal(run.state, "completed");
+  assert.equal(x.service.startManagedInboxEvaluation(s.input).id, run.id);
+  assert.equal(x.repo.all("operations").length, 1);
+});
+
+test("stopping one managed evaluation preserves its in-flight receipt and never reenables its grant", (t) => {
+  const x = setup(t),
+    s = managedInboxStart(x),
+    claim = claimNext(x, s.run.id);
+  const other = x.service.savePlan({
+    plan: { ...x.plan, id: randomUUID() },
+    expectedRevision: null,
+  });
+  x.service.enable({ id: other.id, expectedRevision: other.revision });
+  const stopped = x.service.stopManagedInboxEvaluation(s.input.ownerKey);
+  assert.equal(stopped.state, "dispatching");
+  const received = x.service.record({
+    id: s.run.id,
+    operationId: claim.operation.id,
+    result: evaluationReceipt(claim, 30),
+  });
+  assert.equal(received.state, "blocked");
+  assert.ok(received.reasons.includes("AUTOMATION_PAUSED"));
+  assert.equal(received.textSpentMicros, 270);
+  assert.equal(x.service.startManagedInboxEvaluation(s.input).id, received.id);
+  assert.equal(x.service.next({ id: received.id }).task, null);
+  assert.throws(
+    () =>
+      x.service.claim({ id: received.id, expectedRevision: received.revision }),
+    /INBOX_EVALUATION_DISABLED/,
+  );
+  assert.equal(
+    x.service.list().plans.find((p) => p.id === other.id).enabled,
+    true,
+  );
+  assert.equal(x.repo.all("operations").length, 1);
+});
+
+test("managed unknown outcomes remain frozen after stop, restart and repeated start", (t) => {
+  const x = setup(t),
+    s = managedInboxStart(x),
+    claim = claimNext(x, s.run.id);
+  x.service.record({
+    id: s.run.id,
+    operationId: claim.operation.id,
+    result: {
+      type: "text_score",
+      status: "unknown",
+      reason: "OUTCOME_UNKNOWN",
+    },
+  });
+  x.service.stopManagedInboxEvaluation(s.input.ownerKey);
+  const restarted = new w.ProductionFlowService(x.repo, x.options);
+  const same = restarted.startManagedInboxEvaluation(s.input);
+  assert.equal(same.state, "unknown");
+  assert.equal(restarted.context(same.id).plan.enabled, false);
+  assert.equal(x.repo.all("operations").length, 1);
+});
+
+test("inbox controller reports real evaluation configuration and paused state", (t) => {
+  const x = setup(t),
+    controller = new w.InboxController(
+      x.repo,
+      path.resolve("output/inbox-status-fixture"),
+    );
+  assert.equal(controller.status().modelEvaluation, "configuration_required");
+  const s = inboxStart(x);
+  assert.equal(controller.status().modelEvaluation, "configured");
+  assert.equal(
+    controller.status().inboxEvaluationStatus.plans[0].threshold,
+    75,
+  );
+  x.service.disable({ id: s.p.id, expectedRevision: s.p.revision });
+  assert.equal(controller.status().modelEvaluation, "paused");
+});
+
+test("inbox daily budget includes earlier runs before any new operation is persisted", (t) => {
+  const x = setup(t),
+    s = inboxStart(x);
+  x.service.tick();
+  const run = x.service.list().runs[0];
+  x.repo.append("workflowLedger", {
+    id: randomUUID(),
+    eventKey: "offline-prior-reserve",
+    operationId: randomUUID(),
+    runId: randomUUID(),
+    planId: s.p.id,
+    date: run.budgetDate,
+    scope: "production_flow_text",
+    kind: "reserve",
+    amount: x.text.budgetMicros,
+    unit: "usd_micro_estimate",
+    at: run.createdAt,
+  });
+  assert.equal(run.textSpentMicros, 0);
+  assert.throws(() => claimNext(x, run.id), /TEXT_BUDGET_INSUFFICIENT/);
+  assert.equal(x.repo.all("operations").length, 0);
+  assert.equal(x.repo.all("workflowLedger").length, 1);
+});
+
+function managedBudgetPair(t) {
+  const probe = setup(t),
+    sample = managedInboxStart(probe);
+  const amount = claimNext(probe, sample.run.id).operation.reservedAmount;
+  const x = setup(t),
+    scope = "unified-plan:" + randomUUID();
+  const first = managedInboxStart(x, {
+    budgetScope: scope,
+    text: { ...x.text, budgetMicros: amount + 269 },
+  });
+  const otherId = randomUUID(),
+    otherProfile = randomUUID();
+  x.repo.save("textCandidates", {
+    ...x.repo.get("textCandidates", first.id),
+    id: otherId,
+    externalItemId: "other-budget-item",
+    evaluation: null,
+  });
+  x.repo.save("settings", {
+    ...x.repo.get("settings", "api-profile:" + x.text.profileId),
+    id: "api-profile:" + otherProfile,
+  });
+  const secondInput = {
+    ...first.input,
+    ownerKey: "plan-center:second-owner:score",
+    candidateId: otherId,
+    text: { ...first.input.text, profileId: otherProfile },
+  };
+  const second = x.service.startManagedInboxEvaluation(secondInput);
+  return { x, scope, first, second, secondInput, amount };
+}
+
+test("managed item plans debit one shared daily budget while retaining their actual plan identities", (t) => {
+  const { x, scope, first, second, amount } = managedBudgetPair(t);
+  const claim = claimNext(x, first.run.id);
+  assert.equal(claim.operation.reservedAmount, amount);
+  assert.equal(claim.operation.planId, first.run.planId);
+  assert.equal(claim.operation.budgetScope, scope);
+  assert.equal(x.service.context(second.id).plan.managedBudgetScope, scope);
+  assert.notEqual(first.run.planId, second.planId);
+  x.service.record({
+    id: first.run.id,
+    operationId: claim.operation.id,
+    result: evaluationReceipt(claim),
+  });
+  assert.throws(() => claimNext(x, second.id), /TEXT_BUDGET_INSUFFICIENT/);
+  assert.equal(x.repo.all("operations").length, 1);
+  const entries = x.repo.all("workflowLedger");
+  assert.ok(
+    entries.every(
+      (e) => e.budgetScope === scope && e.planId === first.run.planId,
+    ),
+  );
+  assert.equal(
+    entries.reduce(
+      (sum, e) =>
+        sum +
+        (e.kind === "reserve"
+          ? e.amount
+          : e.kind === "release"
+            ? -e.amount
+            : 0),
+      0,
+    ),
+    270,
+  );
+});
+
+test("two managed owners cannot reserve the same shared budget through separate repository connections", (t) => {
+  const { x, first, second } = managedBudgetPair(t);
+  const otherRepo = new w.Repository(x.repo.filename);
+  t.after(() => otherRepo.close());
+  const otherService = new w.ProductionFlowService(otherRepo, x.options);
+  claimNext(x, first.run.id);
+  const pending = otherService.next({ id: second.id });
+  assert.throws(
+    () =>
+      otherService.claim({
+        id: second.id,
+        expectedRevision: pending.run.revision,
+      }),
+    /TEXT_BUDGET_INSUFFICIENT/,
+  );
+  assert.equal(otherRepo.all("operations").length, 1);
+  assert.equal(
+    otherRepo.all("workflowLedger").filter((e) => e.kind === "reserve").length,
+    1,
+  );
+});
+
+test("managed shared reserves survive an unknown restart and use Beijing dates for the next daily budget", (t) => {
+  const { x, scope, first, second, secondInput } = managedBudgetPair(t);
+  x.now("2026-10-19T15:59:00Z");
+  const claimed = claimNext(x, first.run.id);
+  assert.equal(claimed.operation.budgetDate, "2026-10-19");
+  const restarted = new w.ProductionFlowService(x.repo, x.options);
+  assert.equal(restarted.context(first.run.id).run.state, "unknown");
+  assert.equal(
+    restarted.startManagedInboxEvaluation(secondInput).id,
+    second.id,
+  );
+  let pending = restarted.next({ id: second.id });
+  assert.throws(
+    () =>
+      restarted.claim({
+        id: second.id,
+        expectedRevision: pending.run.revision,
+      }),
+    /TEXT_BUDGET_INSUFFICIENT/,
+  );
+  assert.equal(
+    x.repo.all("workflowLedger").some((e) => e.kind === "release"),
+    false,
+  );
+  x.now("2026-10-19T16:00:00Z");
+  pending = restarted.next({ id: second.id });
+  const nextDay = restarted.claim({
+    id: second.id,
+    expectedRevision: pending.run.revision,
+  });
+  assert.equal(nextDay.operation.budgetDate, "2026-10-20");
+  assert.equal(nextDay.operation.budgetScope, scope);
+  assert.equal(x.repo.all("operations").length, 2);
+});

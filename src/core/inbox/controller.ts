@@ -7,6 +7,7 @@ import { InboxService, inboxHash } from "./service";
 import { InboxReceiver } from "./receiver";
 import { DotDeliveryReceiver } from "./dot-delivery-receiver";
 import { DotDeliveryStore } from "./dot-delivery-store";
+import { inboxEvaluationStatus } from "../production-flow-inbox";
 import {
   DotDeliveryBridge,
   validateBridgeProject,
@@ -122,6 +123,7 @@ export class InboxController {
   status() {
     const saved = this.repo.maybe("settings", "inbox-channel");
     const bridgeConfig = this.repo.maybe("settings", "inbox-bridge");
+    const evaluation = inboxEvaluationStatus(this.repo);
     return {
       configured: !!saved,
       active: !!saved?.enabled,
@@ -130,7 +132,8 @@ export class InboxController {
       channel: saved?.channel ?? null,
       lastScanAt: this.receiver?.lastScanAt ?? null,
       lastError: this.receiver?.lastError ?? null,
-      modelEvaluation: "not_authorized",
+      modelEvaluation: evaluation.state,
+      inboxEvaluationStatus: evaluation,
       delivery: "local_receiver_only",
       bridge: {
         configured: !!bridgeConfig,

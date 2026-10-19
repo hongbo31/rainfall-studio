@@ -39,43 +39,56 @@ export const FlowPublicationSchema = z.strictObject({
   accountId: uuid,
   termsHash: z.string().regex(/^[a-f0-9]{64}$/),
 });
-export const ProductionFlowPlanSchema = z.strictObject({
-  id: uuid,
-  artistId: uuid,
-  title: z.string().trim().min(1).max(200),
-  theme: z.string().trim().min(1).max(500),
-  timezone: z
-    .string()
-    .min(1)
-    .max(100)
-    .refine((v) => {
-      try {
-        new Intl.DateTimeFormat("en", { timeZone: v });
-        return true;
-      } catch {
-        return false;
-      }
-    }),
-  localTime: z
-    .string()
-    .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
-    .nullable()
-    .default(null),
-  enabled: z.literal(false).default(false),
-  candidateMode: z
-    .enum(["local_template", "deepseek"])
-    .default("local_template"),
-  scoreMode: z.enum(["rule_based", "deepseek"]).default("rule_based"),
-  text: FlowTextGrantSchema.nullable().default(null),
-  music: FlowMusicGrantSchema.nullable().default(null),
-  publication: FlowPublicationSchema.nullable().default(null),
-  autoContinue: z.boolean().default(false),
-  threshold: z.number().min(0).max(100).default(75),
-  maxRevisions: z.number().int().min(0).max(2).default(2),
-  maxScoreRetries: z.number().int().min(0).max(2).default(2),
-  maxRunsPerDay: z.number().int().min(1).max(20).default(1),
-  template: CreativeDraftSchema.nullable().default(null),
-});
+export const ProductionFlowPlanSchema = z
+  .strictObject({
+    id: uuid,
+    artistId: uuid,
+    title: z.string().trim().min(1).max(200),
+    theme: z.string().trim().min(1).max(500),
+    timezone: z
+      .string()
+      .min(1)
+      .max(100)
+      .refine((v) => {
+        try {
+          new Intl.DateTimeFormat("en", { timeZone: v });
+          return true;
+        } catch {
+          return false;
+        }
+      }),
+    localTime: z
+      .string()
+      .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+      .nullable()
+      .default(null),
+    enabled: z.literal(false).default(false),
+    candidateMode: z
+      .enum(["local_template", "deepseek"])
+      .default("local_template"),
+    scoreMode: z.enum(["rule_based", "deepseek"]).default("rule_based"),
+    text: FlowTextGrantSchema.nullable().default(null),
+    music: FlowMusicGrantSchema.nullable().default(null),
+    publication: FlowPublicationSchema.nullable().default(null),
+    autoContinue: z.boolean().default(false),
+    inboxEvaluation: z.boolean().default(false),
+    threshold: z.number().min(0).max(100).default(75),
+    maxRevisions: z.number().int().min(0).max(2).default(2),
+    maxScoreRetries: z.number().int().min(0).max(2).default(2),
+    maxRunsPerDay: z.number().int().min(1).max(20).default(1),
+    template: CreativeDraftSchema.nullable().default(null),
+  })
+  .refine(
+    (p) =>
+      !p.inboxEvaluation ||
+      (p.candidateMode === "deepseek" &&
+        p.scoreMode === "deepseek" &&
+        p.text !== null &&
+        p.autoContinue &&
+        p.music === null &&
+        p.publication === null),
+    "INBOX_EVALUATION_TEXT_ONLY_GRANT_REQUIRED",
+  );
 export type ProductionFlowPlan = z.infer<typeof ProductionFlowPlanSchema>;
 export const FlowSavePlanSchema = z.strictObject({
   plan: ProductionFlowPlanSchema,
@@ -88,6 +101,7 @@ export const FlowEnableSchema = z.strictObject({
 export const FlowTriggerSchema = z.strictObject({
   planId: uuid,
   requestId: uuid,
+  inboxCandidateId: uuid.optional(),
 });
 export const FlowIdSchema = z.strictObject({ id: uuid });
 export const FlowClaimSchema = FlowEnableSchema;

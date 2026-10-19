@@ -8,11 +8,12 @@ const nightly=process.argv.includes('--nightly');
 const beijingTmeAi=process.argv.includes('--beijing-tme-ai');
 const deepCopy=process.argv.includes('--deep-copy');
 const dotBridge=process.argv.includes('--dot-bridge');
+const planCenter=process.argv.includes('--plan-center');
 const uiConsistency=process.argv.includes('--ui-consistency')||deepCopy;
-const simplePublishing=process.argv.includes('--simple-publishing')||uiConsistency||dotBridge;
+const simplePublishing=process.argv.includes('--simple-publishing')||uiConsistency||dotBridge||planCenter;
 const productionFlow=process.argv.includes('--production-flow')||beijingTmeAi||simplePublishing;
 if([simplePublish,musicLive,connectionCheck,nightly,productionFlow].filter(Boolean).length>1)throw Error('CANDIDATE_SCOPE_CONFLICT');
-const purpose=dotBridge?'dot-delivery-bridge':deepCopy?'deep-copy-cleanup':uiConsistency?'ui-consistency':simplePublishing?'simple-publishing':beijingTmeAi?'beijing-tme-ai':productionFlow?'production-flow':nightly?'nightly-workflow':simplePublish?'simple-publish':musicLive?'music-live-once':connectionCheck?'api-connection':'tme-readiness';
+const purpose=planCenter?'unified-plan-center':dotBridge?'dot-delivery-bridge':deepCopy?'deep-copy-cleanup':uiConsistency?'ui-consistency':simplePublishing?'simple-publishing':beijingTmeAi?'beijing-tme-ai':productionFlow?'production-flow':nightly?'nightly-workflow':simplePublish?'simple-publish':musicLive?'music-live-once':connectionCheck?'api-connection':'tme-readiness';
 const dest=path.resolve('out',purpose+'-'+commit.slice(0,12)+'-'+Date.now());
 if(!dest.startsWith(path.join(repo,'out')+path.sep)||fs.existsSync(dest))throw Error('FRESH_WORKSPACE_OUTPUT_REQUIRED');
 const runtime=path.resolve('node_modules/electron/dist'),app=path.join(dest,'resources','app');
@@ -48,4 +49,11 @@ if(simplePublishing)fs.writeFileSync(path.join(dest,'README.txt'),'Rainfall Stud
 if(uiConsistency)fs.writeFileSync(path.join(dest,'README.txt'),'Rainfall Studio '+pkg.version+' Windows便携候选包\r\n全局界面字体、控件尺寸和说明整理。仅完成后台回归与无头界面验证；未启动本包原生客户端、未完成原快捷方式启动/播放/单实例验收。\r\n原桌面入口仍为已验收的0.8.0；本包不会自动启动或修改它。不要将本包默认空candidate-data替代原作品库。\r\n当前用户要求后台开发、不弹窗。待允许原生验收后，仍须按docs/release/desktop-delivery-policy.md备份并显式复用verified-desktop.json中的原dataRoot。\r\n保留整个包目录。未安装软件、创建凭据、付费生成或平台提交，原资料库和条款不变。\r\n');
 if(deepCopy)fs.writeFileSync(path.join(dest,'README.txt'),'Rainfall Studio '+pkg.version+' 文案修复候选\r\n仅后台构建与无头验证，未启动原生窗口。当前桌面仍使用已验收0.8.1，未修改其快捷方式或数据根。\r\n本包移除作品详情下一步教学卡与重复说明；说明改为可键盘访问的帮助或折叠记录，费用/协议实际确认保持。\r\n不得用本包默认空candidate-data代替原库；仅在用户另行允许原生验收且通过后按desktop-delivery-policy.md更新原入口。\r\n完整保留整个目录；未收费生成、接受条款、正式投稿或推送远程Git。\r\n');
 if(dotBridge)fs.writeFileSync(path.join(dest,'README.txt'),'Rainfall Studio '+pkg.version+' 独立便携候选\r\nSource commit: '+commit+'\r\n本轮未启动候选窗口、未覆盖正式安装或快捷方式。请完整保留目录。\r\n独立数据目录: '+data+'\r\n新增可信同步项目 incoming 到私有收件箱的桥接与数据库回执回传；实际路径只存于独立本机配置，不在源代码中猜测盘符。\r\n支持窗口关闭期间的限时无窗口收件验收宿主，不注册开机启动或计划任务；不执行其他业务 tick。\r\n每日 dot 创作由父会话负责，客户端不调用 Work/CLI/DeepSeek 代写；不自动生成音乐或发布。\r\n既有专辑真实写入仍被锁定；已存在的正式记录禁止重复投递。\r\n真实云端创作包尚待验收，格式 fixture 不是作品。本候选尚未完成打包后原生视觉验收。\r\n');
+if(planCenter){
+ Object.assign(manifest,{version:pkg.version,unifiedPlanCenter:true,independentItems:true,variantPolicy:'A/B versions belong to one item',defaultTimezone:'Asia/Shanghai',formalPublication:false,automaticDotCreation:false,realMusicGenerationRequested:false,albumCatalogVerified:false,remoteAlbumCreateVerified:false,nativeGuiLaunched:false,packagedNativeVisualAcceptance:false,headlessRendererAcceptance:'See output/plan-center-headless-latest.json; synthetic isolated Core',accepted:false,installedOrDesktopReplaced:false,acceptancePending:'Native GUI and real provider integration intentionally not performed; do not promote this candidate automatically'});
+ fs.writeFileSync(path.join(dest,'candidate-manifest.json'),JSON.stringify(manifest,null,2));
+ fs.mkdirSync(path.join(dest,'docs'),{recursive:true});
+ fs.copyFileSync('docs/superpowers/specs/2026-10-19-unified-plan-center.md',path.join(dest,'docs','technical-design.md'));
+ fs.writeFileSync(path.join(dest,'README.txt'),'Rainfall Studio '+pkg.version+' unified plan center Windows portable candidate.\r\nSource: '+commit+'\r\nIsolated preview data root: '+data+'\r\nNo GUI was launched. Do not replace the formal desktop pointer with this candidate. No real music generation, terms acceptance or publishing was performed.\r\nThe plan state machine and UI passed isolated offline tests. dot remote triggering, live music model discovery, real album catalog/create/append and platform publish executors remain waiting or blocked. Third-party YourMusic/Suno routing is not an official Suno API connection.\r\nLaunch only after separate user authorization: RainfallStudioCandidate.exe. No installer, credentials or startup task is included.\r\n');
+}
 console.log(JSON.stringify(manifest));

@@ -212,6 +212,10 @@ export async function restore(s: Studio, source: string) {
       const savedFlow=candidate.all('settings').filter(flowEvidence);
       for(const row of s.all('settings').filter(flowEvidence))
         if(!savedFlow.some(old=>old.id===row.id&&JSON.stringify(old)===JSON.stringify(row)))throw Error('RESTORE_POST_SNAPSHOT_PRODUCTION_FLOW');
+      const centerEvidence=(row:Record<string,any>)=>/^plan-center:(run|item|stage|publish|album|occurrence):/.test(row.id);
+      const savedCenter=candidate.all('settings').filter(centerEvidence);
+      for(const row of s.all('settings').filter(centerEvidence))
+        if(!savedCenter.some(old=>old.id===row.id&&JSON.stringify(old)===JSON.stringify(row)))throw Error('RESTORE_POST_SNAPSHOT_PLAN_CENTER');
       const savedObservations = candidate.all('settings').filter(row=>row.kind==='tme-official-observation');
       for (const row of s.all('settings').filter(row=>row.kind==='tme-official-observation'))
         if (!savedObservations.some(old=>old.id===row.id&&JSON.stringify(old)===JSON.stringify(row)))
@@ -278,6 +282,12 @@ export async function restore(s: Studio, source: string) {
         if(row.value.state!=='awaiting_terms_review')candidate.save('settings',{...row,value:{...row.value,revision:row.value.revision+1,state:row.value.state==='reconcile_required'?'reconcile_required':'blocked',reason:'RESTORED_REQUIRES_REVIEW'}});
       for(const row of candidate.all('settings').filter(r=>r.id.startsWith('production-flow:plan:')))
         candidate.save('settings',{...row,value:{...row.value,enabled:false,authorizationRevision:null}});
+      for(const row of candidate.all('settings').filter(r=>r.id.startsWith('plan-center:plan:')))
+        candidate.save('settings',{...row,value:{...row.value,enabled:false}});
+      for(const row of candidate.all('settings').filter(r=>r.id.startsWith('plan-center:run:')))
+        if(!['completed','stopped'].includes(row.value.state))candidate.save('settings',{...row,value:{...row.value,stopRequested:true,state:'stopping',reason:'RESTORED_REQUIRES_REVIEW'}});
+      for(const row of candidate.all('settings').filter(r=>r.id.startsWith('plan-center:stage:')))
+        if(row.value.state==='dispatching')candidate.save('settings',{...row,value:{...row.value,state:'unknown',reason:'RESTORED_REQUIRES_REVIEW'}});
       for(const row of candidate.all('settings').filter(r=>r.id.startsWith('production-flow:run:')))
         if(row.value.state!=='completed')candidate.save('settings',{...row,value:{...row.value,state:'blocked',candidateApproved:false,publicationApproval:null,reasons:['RESTORED_REQUIRES_REVIEW']}});
       const inboxChannel = candidate.maybe("settings", "inbox-channel");

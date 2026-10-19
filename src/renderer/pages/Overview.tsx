@@ -78,32 +78,8 @@ export default function Overview() {
       )}
       <div className="split section-gap">
         <div className="panel">
-          <h2>本地模板草稿计划</h2>
-          {data.plans.length ? (
-            data.plans.slice(0, 3).map((p: any) => (
-              <div className="row" key={p.id}>
-                <div>
-                  {p.title}
-                  <small>
-                    {p.timezone} · {p.time} ·{" "}
-                    {p.enabled
-                      ? "定时创建本地模板草稿 · 已启用，需客户端运行"
-                      : "本地模板计划 · 已暂停"}
-                  </small>
-                </div>
-                <Badge>{p.finishedGoal} 首目标</Badge>
-              </div>
-            ))
-          ) : (
-            <>
-              <p>暂无本地模板计划。</p>
-              <HelpNote label="模板计划说明">
-                定时创建本地模板草稿，不会自动生成真实 AI 歌曲。每日 AI
-                候选计划仍未开放；文本候选可经外部通道导入。
-              </HelpNote>
-            </>
-          )}
-          <button onClick={() => go("create")}>配置本地模板计划 →</button>
+          <h2>{"计划中心"}</h2>
+          <button onClick={() => go("plans")}>{"管理计划与执行历史"}</button>
         </div>
         <div className="panel">
           <h2>
