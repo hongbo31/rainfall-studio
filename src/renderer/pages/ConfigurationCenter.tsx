@@ -8,13 +8,15 @@ import PlatformConfigurationPanel from "../components/PlatformConfigurationPanel
 import ApiSettings from "../components/ApiSettings";
 import TextConfiguration from "../components/TextConfiguration";
 import TextCandidates from "../components/TextCandidates";
+import DirectoryTaskSettings from "../components/DirectoryTaskSettings";
+import FirstSetup from "../components/FirstSetup";
 import Accounts from "./Accounts";
 import PublicationDiagnostics from "./PublicationDiagnostics";
 
 const categories = [
   ["platforms", "发布平台"],
   ["models", "模型 API"],
-  ["inbox", "收件管理"],
+  ["inbox", "目录与收件"],
   ["artists", "艺人与预算"],
   ["diagnostics", "诊断与历史"],
 ] as const;
@@ -56,6 +58,10 @@ export default function ConfigurationCenter({
       <PageHead
         title="配置中心"
         action={<button onClick={() => go("publish")}>返回发布中心</button>}
+      />
+      <FirstSetup
+        onModels={() => setCategory("models")}
+        onDirectories={() => setCategory("inbox")}
       />
       <div className="configuration-tabs" role="tablist" aria-label="配置分类">
         {categories.map(([id, title]) => (
@@ -123,7 +129,7 @@ export default function ConfigurationCenter({
             <TextConfiguration />
           </>
         ) : category === "inbox" ? (
-          <TextCandidates />
+          <DirectoryTaskSettings results={<TextCandidates />} />
         ) : category === "artists" ? (
           <Accounts showApi={false} compact />
         ) : (

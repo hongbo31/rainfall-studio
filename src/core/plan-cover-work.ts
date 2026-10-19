@@ -3,6 +3,7 @@ import type {Studio} from './studio';
 import {hash} from './database';
 import {pairHash} from './quality/scoring';
 import {PlanCenterPrepareCoverWorkSchema} from '../shared/plan-center';
+import {providerPlanFinal} from './provider-plan-text';
 
 const bindingSchema=z.strictObject({runId:z.string(),itemId:z.string(),artistId:z.string(),workId:z.uuid(),finalDraftId:z.string(),finalPairHash:z.string(),rawLyricsHash:z.string(),titleHash:z.string(),scoreAttemptId:z.string(),sourceCandidateId:z.string(),sourceCoverSha256:z.string().optional(),createdAt:z.string(),source:z.literal('plan-final-cover')});
 const key=(itemId:string)=>'plan-cover-work:'+itemId;
@@ -13,6 +14,11 @@ function finalScope(s:Studio,itemId:string){
  if(['completed','failed','stopped'].includes(run.state))throw Error('RUN_TERMINAL');
  if(!run.snapshot.outputs.cover||run.snapshot.outputs.music)throw Error('LYRICS_COVER_ROUTE_REQUIRED');
  const score=rows.stageAttempts.filter(a=>a.itemId===item.id&&a.stage==='text_score').at(-1),final=item.material?.finalRevision as any;
+ if(run.snapshot.material.source==='provider'){
+  const proof=providerPlanFinal(s.repo,run,item);
+  if(!score||score.id!==proof.scoreAttempt.id)throw Error('FINAL_MATERIAL_CHANGED');
+  return{run,item,score,final,sourceCandidateId:'provider:'+proof.job.id};
+ }
  const evaluation=final?.evaluationRunId?s.repo.maybe('settings','production-flow:run:'+final.evaluationRunId)?.value:null;
  const draft=final?.draftId?s.repo.maybe('drafts',final.draftId):null;
  if(!score||score.state!=='succeeded'||!final||!evaluation||!draft||evaluation.state!=='completed'||evaluation.artistId!==run.snapshot.artistId||evaluation.inboxCandidateId!==item.material?.candidateId||evaluation.plan?.managedOwnerKey!==score.id||!evaluation.plan?.managedByPlanCenter||draft.artistId!==run.snapshot.artistId||draft.evaluationRunId!==evaluation.id||draft.source!=='inbox-evaluation'||evaluation.candidate?.id!==final.draftId||score.result?.evaluationRunId!==evaluation.id||score.result?.evaluatedDraftId!==final.draftId||hash(evaluation.score)!==hash(final.assessment)||hash(score.result?.assessment)!==hash(final.assessment)||hash(draft.pair)!==hash(evaluation.candidate.pair)||hash(draft.draft)!==hash(evaluation.candidate.draft)||pairHash(draft.pair)!==final.pairHash||draft.pair.lyrics!==final.lyrics||draft.draft.title!==final.title||item.material?.lyrics!==final.lyrics||item.material?.title!==final.title)throw Error('FINAL_MATERIAL_CHANGED');

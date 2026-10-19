@@ -2,6 +2,7 @@ import type { Studio } from "./studio";
 import type { Row } from "./database";
 import { hashValue } from "./quality/scoring";
 import { FlowManagedMusicGrantSchema } from "../shared/production-flow";
+import {providerPlanFinal} from './provider-plan-text';
 
 const key = (itemId: string) => "plan-center-music:" + itemId;
 
@@ -32,12 +33,13 @@ export function startPlanMusic(s: Studio, run: Row, item: Row, attempt: Row) {
     )
     .at(-1);
   const evaluationRunId = score?.result?.evaluationRunId;
-  if (typeof evaluationRunId !== "string")
+  const provider=run.snapshot.material.source==='provider'?providerPlanFinal(s.repo,run as any,item as any):null;
+  if (!provider&&typeof evaluationRunId !== "string")
     throw Error("MANAGED_MUSIC_EVALUATION_REQUIRED");
-  const evaluation = s.productionFlowService().context(evaluationRunId).run;
+  const evaluation = provider?null:s.productionFlowService().context(evaluationRunId as string).run;
   if (
-    evaluation.inboxCandidateId !== item.material?.candidateId ||
-    evaluation.artistId !== run.snapshot.artistId
+    !provider&&(evaluation!.inboxCandidateId !== item.material?.candidateId ||
+    evaluation!.artistId !== run.snapshot.artistId)
   )
     throw Error("MANAGED_MUSIC_ITEM_SCOPE");
   const music = run.snapshot.music;
@@ -56,7 +58,7 @@ export function startPlanMusic(s: Studio, run: Row, item: Row, attempt: Row) {
       ownerKey: attempt.id,
       budgetScope: "unified-plan:" + run.planId,
       artistId: run.snapshot.artistId,
-      evaluationRunId,
+      ...(provider?{parentRunId:run.id,itemId:item.id,providerJobId:provider.job.id}:{evaluationRunId}),
       music: grant,
     };
     if (
@@ -66,7 +68,7 @@ export function startPlanMusic(s: Studio, run: Row, item: Row, attempt: Row) {
         prior.inputHash !== hashValue(input))
     )
       throw Error("MANAGED_MUSIC_ITEM_CONFLICT");
-    const child = s.productionFlowService().startManagedMusic(input);
+    const child = provider?s.productionFlowService().startManagedMusicFromVerifiedText(input):s.productionFlowService().startManagedMusic(input);
     s.repo.save("settings", {
       id: key(item.id),
       runId: run.id,
@@ -74,7 +76,7 @@ export function startPlanMusic(s: Studio, run: Row, item: Row, attempt: Row) {
       ownerKey: attempt.id,
       childRunId: child.id,
       inputHash: hashValue(input),
-      evaluationRunId,
+      ...(provider?{providerJobId:provider.job.id}:{evaluationRunId}),
       artistId: run.snapshot.artistId,
     });
     s.productionFlowService().next({ id: child.id });
@@ -105,7 +107,9 @@ function managedMusicContext(s: Studio, run: Row, item: Row) {
     context.plan.managedBudgetScope !== "unified-plan:" + run.planId ||
     flow.managedMusic(binding.ownerKey)?.id !== child.id ||
     child.artistId !== binding.artistId ||
-    child.managedEvaluationRunId !== binding.evaluationRunId
+    (binding.providerJobId
+      ? child.managedProviderText?.providerJobId!==binding.providerJobId||child.managedProviderText?.parentRunId!==run.id||child.managedProviderText?.itemId!==item.id
+      : child.managedEvaluationRunId !== binding.evaluationRunId)
   )
     throw Error("MANAGED_MUSIC_ITEM_SCOPE");
   return { binding, context };

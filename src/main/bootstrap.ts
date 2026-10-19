@@ -47,6 +47,8 @@ import {createUnifiedPublishBroker,createTmeAiTransportProvider} from './tme/uni
 import {externalReceiptBarrier,persistExternalReceiptBarrier,persistExternalReceiptStop} from './tme/external-receipt-barrier';
 import {installNativeDiagnostics} from './native-diagnostics';
 import {chooseInboxBridgeProject} from './inbox-bridge';
+import {chooseDirectoryTaskSource} from './directory-tasks';
+import {createProviderTextBroker} from './provider-text';
 if (require("electron-squirrel-startup")) app.quit();
 protocol.registerSchemesAsPrivileged([
   {
@@ -160,7 +162,9 @@ const planAlbums=createPlanAlbumBroker({rpc:(method,input)=>rpc(method,input),av
  }
  return{transport,account:()=>planPublications.native(()=>session.account())};
 },onAppend:()=>unifiedPublish.pump(),reconcileAppend:taskId=>unifiedPublish.reconcile(taskId)});
-setInterval(()=>{void productionFlow.pump();void unifiedPublish.pump();},2000).unref();
+const providerText=createProviderTextBroker({credentials:apiCredentials,rpc,available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration});
+app.on('before-quit',()=>providerText.stop());
+setInterval(()=>{void productionFlow.pump();void unifiedPublish.pump();void providerText.pump().catch(()=>undefined);},2000).unref();
 const pending = new Map<
   string,
   { resolve: (v: any) => void; reject: (e: any) => void; timer: NodeJS.Timeout }
@@ -320,6 +324,10 @@ function handlers() {
     safe(async () => {
       trusted(e);
       const parsed = validate(method, input);
+      if(method==='directoryTasks.chooseDirectory')return chooseDirectoryTaskSource(parsed,{
+        capture:()=>({mode,generation:coreGeneration,epoch:importEpoch,available:!switching&&!closing}),
+        choose:()=>dialog.showOpenDialog(window,{title:'选择任务请求目录',properties:['openDirectory']}),rpc,
+      });
       if(method==='inbox.bridge.chooseDirectory')return chooseInboxBridgeProject({
         capture:()=>({mode,generation:coreGeneration,epoch:importEpoch,available:!switching&&!closing}),
         choose:()=>dialog.showOpenDialog(window,{title:'选择专用 dot-delivery 项目目录（包含 incoming 和 receipts）',properties:['openDirectory']}),rpc,

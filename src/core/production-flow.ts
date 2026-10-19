@@ -6,6 +6,7 @@ import { cleanLyricText } from "../shared/tme-lyrics";
 import { listApiProfiles } from "./api-profiles";
 import { assertLegacyScheduleEditable } from "./plan-center-ownership";
 import { isLegacyOwned } from "./plan-center/storage";
+import {providerMusicSource} from './provider-plan-text';
 import {
   importedFlowCandidate,
   inboxEvaluationSource,
@@ -65,6 +66,7 @@ const managedMusicInput = z.strictObject({
   evaluationRunId: z.uuid(),
   music: FlowManagedMusicGrantSchema,
 });
+const managedProviderMusicInput=z.strictObject({ownerKey:z.string().trim().min(1).max(1000),budgetScope:z.string().trim().min(1).max(1000),artistId:z.uuid(),parentRunId:z.string().min(1).max(500),itemId:z.string().min(1).max(500),providerJobId:z.uuid(),music:FlowManagedMusicGrantSchema});
 function managedInboxId(value: string) {
   const digest = hash(value);
   return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
@@ -312,6 +314,30 @@ export class ProductionFlowService {
         planId,
         runId: run.id,
       });
+      return run;
+    });
+  }
+  /** Internal-only provider path; old Inbox evidence validation remains unchanged. */
+  startManagedMusicFromVerifiedText(raw:unknown){
+    const input=managedProviderMusicInput.parse(raw);
+    return this.repo.transaction(()=>{
+      const source=providerMusicSource(this.repo,input.parentRunId,input.itemId,input.providerJobId);
+      const parent=source.run;
+      const attempt=this.repo.maybe('settings','plan-center:stage:'+input.ownerKey)?.value;
+      if(parent.stopRequested||['completed','failed','stopped'].includes(parent.state))throw Error('STOP_REQUESTED');
+      if(parent.snapshot.artistId!==input.artistId||!parent.snapshot.authorization.music||!parent.snapshot.music.consent||input.budgetScope!=='unified-plan:'+parent.planId||!attempt||attempt.runId!==parent.id||attempt.itemId!==source.item.id||attempt.stage!=='music_submit'||attempt.state!=='dispatching')throw Error('PROVIDER_MUSIC_PLAN_SCOPE');
+      const configured=parent.snapshot.music;
+      const expected=FlowManagedMusicGrantSchema.parse({profileId:configured.profileId,profileRevision:configured.profileRevision,modelId:configured.modelId,maxCostPerRequestCredits:configured.maxCostPerRequestCredits,budgetCredits:configured.budgetCredits,creditPolicy:configured.creditPolicy,consent:configured.consent});
+      if(hashValue(input.music)!==hashValue(expected))throw Error('PROVIDER_MUSIC_GRANT_MISMATCH');
+      const key=hash(input.ownerKey),inputHash=hashValue(input),previous=this.maybe('managed-music',key);
+      if(previous){if(previous.ownerKey!==input.ownerKey||previous.inputHash!==inputHash)throw Error('MANAGED_MUSIC_CONFLICT');return this.get('run',previous.runId);}
+      const planId=managedInboxId('music:'+input.ownerKey+':plan');
+      if(this.maybe('plan',planId))throw Error('MANAGED_MUSIC_CONFLICT');
+      const plan=ProductionFlowPlanSchema.parse({id:planId,artistId:input.artistId,title:source.candidate.draft.title,theme:parent.snapshot.theme||parent.snapshot.title,timezone:'Asia/Shanghai',music:input.music,autoContinue:true});
+      this.put('plan',{...plan,revision:1,enabled:true,authorizationRevision:1,managedByPlanCenter:true,managedMusic:true,managedOwnerKey:input.ownerKey,managedBudgetScope:input.budgetScope,updatedAt:this.now().toISOString()});
+      let run=this.trigger({planId,requestId:managedInboxId('music:'+input.ownerKey+':request')});
+      run=this.patch(run,{candidate:structuredClone(source.candidate),versions:[structuredClone(source.candidate)],candidateApproved:true,score:structuredClone(source.score),stage:'work',managedMusic:true,managedProviderText:{parentRunId:parent.id,itemId:source.item.id,providerJobId:source.proof.job.id},managedEvaluationFingerprint:source.fingerprint,managedStopped:false});
+      this.put('managed-music',{id:key,ownerKey:input.ownerKey,inputHash,planId,runId:run.id});
       return run;
     });
   }
@@ -720,7 +746,12 @@ export class ProductionFlowService {
         plan.authorizationRevision !== plan.revision
       )
         throw Error("MANAGED_MUSIC_STOPPED");
-      const source = this.managedMusicEvaluation(
+      const source = run.managedProviderText ? (()=>{
+        const input=run.managedProviderText;
+        const verified=providerMusicSource(this.repo,input.parentRunId,input.itemId,input.providerJobId);
+        if(verified.run.stopRequested||verified.run.snapshot.artistId!==run.artistId)throw Error('MANAGED_MUSIC_STOPPED');
+        return{fingerprint:verified.fingerprint,evaluation:{candidate:verified.candidate}};
+      })() : this.managedMusicEvaluation(
         run.managedEvaluationRunId,
         run.artistId,
       );

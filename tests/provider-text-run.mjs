@@ -1,0 +1,10 @@
+import {build} from 'esbuild';
+import fs from 'node:fs';
+import path from 'node:path';
+import {spawnSync} from 'node:child_process';
+const exports = ['src/shared/api-profiles.ts','src/core/api-profiles.ts','src/core/database.ts','src/shared/provider-text.ts','src/core/provider-text.ts','src/core/workflow/provider-text.ts','src/core/workflow/yourmusic.ts','src/main/api-credentials.ts','src/main/provider-text.ts'].filter(f=>fs.existsSync(f));
+const outfile=path.resolve('output/provider-text-test/provider-text.cjs');
+await build({stdin:{contents:exports.map(f=>`export * from './${f}';`).join('\n'),resolveDir:process.cwd(),loader:'ts'},outfile,bundle:true,platform:'node',target:'node24',format:'cjs',packages:'external'});
+const electron=(await import('electron')).default;
+const r=spawnSync(electron,['--require',path.resolve('tests/fixtures/offline-only.cjs'),'--test','tests/integration/provider-text.test.cjs'],{stdio:'inherit',env:{...process.env,ELECTRON_RUN_AS_NODE:'1',RAINFALL_PROVIDER_TEXT_BUNDLE:outfile}});
+process.exit(r.status??1);

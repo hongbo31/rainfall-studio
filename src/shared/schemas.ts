@@ -1,4 +1,5 @@
 import { z } from "zod";
+import {DirectoryTaskSchemas} from './directory-tasks';
 import {PlanCenterPrepareCoverWorkSchema} from './plan-center';
 import { saveApiProfileSchema } from "./api-profiles";
 import { GenerateTurnSchema, TextConfigurationSchema } from "./creation";
@@ -28,6 +29,7 @@ export const defaultsSchema = z
 const obj = z.record(z.string(), z.unknown());
 const recordingSelections = z.array(z.strictObject({workId:id,slot:z.enum(['audio_A','audio_B'])})).max(200);
 export const methodSchemas: Record<string, z.ZodType> = {
+  ...DirectoryTaskSchemas,
   ...SimplePublishingSchemas,
   ...TmeObservationSchemas,
   'publish.quick': z.strictObject({workIds:z.array(id).min(1).max(100),targets:z.array(z.enum(['netease','qishui','qqmusic','kugou','douyin'])).min(1).max(5),recordings:recordingSelections,accountOverrides:z.partialRecord(z.enum(['netease','qishui','qqmusic','kugou','douyin']),id).default({})}),

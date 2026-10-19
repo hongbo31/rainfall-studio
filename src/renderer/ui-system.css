@@ -605,3 +605,75 @@
     }
   }
 }
+
+/* Directory tasks and the shared configuration preparation entry. */
+.first-setup,
+.directory-source,
+.directory-history {
+  background: #fff;
+  border: 1px solid #dfe6f1;
+  border-radius: 12px;
+  padding: 20px;
+  color: #17263d;
+  margin: 0 0 20px;
+}
+.directory-heading,
+.directory-path,
+.directory-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.directory-heading h2,
+.directory-heading h3 { margin: 0; }
+.directory-heading { margin-bottom: 12px; }
+.directory-actions { justify-content: flex-start; }
+.first-setup-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.first-setup-steps li { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.first-setup-steps li > div { display: grid; gap: 2px; flex: 1; }
+.first-setup-steps li > div > span { color: #60718b; font-size: 12px; }
+.first-setup-number { width: 28px; height: 28px; border-radius: 50%; background: #eaf1ff; color: #205bc2; display: grid; place-items: center; }
+.directory-tabs { display: flex; gap: 8px; margin: 20px 0; }
+.directory-tabs [aria-selected="true"] { background: #eaf1ff; color: #205bc2; border-color: #b9cef4; }
+.directory-settings .directory-note { color: #60718b; margin: 8px 0 12px; font-size: 12px; }
+.directory-path { margin-bottom: 16px; }
+.directory-path code { overflow-wrap: anywhere; flex: 1; min-width: 0; color: #344b69; }
+.directory-status { background: #f0f3f8; color: #52637c; border-radius: 20px; padding: 4px 12px; font-size: 12px; }
+.directory-status.on { background: #e9f5ef; color: #246548; }
+.directory-fields { display: grid; grid-template-columns: 2fr 1fr 1.5fr; gap: 16px; }
+.directory-fields label { color: #344b69; min-width: 0; }
+.directory-fields select,
+.directory-fields input { width: 100%; }
+.directory-settings .directory-warning { color: #805e22; }
+.directory-settings .directory-error,
+.directory-row-error { color: #a2352c; }
+.directory-error { background: #fff0ef; border: 1px solid #edc3bf; border-radius: 8px; padding: 10px 12px; }
+.directory-example { margin-top: 16px; border-top: 1px solid #dfe6f1; padding-top: 12px; }
+.directory-example summary,
+.directory-history summary { cursor: pointer; color: #344b69; }
+.directory-example pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; }
+.directory-empty { padding: 24px; margin-bottom: 20px; border: 1px dashed #bfd1ed; border-radius: 12px; text-align: center; }
+.directory-table-scroll { overflow-x: auto; }
+.directory-history table { width: 100%; border-collapse: collapse; text-align: left; }
+.directory-history th,
+.directory-history td { padding: 10px 12px; border-bottom: 1px solid #dfe6f1; vertical-align: top; }
+.directory-history th { background: #f3f6fc; color: #344b69; font-weight: 600; }
+.directory-history code { overflow-wrap: anywhere; }
+.directory-row-error { display: block; font-size: 12px; margin-top: 4px; }
+.directory-error-list { list-style: none; padding: 0; }
+.directory-error-list li { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 8px 0; }
+.directory-settings .help-note,
+.first-setup .help-note { margin: 0; }
+@media (max-width: 1100px) {
+  .first-setup-steps { grid-template-columns: 1fr; }
+  .directory-fields { grid-template-columns: 1fr; }
+}

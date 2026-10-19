@@ -34,6 +34,12 @@ function ProfileCard({
   simulation: boolean;
 }) {
   const [label, setLabel] = useState(profile.label);
+  const [modelId,setModelId]=useState(profile.modelId??'');
+  const [inputPrice,setInputPrice]=useState(profile.textPricing?String(profile.textPricing.inputMicrosPerMillionTokens/1_000_000):'');
+  const [outputPrice,setOutputPrice]=useState(profile.textPricing?String(profile.textPricing.outputMicrosPerMillionTokens/1_000_000):'');
+  const [priceSource,setPriceSource]=useState(profile.textPricing?.source??'');
+  const [priceVersion,setPriceVersion]=useState(profile.textPricing?.version??'');
+  const [responseModels,setResponseModels]=useState(profile.textPricing?.responseModelIds.join(', ')??'');
   const [secret, setSecret] = useState("");
   const [status, setStatus] = useState<CredentialStatus | null>(null);
   const [busy, setBusy] = useState(false);
@@ -42,6 +48,8 @@ function ProfileCard({
   const { call } = useStudio();
   const provider = apiProviders.find((p) => p.id === profile.providerId)!;
   const eligible = canStoreApiCredential(profile);
+  const textApi=profile.kind==='text'&&['deepseek','doubao'].includes(profile.providerId);
+  const currency=profile.providerId==='doubao'?'CNY':'USD';
   useEffect(() => {
     let active = true;
     void window.rainfall
@@ -61,17 +69,25 @@ function ProfileCard({
   }, [profile.id, profile.revision, simulation]);
   useEffect(() => {
     setLabel(profile.label);
+    setModelId(profile.modelId??'');setInputPrice(profile.textPricing?String(profile.textPricing.inputMicrosPerMillionTokens/1_000_000):'');
+    setOutputPrice(profile.textPricing?String(profile.textPricing.outputMicrosPerMillionTokens/1_000_000):'');setPriceSource(profile.textPricing?.source??'');setPriceVersion(profile.textPricing?.version??'');setResponseModels(profile.textPricing?.responseModelIds.join(', ')??'');
     setConnection(null);
   }, [profile.id, profile.label, profile.revision, simulation]);
-  const action = async (kind: "save" | "clear" | "label") => {
+  const action = async (kind: "save" | "clear" | "label" | "text") => {
     setBusy(true);
     setError("");
     setConnection(null);
     try {
-      if (kind === "label") {
+      if (kind === "label" || kind==='text') {
         const { revision, ...metadata } = profile;
+        let textMetadata={};
+        if(kind==='text'){
+          const hasPrice=[inputPrice,outputPrice,priceSource,priceVersion].some(v=>v.trim());
+          if(hasPrice&&(!/^\d+(\.\d{1,6})?$/.test(inputPrice)||!/^\d+(\.\d{1,6})?$/.test(outputPrice)||Number(outputPrice)<=0||!priceSource.trim()||!priceVersion.trim()))throw Error('TEXT_PRICE_REQUIRED');
+          textMetadata={modelId:modelId.trim()||null,textPricing:hasPrice?{currency,modelId:modelId.trim(),inputMicrosPerMillionTokens:Math.round(Number(inputPrice)*1_000_000),outputMicrosPerMillionTokens:Math.round(Number(outputPrice)*1_000_000),source:priceSource.trim(),version:priceVersion.trim(),responseModelIds:(responseModels.trim()?responseModels.split(','):[modelId]).map(v=>v.trim()).filter(Boolean)}:null};
+        }
         await call("apiProfile.save", {
-          profile: { ...metadata, label },
+          profile: { ...metadata, label,...textMetadata },
           expectedRevision: revision,
         });
         await refresh();
@@ -158,6 +174,20 @@ function ProfileCard({
           保存配置名称
         </button>
       </div>
+      {textApi&&<div className="api-profile-fields" data-testid="api-text-configuration">
+        <label>模型 ID / 推理接入点 ID<input aria-label="模型 ID / 推理接入点 ID" value={modelId} maxLength={200} disabled={busy} placeholder={profile.providerId==='doubao'?'doubao-seed-2-1-pro-260915 或 ep-…':'deepseek-flash'} onChange={e=>setModelId(e.target.value)}/></label>
+        <label>官方 baseURL<input aria-label="官方 baseURL" value={profile.baseUrl??(profile.providerId==='doubao'?'https://ark.cn-beijing.volces.com/api/v3':'https://api.deepseek.com')} readOnly/></label>
+        <details><summary>计费依据 · {currency}</summary>
+          <label>输入价（{currency} / 百万 token）<input aria-label="输入价" value={inputPrice} inputMode="decimal" disabled={busy} onChange={e=>setInputPrice(e.target.value)}/></label>
+          <label>输出价（{currency} / 百万 token）<input aria-label="输出价" value={outputPrice} inputMode="decimal" disabled={busy} onChange={e=>setOutputPrice(e.target.value)}/></label>
+          <label>价格来源<input aria-label="价格来源" value={priceSource} maxLength={2000} disabled={busy} onChange={e=>setPriceSource(e.target.value)}/></label>
+          <label>价格版本 / 核对日期<input aria-label="价格版本" value={priceVersion} maxLength={200} disabled={busy} onChange={e=>setPriceVersion(e.target.value)}/></label>
+          <label>响应模型 ID<input aria-label="响应模型 ID" value={responseModels} maxLength={4000} disabled={busy} placeholder="默认与模型 ID 相同，多个用英文逗号分隔" onChange={e=>setResponseModels(e.target.value)}/></label>
+          <HelpHint label="计费依据说明">填写该模型当前的官方价格。计划按币种独立预占预算；价格缺失时无法执行。若使用 ep- 推理接入点，请填写其实际响应模型 ID。</HelpHint>
+        </details>
+        <button disabled={busy||!modelId.trim()} onClick={()=>void action('text')}>保存模型与计费</button>
+        {profile.providerId==='doubao'&&<HelpHint label="豆包连接说明">使用火山方舟 API Key，与 DeepSeek、图片服务分别配置。未提供免费认证探测；保存后保持未验证，真实生成仅按已授权计划执行。</HelpHint>}
+      </div>}
       {eligible && !simulation ? (
         <>
           <div className="api-profile-fields api-secret-row">

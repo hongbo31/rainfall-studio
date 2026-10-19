@@ -22,6 +22,7 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
     [requestId, setRequestId] = useState(""),
     [busy, setBusy] = useState(false);
   const load = async () => {
+    if (!id) return {requests: [], receipts: []};
     const rows = await call("cover.list", { workId: id });
     if (currentWorkId.current === id) setHandoff(rows);
     return rows;
@@ -30,6 +31,7 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
     let active = true;
     setRequestId("");
     setHandoff({ requests: [], receipts: [] });
+    if (!id) return () => { active = false; };
     void call("cover.list", { workId: id })
       .then((rows) => {
         if (active) setHandoff(rows);
