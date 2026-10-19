@@ -1,3 +1,5 @@
+> 本文保留当时的阶段记录；0.12.0-preview.3 已实现三类路由、艺人/故事冻结与身份状态核心。最新结果与真实绑定阻塞见 [generation-routing-native](2026-10-19-generation-routing-native.md)。
+
 # 0.12.0-preview.2 原生验收
 
 构建源码 ec7b5fedbc3d697070f326f5c24aa7a4f915d15a。候选 out/unified-plan-center-ec7b5fedbc3d-1792400989142，未推送、未替换正式指针。后续文档提交不改变本候选构建来源。

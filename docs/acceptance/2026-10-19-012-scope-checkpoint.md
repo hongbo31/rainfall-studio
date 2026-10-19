@@ -1,3 +1,5 @@
+> 本文保留当时的阶段记录；0.12.0-preview.3 已实现三类路由、艺人/故事冻结与身份状态核心。最新结果与真实绑定阻塞见 [generation-routing-native](2026-10-19-generation-routing-native.md)。
+
 # 0.12 需求增量检查点
 
 ## 已验证基线
