@@ -40,6 +40,8 @@ export default function PublishCenter() {
   );
   const selection = publishSelection ?? fallback;
   const [query, setQuery] = useState(""),
+    [queueTaskId,setQueueTaskId]=useState(''),
+    [queueAccountId,setQueueAccountId]=useState(''),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [message, setMessage] = useState("");
@@ -60,6 +62,8 @@ export default function PublishCenter() {
     }
   }, [currentResult]);
   useEffect(() => {
+    setQueueTaskId('');
+    setQueueAccountId('');
     setCurrentResult(null);
     setError("");
     setMessage("");
@@ -165,10 +169,9 @@ export default function PublishCenter() {
     pipelineJobs.set(job.id, job);
   for (const job of data.publicationPipelineJobs ?? [])
     pipelineJobs.set(job.id, job);
-  const pipeline = [...pipelineJobs.values()].filter((job: any) =>
-    selection.workIds.includes(job.workId),
-  );
-  const activePipeline = pipeline.some((job: any) =>
+  const queuedJobs=[...pipelineJobs.values()];
+  const pipeline = queuedJobs.filter((job:any)=>(!queueTaskId||job.id===queueTaskId)&&(!queueAccountId||job.accountId===queueAccountId));
+  const activePipeline = queuedJobs.some((job: any) =>
     ["queued", "preparing", "awaiting_authorization"].includes(job.state),
   );
   const refreshRef = useRef(refresh);
@@ -390,7 +393,7 @@ export default function PublishCenter() {
             </span>
           )}
         </div>
-        {currentResult && !pipeline.length && (
+        {currentResult && !queuedJobs.length && (
           <section
             className="publication-current-result"
             ref={resultRef}
@@ -426,6 +429,10 @@ export default function PublishCenter() {
           </section>
         )}
       </section>
+      {!!queuedJobs.length&&<section className="publication-queue-filters" aria-label="发布队列筛选">
+        <label>发布任务<select data-testid="publication-task-filter" value={queueTaskId} onChange={event=>setQueueTaskId(event.target.value)}><option value="">全部任务</option>{queuedJobs.map((job:any)=><option key={job.id} value={job.id}>{job.title} · {(data.accounts??[]).find((account:any)=>account.id===job.accountId)?.name??'未指定账号'}</option>)}</select></label>
+        <label>发布账号<select data-testid="publication-account-filter" value={queueAccountId} onChange={event=>setQueueAccountId(event.target.value)}><option value="">全部账号</option>{[...new Set<string>(queuedJobs.map((job:any)=>job.accountId).filter(Boolean))].map(id=><option key={id} value={id}>{(data.accounts??[]).find((account:any)=>account.id===id)?.name??'账号待核对'}</option>)}</select></label>
+      </section>}
       {!!pipeline.length && (
         <PublicationPipelineProgress
           jobs={pipeline}
@@ -436,7 +443,8 @@ export default function PublishCenter() {
           onConfigure={(target) => void configure(target)}
         />
       )}
-      {!pipeline.length && (requests.length > 0 || pendingTerms.length > 0) && (
+      {!!queuedJobs.length&&!pipeline.length&&<p role="status">没有符合筛选的发布任务。</p>}
+      {!queuedJobs.length && (requests.length > 0 || pendingTerms.length > 0) && (
         <section className="panel simple-request-list" aria-label="发布任务">
           <h2>发布任务</h2>
           {pendingTerms.map((term) => (

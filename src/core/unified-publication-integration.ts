@@ -28,16 +28,17 @@ export function executeUnifiedPublication(s:Studio,action:string,input:unknown={
   const task=service.byId(z.strictObject({id:z.uuid()}).parse(input).id);
   if(task.reason==='PROTECTED_PUBLISHED_WORK')throw Error('PROTECTED_PUBLISHED_WORK');
   const account=task.accountId?s.repo.maybe('accounts',task.accountId):null;
-  const work=s.get('works',task.workId),source=work.assets?.audio_A?s.repo.maybe('assets',work.assets.audio_A):null;
+  const work=s.get('works',task.workId),slot=work.selectedAudioVariant==='B'?'audio_B':'audio_A',source=work.assets?.[slot]?s.repo.maybe('assets',work.assets[slot]):null;
   if(!source||!account?.remoteSubject)return{task,grant:null,job:null};
-  const candidates=s.all('settings').filter(r=>r.id.startsWith('tme-ai-prepare:grant:')).map(r=>r.value).filter(g=>!g.suspended&&g.input?.workId===task.workId&&g.input?.identity?.subjectHash===account.remoteSubject&&g.input?.sourceAudio?.assetId===source.id&&g.input?.sourceAudio?.sha256===source.sha256);
+  const candidates=s.all('settings').filter(r=>r.id.startsWith('tme-ai-prepare:grant:')).map(r=>r.value).filter(g=>!g.suspended&&g.input?.workId===task.workId&&(!g.input.publicationTaskId||g.input.publicationTaskId===task.id&&g.input.accountId===task.accountId)&&g.input?.identity?.subjectHash===account.remoteSubject&&g.input?.sourceAudio?.assetId===source.id&&g.input?.sourceAudio?.sha256===source.sha256);
   const grants=candidates.filter(g=>{try{verifyTmeAiPrepareAssets(s,g.input);verifyCurrentTmeAiScope(s,g.input);return true}catch{return false}});
   if(grants.length>1)throw Error('PREPARATION_GRANT_AMBIGUOUS');
   if(!grants.length)return{task,grant:null,job:null};
   const grant=grants[0];
   const jobs=s.all('settings').filter(r=>r.id.startsWith('tme-ai-prepare:job:')).map(r=>r.value).filter(j=>j.grantId===grant.id);
   if(jobs.length>1)throw Error('PREPARATION_JOB_AMBIGUOUS');
-  return{task,grant:{id:grant.id,revision:grant.revision,workId:task.workId},job:jobs[0]??null};
+  const scoped=!!grant.input.publicationTaskId;
+  return{task,grant:{id:grant.id,revision:grant.revision,workId:task.workId,scopeKind:scoped?'task':'legacy',...(scoped?{publicationTaskId:grant.input.publicationTaskId,accountId:grant.input.accountId}:{})},job:jobs[0]??null};
  }
  throw Error('METHOD_NOT_ALLOWED');
 }

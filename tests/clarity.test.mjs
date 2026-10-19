@@ -155,13 +155,16 @@ test("unsaved work or stale/failed preview cannot show ready materials", () => {
     assert.equal(result.state, "checking");
   }
 });
-test("entry and template UI names distinguish ideas, local templates and old plans", () => {
+test("entry and template UI names distinguish ideas, local templates and the unified plan center", () => {
   const home = renderEntry("overview"),
     create = renderEntry("create");
   assert(home.includes("聊聊新想法"));
-  assert(home.includes("本地模板草稿计划"));
+  assert(home.includes("计划中心"));
+  assert(home.includes("管理计划与执行历史"));
   assert(create.includes("用本地模板起草"));
-  assert(create.includes("定时创建本地模板草稿"));
+  assert(create.includes("本地模板"));
+  assert(create.includes("不调用模型"));
+  assert(!create.includes('type="time"'));
   assert(!create.includes("生成本地歌词与提示词 →"));
 });
 test("Tencent UI states client connection separately from external Chrome control", () => {

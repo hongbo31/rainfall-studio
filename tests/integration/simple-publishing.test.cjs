@@ -428,6 +428,73 @@ test("TME pending terms require exact work/A/account proof and never mutate exis
     f.s.close();
   }
 });
+
+function preparedTerms(f, variant, audio, subject) {
+  const termsText = `Offline fixture terms ${variant}`;
+  const grant = {
+    id: randomUUID(),
+    input: {
+      workId: f.work.id,
+      sourceAudio: { assetId: audio.id, sha256: audio.sha256, variant },
+      identity: { subjectHash: subject },
+    },
+  };
+  const job = {
+    id: randomUUID(), workId: f.work.id, grantId: grant.id,
+    state: "awaiting_terms_review", submissionByClient: false,
+    terms: { termsText, termsHash: createHash("sha256").update(termsText).digest("hex") },
+  };
+  f.s.save("settings", { id: "tme-ai-prepare:grant:" + grant.id, value: grant });
+  f.s.save("settings", { id: "tme-ai-prepare:job:" + job.id, value: job });
+  return job;
+}
+
+test("selected B publication checks expose its exact terms and never reuse old A terms", async () => {
+  const f = setup();
+  try {
+    const account = await configured(f, "qqmusic", "tme"),
+      a = asset(f, "audio_A"), b = asset(f, "audio_B"), subject = "e".repeat(64);
+    asset(f, "cover");
+    f.s.save("accounts", { ...account, remoteSubject: subject });
+    const jobA = preparedTerms(f, "A", a, subject), jobB = preparedTerms(f, "B", b, subject),
+      original = f.s.get("works", f.work.id);
+    f.s.save("works", { ...original, selectedAudioVariant: "B" });
+    const requestB = (await f.s.call("publish.simple", input(f, ["qqmusic"]))).requests[0];
+    assert.equal(requestB.state, "awaiting_terms_review");
+    assert.equal(requestB.materialSnapshot.audio.assetId, b.id);
+    assert.equal(requestB.materialSnapshot.terms.jobId, jobB.id);
+    assert.equal(requestB.materialSnapshot.terms.termsText, jobB.terms.termsText);
+    f.s.save("works", { ...original, selectedAudioVariant: "A" });
+    const requestA = (await f.s.call("publish.simple", input(f, ["qqmusic"]))).requests[0];
+    assert.equal(requestA.materialSnapshot.terms.jobId, jobA.id);
+    assert.equal(requestA.materialSnapshot.audio.assetId, a.id);
+    assert.deepEqual(f.s.get("works", f.work.id).assets, original.assets);
+    assert.equal(f.s.all("operations").length, 0);
+  } finally { f.s.close(); }
+});
+
+test("pending terms listing follows selected A/B with exact source hash and leaves jobs untouched", async () => {
+  const f = setup();
+  try {
+    const a = asset(f, "audio_A"), b = asset(f, "audio_B"),
+      jobA = preparedTerms(f, "A", a, "f".repeat(64)),
+      jobB = preparedTerms(f, "B", b, "f".repeat(64)),
+      original = f.s.get("works", f.work.id),
+      journal = f.s.all("settings").filter(r => r.id.startsWith("tme-ai-prepare:"));
+    f.s.save("works", { ...original, selectedAudioVariant: "B" });
+    assert.deepEqual(f.s.snapshot().publicationPendingTerms.map(row => row.id), [jobB.id]);
+    f.s.save("works", { ...original, selectedAudioVariant: "A" });
+    assert.deepEqual(f.s.snapshot().publicationPendingTerms.map(row => row.id), [jobA.id]);
+    f.s.save("works", { ...original, selectedAudioVariant: "B" });
+    const grantRow = f.s.get("settings", "tme-ai-prepare:grant:" + jobB.grantId);
+    f.s.save("settings", { ...grantRow, value: { ...grantRow.value, input: { ...grantRow.value.input,
+      sourceAudio: { ...grantRow.value.input.sourceAudio, sha256: "0".repeat(64) } } } });
+    assert.deepEqual(f.s.snapshot().publicationPendingTerms, []);
+    f.s.save("settings", grantRow);
+    assert.deepEqual(f.s.all("settings").filter(r => r.id.startsWith("tme-ai-prepare:")), journal);
+    assert.equal(f.s.all("operations").length, 0);
+  } finally { f.s.close(); }
+});
 test("unknown history is not retried and simulation never fabricates a remote receipt", async () => {
   const f = setup("simulation");
   try {

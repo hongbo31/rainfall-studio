@@ -50,7 +50,7 @@ export interface SimpleMaterialSnapshot {
   workId: string;
   workRevision: number;
   title: string;
-  recordingSlot: "audio_A";
+  recordingSlot: "audio_A" | "audio_B";
   audio: {
     assetId: string;
     sha256: string;

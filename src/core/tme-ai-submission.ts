@@ -132,6 +132,13 @@ export class TmeAiSubmissionService{
  context(id:string){const job=this.get(z.uuid().parse(id));return{job,prepared:this.options.resolvePrepared(job.prepareJobId),operations:this.repo.all('operations').filter(o=>o.kind==='tme_ai_submission'&&o.jobId===job.id)}}
  receiptContext(id:string){const job=this.get(z.uuid().parse(id)),operations=this.repo.all('operations').filter(o=>o.kind==='tme_ai_submission'&&o.jobId===job.id),intent=operations.find(o=>o.phase==='submit');if(!intent?.receiptScope)throw Error('SUBMISSION_INTENT_REQUIRED');return{job,operations,receiptScope:intent.receiptScope}}
  publicById(id:string){return this.publicJob(this.get(z.uuid().parse(id)))}
- publicJob(row:Row){const {sessionId,snapshot,familyKey,...value}=row;return value}
+ publicJob(row:Row):Row{
+  const {sessionId,snapshot,familyKey,publicationTaskId,accountId,...value}=row;
+  // Read the existing durable association directly: listing must not construct or recover preparation services.
+  const prepared=this.repo.maybe('settings','tme-ai-prepare:job:'+row.prepareJobId)?.value;
+  const grant=prepared?this.repo.maybe('settings','tme-ai-prepare:grant:'+prepared.grantId)?.value:undefined,g=grant?.input;
+  const scope=prepared?.id===row.prepareJobId&&prepared.workId===row.workId&&grant?.id===prepared.grantId&&g?.workId===row.workId&&z.uuid().safeParse(g.publicationTaskId).success&&z.uuid().safeParse(g.accountId).success?{publicationTaskId:g.publicationTaskId,accountId:g.accountId}:{};
+  return{...value,...scope};
+ }
  listPublic(workId:string){return this.rows().filter(r=>r.workId===z.uuid().parse(workId)).map(r=>this.publicJob(r))}
 }

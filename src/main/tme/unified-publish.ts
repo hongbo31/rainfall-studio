@@ -22,6 +22,11 @@ export function createUnifiedPublishBroker(o:Options){
   return result.value;
  };
  const reason=(e:unknown)=>e instanceof Error&&/^[A-Z0-9_]+$/.test(e.message)?e.message:'PREPARATION_OUTCOME_UNKNOWN';
+ const grantScope=(task:any,grant:any)=>{
+  if(!grant?.publicationTaskId&&!grant?.accountId){if(grant?.scopeKind==='task')throw Error('PREPARATION_ACCOUNT_SCOPE');return{};}
+  if(grant.scopeKind==='legacy'||grant.publicationTaskId!==task.id||grant.accountId!==task.accountId)throw Error('PREPARATION_ACCOUNT_SCOPE');
+  return{publicationTaskId:grant.publicationTaskId,accountId:grant.accountId};
+ };
  async function processTask(initial:any,guard:()=>void){
   let task=initial,dispatched=false;
   const update=async(patch:any)=>{guard();task=await rpc('update',{id:task.id,expectedRevision:task.revision,patch});guard()};
@@ -39,25 +44,26 @@ export function createUnifiedPublishBroker(o:Options){
     return;
    }
    if(grant.workId!==task.workId||grant.suspended)throw Error('PREPARE_WORK_SCOPE');
+   const scope=grantScope(task,grant);
    task=await rpc('claim',{id:task.id,expectedRevision:task.revision});guard();
    let job=context.job;
    const assertJob=()=>{if(!job||job.workId!==task.workId||job.grantId!==grant.id)throw Error('PREPARE_WORK_SCOPE')};
    if(!job){
     // Persisted preparing is a recovery barrier even if the process dies before the job ID is linked.
     dispatched=true;
-    const started=await o.prepare.ui('start',{grantId:grant.id,expectedRevision:grant.revision,consent:true});guard();job=started.job;
+    const started=await o.prepare.ui('start',{grantId:grant.id,expectedRevision:grant.revision,consent:true,...scope});guard();job=started.job;
    }
    assertJob();
    await update({state:'preparing',prepareJobId:job.id,reason:null});
    if(job.state==='ready'){
     dispatched=true;
-    const prepared=await o.prepare.ui('run',{id:job.id,expectedRevision:job.revision,consent:true});guard();job=prepared.job;assertJob();
+    const prepared=await o.prepare.ui('run',{id:job.id,expectedRevision:job.revision,consent:true,...scope});guard();job=prepared.job;assertJob();
    }
    if(job.state!=='awaiting_terms_review'){
     await update({state:'reconcile_required',reason:job.reason??'PREPARATION_REVIEW_REQUIRED'});return;
    }
    // This call only observes/reviews. Terms acceptance and submission stay in their explicit-confirmation workspace.
-   const review=await o.submission.ui('preflight',{workId:task.workId});guard();
+   const review=await o.submission.ui('preflight',{workId:task.workId,...scope});guard();
    if(review.workId!==task.workId)throw Error('SUBMISSION_WORK_SCOPE');
    await update({state:review.job?'awaiting_confirmation':'reconcile_required',...(review.job?{submissionJobId:review.job.id}:{}),reason:review.reasons?.[0]??'TERMS_CONFIRMATION_REQUIRED'});
   }catch(e){
@@ -78,7 +84,7 @@ export function createUnifiedPublishBroker(o:Options){
    if(!context.job)throw Error('PREPARATION_REQUIRED');
    const prepared=await o.prepare.ui('reconcile',{id:context.job.id});guard();
    if(prepared.job?.state!=='awaiting_terms_review')throw Error('PREPARATION_RECONCILIATION_REQUIRED');
-   const review=await o.submission.ui('preflight',{workId:task.workId});guard();
+   const review=await o.submission.ui('preflight',{workId:task.workId,...grantScope(task,context.grant)});guard();
    if(!review.job||review.workId!==task.workId)throw Error('SUBMISSION_REVIEW_REQUIRED');
    task=(await rpc('list')).find((t:any)=>t.id===id);guard();
    return rpc('linkReviewed',{id,expectedRevision:task.revision,prepareJobId:prepared.job.id,submissionJobId:review.job.id});

@@ -1,4 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
+import {matchesPublicationScope,type PublicationScope} from './TmeAiPrepareWorkspace';
+export function submissionResult(result:any,scope?:PublicationScope){
+  if(!scope||!result)return result;
+  const job=matchesPublicationScope(result.job,scope)?result.job:undefined;
+  return {...result,job,jobs:(result.jobs??[]).filter((row:any)=>matchesPublicationScope(row,scope)),ready:result.ready===true&&!!job};
+}
 const reasons: Record<string, string> = {
   AUDIO_REQUIRED: "需要音频",
   COVER_REQUIRED: "需要封面",
@@ -32,6 +38,7 @@ const states: Record<string, string> = {
   published: "官网已发布",
 };
 type Props = {
+  publicationScope?:PublicationScope;
   works: any[];
   workId: string;
   busy: boolean;
@@ -48,6 +55,7 @@ type Props = {
   onReconcile?: () => void;
 };
 export function TmeAiSubmissionPanel(p: Props) {
+  if(p.publicationScope)p={...p,result:submissionResult(p.result,p.publicationScope)};
   const job = p.result?.job ?? p.result?.jobs?.at(-1),
     capability = p.result?.capability;
   const canSubmit =
@@ -65,7 +73,7 @@ export function TmeAiSubmissionPanel(p: Props) {
         <select
           aria-label="腾讯 AI 预检歌曲"
           value={p.workId}
-          disabled={p.busy}
+          disabled={p.busy||!!p.publicationScope}
           onChange={(e) => p.onSelect(e.target.value)}
         >
           {!p.workId && <option value="">选择歌曲</option>}
@@ -164,16 +172,17 @@ export function TmeAiSubmissionPanel(p: Props) {
     </section>
   );
 }
-export default function TmeAiSubmissionWorkspace({
+type WorkspaceProps={data:any;initialWorkId?:string;expanded?:boolean;publicationScope?:PublicationScope};
+export default function TmeAiSubmissionWorkspace(props:WorkspaceProps){
+  return <SubmissionWorkspaceSession key={`${props.data.mode}:${props.initialWorkId??''}:${props.publicationScope?.publicationTaskId??'legacy'}:${props.publicationScope?.accountId??''}`} {...props}/>;
+}
+function SubmissionWorkspaceSession({
   data,
   initialWorkId,
   expanded = false,
-}: {
-  data: any;
-  initialWorkId?: string;
-  expanded?: boolean;
-}) {
-  const works = data.works ?? [],
+  publicationScope,
+}:WorkspaceProps) {
+  const works = (data.works ?? []).filter((work:any)=>!publicationScope||work.id===initialWorkId),
     [workId, setWorkId] = useState(initialWorkId ?? works.at(-1)?.id ?? ""),
     [result, setResult] = useState<any>(null),
     [busy, setBusy] = useState(false),
@@ -205,13 +214,13 @@ export default function TmeAiSubmissionWorkspace({
                   consent: true,
                   rightsConfirmed: true,
                 };
-      const response = await window.rainfall.tmeAiSubmission(action, input);
+      const response = await window.rainfall.tmeAiSubmission(action, publicationScope?{...input,workId,...publicationScope}:input);
       if (token !== generation.current) return;
       if (!response.ok) throw Error(response.error.message);
       setResult(
-        action === "authorizeAndSubmit" || action === "reconcile"
+        submissionResult(action === "authorizeAndSubmit" || action === "reconcile"
           ? { ...result, ready: false, job: response.value }
-          : response.value,
+          : response.value,publicationScope),
       );
       setConsent(false);
       setRights(false);
@@ -245,6 +254,7 @@ export default function TmeAiSubmissionWorkspace({
     <details className="panel" open={expanded || undefined}>
       <summary>腾讯 AI 提交前检查</summary>
       <TmeAiSubmissionPanel
+        publicationScope={publicationScope}
         works={works}
         workId={workId}
         busy={busy}

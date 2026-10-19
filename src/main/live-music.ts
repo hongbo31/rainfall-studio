@@ -32,7 +32,7 @@ export function createLiveMusicBroker(o:Options){
     if(result?.state!=='accepted'){
      const dispatchFile=path.join(receipts,'dispatch.json');if(!fs.existsSync(dispatchFile))return{state:'not_established',reason:'NO_DURABLE_DISPATCH_MARKER'};
      const dispatch=JSON.parse(fs.readFileSync(dispatchFile,'utf8'));if(dispatch.operationId!==c.operation.id||dispatch.requestId!==c.grant.requestId||!Number.isFinite(Date.parse(dispatch.at)))throw Error('DISPATCH_IDENTITY_MISMATCH');
-     result=await o.credentials.withMusicAdapter(identity(c),a=>a.recoverRecent({draft:c.draft.draft,createdAt:dispatch.at}));
+     result=await o.credentials.withMusicAdapter(identity(c),a=>a.recoverRecent({draft:c.draft.draft,createdAt:dispatch.at,expectedModel:c.operation.modelId}));
     }
     fs.mkdirSync(receipts,{recursive:true});fs.writeFileSync(path.join(receipts,'recovery-check.json'),JSON.stringify(result,null,2));
     return result?.state==='accepted'?rpc('internal.liveMusic.recover',{id:c.operation.id,result}):result;

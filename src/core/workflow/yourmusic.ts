@@ -279,12 +279,15 @@ export class YourMusicAdapter implements MusicAdapter {
     if(result.id!==songId)throw Error('OUTPUT_ID_MISMATCH');
     safeMusicUrl(result.audio_wav_url);return result;
   }
-  async recoverRecent(input:{draft:CreativeDraft;createdAt:string}){
+  async recoverRecent(input:{draft:CreativeDraft;createdAt:string;expectedModel?:string}){
+    if(!input.expectedModel || !['chirp-v6','chirp-v6-wild','chirp-v6-mini'].includes(input.expectedModel))
+      return {state:'not_established',reason:'EXPECTED_MODEL_REQUIRED'};
+    if(!Number.isFinite(Date.parse(input.createdAt)))return {state:'not_established',reason:'DISPATCH_TIME_REQUIRED'};
     const r=await this.api('GET','/v1/music/generations/history?page=1&size=20');
     if(r.status!==200)return{state:'not_established',httpStatus:r.status};
     const page=z.object({data:z.array(SongSchema).max(20)}).safeParse(r.body);if(!page.success)return{state:'not_established'};
     const lyrics=input.draft.sections.map(s=>`[${s.kind}]\n${s.lines.join('\n')}`).join('\n\n');
-    const start=Date.parse(input.createdAt),songs=page.data.data.filter(s=>s.title===input.draft.title&&s.model_name==='chirp-v6'&&s.lyric===lyrics&&s.created_at&&Date.parse(s.created_at)>=start-5000&&Date.parse(s.created_at)<=start+300000);
+    const start=Date.parse(input.createdAt),songs=page.data.data.filter(s=>s.title===input.draft.title&&s.model_name===input.expectedModel&&s.lyric===lyrics&&s.created_at&&Date.parse(s.created_at)>=start-5000&&Date.parse(s.created_at)<=start+300000);
     return songs.length===2&&new Set(songs.map(s=>s.id)).size===2?{state:'accepted',trackingId:null,songIds:songs.map(s=>s.id),evidence:'exact_title_lyrics_model_and_time_history_match'}:{state:'not_established',matchingCount:songs.length};
   }
   async download(url: string) {

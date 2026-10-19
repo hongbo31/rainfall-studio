@@ -10,14 +10,16 @@ import {cleanLyricText} from '../shared/tme-lyrics';
 import {TmeAiPrepareMetadataSchema} from '../shared/tme-ai-prepare';
 
 /** Local, current material resolution. This is not a grant or platform authorization. */
-export function resolveTmeAiPrepareScope(s:Studio,input:{workId:string;createDerivative?:boolean}){
- const i=z.strictObject({workId:z.uuid(),createDerivative:z.boolean().optional()}).parse(input);
+export const TmeAiScopeInputSchema=z.strictObject({workId:z.uuid(),publicationTaskId:z.uuid().optional(),accountId:z.uuid().optional(),createDerivative:z.boolean().optional()});
+export function resolveTmeAiPrepareScope(s:Studio,input:z.input<typeof TmeAiScopeInputSchema>){
+ const i=TmeAiScopeInputSchema.parse(input);
  if(s.mode!=='production')throw Error('PRODUCTION_REQUIRED');
  const w=s.get('works',i.workId);
  if(w.ai&&!['generated','assisted'].includes(w.ai))throw Error('AI_PREPARATION_NOT_APPLICABLE');
  if(['把晚安留在门口','留一盏灯'].includes(w.title.normalize('NFKC').trim()))throw Error('PROTECTED_PUBLISHED_WORK');
- if(!w.assets?.audio_A)throw Error('SOURCE_AUDIO_A_REQUIRED');
- const audio=s.get('assets',w.assets.audio_A);
+ const variant=w.selectedAudioVariant==='B'?'B':'A',slot=variant==='B'?'audio_B':'audio_A';
+ if(!w.assets?.[slot])throw Error('SOURCE_AUDIO_A_REQUIRED');
+ const audio=s.get('assets',w.assets[slot]);
  if(audio.kind!=='audio')throw Error('SOURCE_AUDIO_SCOPE');
  const source=s.locate(audio.id).file;
  if(!w.assets?.cover)throw Error('COVER_ASSET_REQUIRED');
@@ -27,13 +29,20 @@ export function resolveTmeAiPrepareScope(s:Studio,input:{workId:string;createDer
  if(w.isCover===true||f.isCover===true)throw Error('AI_COVER_UPLOAD_NOT_ALLOWED');
  // Read stored defaults only. Never initialize settings during inspection.
  let c=s.repo.maybe('settings','simple-publishing:platform:v1:qqmusic')?.value??s.repo.maybe('settings','simple-publishing:platform:v1:kugou')?.value??{};
- const tasks=s.all('settings').filter(r=>r.id.startsWith('unified-publication:v1:')&&r.value?.workId===w.id&&r.value.targets?.some((t:string)=>['qqmusic','kugou'].includes(t))&&!['reviewing','published','rejected'].includes(r.value.state));
+ let tasks=s.all('settings').filter(r=>r.id.startsWith('unified-publication:v1:')&&r.value?.workId===w.id&&r.value.targets?.some((t:string)=>['qqmusic','kugou'].includes(t))&&!['reviewing','published','rejected'].includes(r.value.state));
+ if(i.publicationTaskId){
+  const selected=s.repo.maybe('settings','unified-publication:v1:'+i.publicationTaskId)?.value;
+  if(!selected||selected.workId!==w.id||!selected.targets?.some((t:string)=>['qqmusic','kugou'].includes(t)))throw Error('PUBLICATION_TASK_SCOPE');
+  if(!i.accountId||selected.accountId!==i.accountId)throw Error('PREPARATION_ACCOUNT_SCOPE');
+  if(['reviewing','published','rejected'].includes(selected.state)||selected.reason==='PROTECTED_PUBLISHED_WORK')throw Error('PUBLICATION_RECONCILIATION_REQUIRED');
+  tasks=[{id:'unified-publication:v1:'+selected.id,value:selected}];
+ }else if(i.accountId){tasks=tasks.filter(r=>r.value.accountId===i.accountId);if(!tasks.length)throw Error('PREPARATION_ACCOUNT_SCOPE');}
  if(tasks.length){const target=tasks[0].value.targets.find((t:string)=>['qqmusic','kugou'].includes(t));c=s.repo.maybe('settings','simple-publishing:platform:v1:'+target)?.value??c;}
  const taskAccounts=[...new Set(tasks.map(r=>r.value.accountId).filter(Boolean))];
  const configuredAccounts=[...new Set(['qqmusic','kugou'].map(t=>s.repo.maybe('settings','simple-publishing:platform:v1:'+t)?.value?.accountId).filter(Boolean))];
  const accounts=taskAccounts.length?taskAccounts:configuredAccounts;
  if(accounts.length>1)throw Error('ACCOUNT_SCOPE_AMBIGUOUS');
- const accountId=accounts[0];
+ const accountId=accounts[0];if(i.accountId&&accountId!==i.accountId)throw Error('PREPARATION_ACCOUNT_SCOPE');
  if(accountId){const account=s.repo.maybe('accounts',accountId);if(!account||!['tme','qqmusic','kugou'].includes(account.provider))throw Error('TARGET_ACCOUNT_MISMATCH')}
  const artistId=w.artistId??c.artistId,artist=artistId?s.repo.maybe('artists',artistId):undefined;
  const text=(key:string,fallback?:unknown)=>typeof f[key]==='string'&&f[key].trim()?f[key]:typeof w[key]==='string'&&w[key].trim()?w[key]:fallback;
@@ -66,5 +75,5 @@ export function resolveTmeAiPrepareScope(s:Studio,input:{workId:string;createDer
   }
   uploadPath=file;uploadHash=audio.sha256;
  }
- return{workId:w.id,...(accountId?{accountId}:{}),variant:'A' as const,prepareOnly:true,sourceAudio:{assetId:audio.id,sha256:audio.sha256,variant:'A' as const},upload:{path:uploadPath,sha256:uploadHash!,format:'pcm_wav' as const,derivedFromSha256:audio.sha256},cover:{assetId:cover.id,sha256:cover.sha256},lyricsHash:hash(lyrics),metadata,...(metadata.albumMode==='existing'?{existingAlbum:{title:metadata.albumTitle}}:{})};
+ return{workId:w.id,...(i.publicationTaskId?{publicationTaskId:i.publicationTaskId}:{}),...(accountId?{accountId}:{}),variant,prepareOnly:true,sourceAudio:{assetId:audio.id,sha256:audio.sha256,variant},upload:{path:uploadPath,sha256:uploadHash!,format:'pcm_wav' as const,derivedFromSha256:audio.sha256},cover:{assetId:cover.id,sha256:cover.sha256},lyricsHash:hash(lyrics),metadata,...(metadata.albumMode==='existing'?{existingAlbum:{title:metadata.albumTitle}}:{})};
 }

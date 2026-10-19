@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CreativeDraftSchema } from "./creation";
+import { PlanDotEchoSchema } from './plan-dot';
 export const InboxId = z
   .string()
   .regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/)
@@ -28,7 +29,7 @@ export const InboxItemSchema = z
     (i) => i.parentRevision === null || i.parentRevision < i.revision,
     "PARENT_REVISION_INVALID",
   );
-export const InboxPackageSchema = z
+const LegacyInboxPackageSchema = z
   .strictObject({
     schemaVersion: z.literal(1),
     batchId: InboxId,
@@ -41,6 +42,19 @@ export const InboxPackageSchema = z
     if (new Set(keys).size !== keys.length)
       ctx.addIssue({ code: "custom", message: "DUPLICATE_ITEM" });
   });
+// Version dispatch is strict: a malformed new package can never be reinterpreted as v1.
+const PlanInboxItemSchema = z.strictObject({...InboxItemSchema.shape,requestEcho:PlanDotEchoSchema})
+  .refine(i=>i.parentRevision===null||i.parentRevision<i.revision,'PARENT_REVISION_INVALID');
+export const PlanInboxPackageSchema = z.strictObject({
+ schemaVersion:z.literal(2),batchId:InboxId,createdAt:at,targetWorkspaceRef:reference,
+ items:z.array(PlanInboxItemSchema).min(1).max(20),
+}).superRefine((p,ctx)=>{
+ const keys=p.items.map(i=>`${i.externalItemId}:${i.revision}`);
+ if(new Set(keys).size!==keys.length)ctx.addIssue({code:'custom',message:'DUPLICATE_ITEM'});
+ const requests=p.items.map(i=>i.requestEcho.requestId);
+ if(new Set(requests).size!==requests.length)ctx.addIssue({code:'custom',message:'DUPLICATE_DOT_REQUEST'});
+});
+export const InboxPackageSchema = z.union([LegacyInboxPackageSchema,PlanInboxPackageSchema]);
 export const InboxChannelSchema = z.strictObject({
   id: InboxId,
   workspaceId: reference,

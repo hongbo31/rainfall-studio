@@ -9,6 +9,167 @@ const { draft } = require("./fixtures/workflow.cjs");
 const sha = "a".repeat(64),
   termsHash = "b".repeat(64);
 
+function managedMusicStart(x, changes = {}) {
+  const s = managedInboxStart(x, {ownerKey:'score-owner:'+randomUUID()});
+  const evaluated = recordInboxScore(x, s.run);
+  const {pricingEvidence, ...grant} = x.music;
+  const input = {ownerKey:'music-owner:'+randomUUID(),budgetScope:'unified-plan:music-fixture',artistId:x.plan.artistId,
+    evaluationRunId:evaluated.id,music:{...grant,creditPolicy:{mode:'existing_credits',noRecharge:true,actualCostUnknown:true,consent:true}},...changes};
+  return {input,evaluated,run:x.service.startManagedMusic(input)};
+}
+
+test('managed music uses only the passed final inbox draft, is text-free and owner-idempotent',t=>{
+  const x=setup(t),s=managedMusicStart(x),n=x.service.next({id:s.run.id});
+  assert.equal(n.task.type,'music_submit');
+  assert.deepEqual(n.task.request.draft,s.evaluated.candidate.draft);
+  assert.equal(n.run.plan.text,null);
+  assert.equal(n.run.plan.publication,null);
+  assert.equal(x.service.startManagedMusic(s.input).id,s.run.id);
+  assert.equal(x.works(),1);
+  assert.throws(()=>x.service.startManagedMusic({...s.input,music:{...s.input.music,budgetCredits:3}}),/MANAGED_MUSIC_CONFLICT/);
+  assert.equal(x.repo.all('operations').filter(o=>o.runId===s.run.id).length,0);
+});
+
+test('managed music consumes the passed rewritten final draft rather than the imported original',t=>{
+  const x=setup(t),s=managedInboxStart(x);
+  let evaluation=recordInboxScore(x,s.run,30);
+  evaluation=recordInboxRewrite(x,evaluation,{...draft(),title:'Final revised scored title'});
+  evaluation=recordInboxScore(x,evaluation,80);
+  const {pricingEvidence,...grant}=x.music;
+  const child=x.service.startManagedMusic({ownerKey:'rewritten-music',budgetScope:'shared',artistId:x.plan.artistId,evaluationRunId:evaluation.id,music:{...grant,creditPolicy:{mode:'existing_credits',noRecharge:true,actualCostUnknown:true,consent:true}}});
+  const next=x.service.next({id:child.id});
+  assert.equal(next.task.request.draft.title,'Final revised scored title');
+  assert.equal(next.run.candidate.id,evaluation.candidate.id);
+  assert.notEqual(x.repo.get('drafts',s.draftId).draft.title,'Final revised scored title');
+});
+
+test('managed music rejects unscored/local drafts, wrong artist and legacy credit authorization',t=>{
+  const x=setup(t),s=managedInboxStart(x);
+  const {pricingEvidence,...grant}=x.music;
+  const input={ownerKey:'music',budgetScope:'shared',artistId:x.plan.artistId,evaluationRunId:s.run.id,
+    music:{...grant,creditPolicy:{mode:'existing_credits',noRecharge:true,actualCostUnknown:true,consent:true}}};
+  assert.throws(()=>x.service.startManagedMusic(input),/MANAGED_MUSIC_EVALUATION_REQUIRED/);
+  recordInboxScore(x,s.run);
+  assert.throws(()=>x.service.startManagedMusic({...input,music:x.music}));
+  assert.throws(()=>x.service.startManagedMusic({...input,artistId:randomUUID()}),/MANAGED_MUSIC_EVALUATION_REQUIRED/);
+  const run=x.service.context(s.run.id).run;
+  x.repo.save('settings',{id:'production-flow:run:'+run.id,value:{...run,score:{...run.score,revisionId:randomUUID()}}});
+  assert.throws(()=>x.service.startManagedMusic(input),/MANAGED_MUSIC_EVALUATION_REQUIRED/);
+  assert.equal(x.works(),0);
+});
+
+test('managed existing-credit consent bypasses old pricingEvidence while trusted quote remains fail closed',t=>{
+  const x=setup(t,{verifyMusicPricing:()=>false}),s=managedMusicStart(x);
+  assert.equal(claimNext(x,s.run.id).task.type,'music_submit');
+  const y=setup(t),q=managedMusicStart(y,{music:{profileId:y.music.profileId,profileRevision:1,modelId:'chirp-v6',budgetCredits:2,maxCostPerRequestCredits:2,consent:true,creditPolicy:{mode:'trusted_quote',quoteId:randomUUID()}}});
+  assert.equal(y.service.next({id:q.run.id}).task,null);
+  assert.deepEqual(y.service.context(q.run.id).run.reasons,['MUSIC_PRICING_UNVERIFIED']);
+});
+
+test('managed music stop before submit forbids claims and retry cannot reauthorize it',t=>{
+  const x=setup(t),s=managedMusicStart(x);
+  x.service.next({id:s.run.id});
+  x.service.stopManagedMusic(s.input.ownerKey);
+  let run=x.service.context(s.run.id).run;
+  assert.equal(x.service.next({id:run.id}).task,null);
+  assert.throws(()=>x.service.claim({id:run.id,expectedRevision:run.revision}),/MANAGED_MUSIC_STOPPED/);
+  assert.throws(()=>x.service.retry({id:run.id,expectedRevision:run.revision}),/MANAGED_MUSIC_STOPPED/);
+  assert.equal(x.service.startManagedMusic(s.input).id,s.run.id);
+  assert.equal(x.repo.all('operations').filter(o=>o.runId===run.id).length,0);
+});
+
+test('managed accepted music drains original IDs after stop and completes without publication gates',t=>{
+  const x=setup(t),s=managedMusicStart(x),c=claimNext(x,s.run.id);
+  x.service.stopManagedMusic(s.input.ownerKey);
+  x.service.record({id:s.run.id,operationId:c.operation.id,result:{type:'music_submit',status:'accepted',trackingId:'original',songIds:['original-A','original-B'],actualCostCredits:null,evidenceId:null}});
+  const poll=claimNext(x,s.run.id);
+  assert.deepEqual(poll.task.request.songIds,['original-A','original-B']);
+  const assets=[0,1].map(ordinal=>({providerSongId:poll.task.request.songIds[ordinal],assetId:randomUUID(),sha256:sha,ordinal}));
+  for(const a of assets)x.repo.save('assets',{id:a.assetId,kind:'audio',sha256:a.sha256});
+  const done=x.service.record({id:s.run.id,operationId:poll.operation.id,result:{type:'music_assets',status:'complete',assets}});
+  assert.equal(done.state,'completed');
+  assert.equal(done.stage,'assets');
+  assert.equal(done.managedStopped,true);
+  assert.equal(x.service.next({id:done.id}).task,null);
+  assert.equal(x.repo.all('operations').filter(o=>o.runId===done.id&&o.taskType==='music_submit').length,1);
+});
+
+test('managed unknown restart keeps reservation and blocks POST across profiles in the same budget',t=>{
+  const x=setup(t),a=managedMusicStart(x);
+  const secondProfile=randomUUID();
+  x.repo.save('settings',{...x.repo.get('settings','api-profile:'+x.music.profileId),id:'api-profile:'+secondProfile});
+  const b=x.service.startManagedMusic({...a.input,ownerKey:'other-music-owner',music:{...a.input.music,profileId:secondProfile,budgetCredits:100}});
+  const claim=claimNext(x,a.run.id);
+  assert.throws(()=>claimNext(x,b.id),/FLOW_PROVIDER_BUSY/);
+  const restarted=new w.ProductionFlowService(x.repo,x.options);
+  assert.equal(restarted.context(a.run.id).run.state,'unknown');
+  const next=restarted.next({id:b.id});
+  assert.throws(()=>restarted.claim({id:b.id,expectedRevision:next.run.revision}),/PROVIDER_RISK_FROZEN/);
+  restarted.stopManagedMusic(a.input.ownerKey);
+  assert.equal(restarted.startManagedMusic(a.input).state,'unknown');
+  assert.equal(x.repo.all('workflowLedger').filter(e=>e.unit==='provider_credit'&&e.kind==='release').length,0);
+});
+
+test('managed read-only restart after stop resumes original song IDs without manual reauthorization',t=>{
+  const x=setup(t),s=managedMusicStart(x),c=claimNext(x,s.run.id);
+  x.service.record({id:s.run.id,operationId:c.operation.id,result:{type:'music_submit',status:'accepted',trackingId:'t',songIds:['a','b'],actualCostCredits:null,evidenceId:null}});
+  claimNext(x,s.run.id);
+  x.service.stopManagedMusic(s.input.ownerKey);
+  const restarted=new w.ProductionFlowService(x.repo,x.options),n=restarted.next({id:s.run.id});
+  assert.equal(n.task?.type,'music_assets');
+  const poll=restarted.claim({id:s.run.id,expectedRevision:n.run.revision});
+  assert.deepEqual(poll.task.request.songIds,['a','b']);
+  assert.equal(x.repo.all('operations').filter(o=>o.runId===s.run.id&&o.taskType==='music_submit').length,1);
+});
+
+test('managed budget is shared across repository connections and resets at Beijing midnight',t=>{
+  const x=setup(t),a=managedMusicStart(x),profileId=randomUUID();
+  x.repo.save('settings',{...x.repo.get('settings','api-profile:'+x.music.profileId),id:'api-profile:'+profileId});
+  const b=x.service.startManagedMusic({...a.input,ownerKey:'second-day-owner',music:{...a.input.music,profileId}});
+  x.service.next({id:b.id});
+  const otherRepo=new w.Repository(x.repo.filename);t.after(()=>otherRepo.close());
+  const other=new w.ProductionFlowService(otherRepo,x.options);
+  x.now('2026-10-19T15:59:00Z');
+  const c=claimNext(x,a.run.id);
+  x.service.record({id:a.run.id,operationId:c.operation.id,result:{type:'music_submit',status:'accepted',trackingId:'t',songIds:['a','b'],actualCostCredits:2,evidenceId:'fixture-cost'}});
+  let n=other.next({id:b.id});
+  assert.throws(()=>other.claim({id:b.id,expectedRevision:n.run.revision}),/MUSIC_BUDGET_INSUFFICIENT/);
+  x.now('2026-10-19T16:00:00Z');n=other.next({id:b.id});
+  const nextDay=other.claim({id:b.id,expectedRevision:n.run.revision});
+  assert.equal(nextDay.operation.budgetDate,'2026-10-20');
+  assert.equal(nextDay.operation.budgetScope,a.input.budgetScope);
+  assert.notEqual(nextDay.operation.planId,c.operation.planId);
+});
+
+test('managed source mutation after child creation blocks a payable claim',t=>{
+  const x=setup(t),s=managedMusicStart(x);
+  const final=x.repo.get('drafts',s.evaluated.candidate.id);
+  x.repo.save('drafts',{...final,draft:{...final.draft,title:'tampered'}});
+  assert.throws(()=>claimNext(x,s.run.id),/MANAGED_MUSIC_EVALUATION_REQUIRED/);
+  assert.equal(x.repo.all('operations').filter(o=>o.runId===s.run.id).length,0);
+});
+
+test('managed plans cannot be used as a second legacy text/music schedule',t=>{
+  const x=setup(t),s=managedMusicStart(x);
+  x.now('2026-10-23T00:00:00Z');
+  assert.throws(()=>x.service.trigger({planId:s.run.planId,requestId:randomUUID()}),/MANAGED_PLAN_INTERNAL_ONLY/);
+  const n=x.service.next({id:s.run.id});
+  assert.throws(()=>x.service.useManualAssets({id:s.run.id,expectedRevision:n.run.revision,consent:true}),/MANAGED_PLAN_INTERNAL_ONLY/);
+});
+
+test('late original accepted receipt recovers managed unknown once without a second POST',t=>{
+  const x=setup(t),s=managedMusicStart(x),c=claimNext(x,s.run.id);
+  x.service.record({id:s.run.id,operationId:c.operation.id,result:{type:'music_submit',status:'unknown',reason:'TIMEOUT'}});
+  x.service.stopManagedMusic(s.input.ownerKey);
+  const accepted={type:'music_submit',status:'accepted',trackingId:'original',songIds:['a','b'],actualCostCredits:null,evidenceId:null};
+  const recovered=x.service.record({id:s.run.id,operationId:c.operation.id,result:accepted});
+  assert.equal(recovered.stage,'assets');
+  assert.equal(claimNext(x,s.run.id).task.type,'music_assets');
+  assert.throws(()=>x.service.record({id:s.run.id,operationId:c.operation.id,result:{...accepted,songIds:['other','ids']}}),/IDEMPOTENCY_CONFLICT/);
+  assert.equal(x.repo.all('operations').filter(o=>o.runId===s.run.id&&o.taskType==='music_submit').length,1);
+  assert.equal(x.repo.get('operations',c.operation.id).recoveryEvidence[0].result.reason,'TIMEOUT');
+});
+
 test("Beijing 09:00 fires at 01:00 UTC and never repeats at 09:00 UTC", (t) => {
   const x = setup(t);
   x.now("2026-10-17T00:59:50Z");
@@ -131,6 +292,10 @@ function setup(t, changes = {}) {
         artistId,
         title: candidate.draft.title,
         lyrics: candidate.pair.lyrics,
+        prompt: candidate.pair.musicPrompt,
+        productionFlowRunId: run.id,
+        productionCandidateId: candidate.id,
+        productionCandidateHash: candidate.pairHash,
         source: candidate.source,
       });
       return { workId };
@@ -1083,7 +1248,7 @@ function recordInboxScore(x, run, level = 80, invalid = false) {
   });
   return x.service.context(run.id).run;
 }
-function recordInboxRewrite(x, run) {
+function recordInboxRewrite(x, run, finalDraft=draft()) {
   const claim = claimNext(x, run.id);
   assert.equal(claim.task.type, "text_generate");
   x.service.record({
@@ -1106,7 +1271,7 @@ function recordInboxRewrite(x, run) {
         },
         estimatedCostMicros: 270,
         priceVersion: "deepseek-peak-usd-2026-10-16",
-        draft: draft(),
+        draft: finalDraft,
         reasons: [],
         httpStatus: 200,
       },

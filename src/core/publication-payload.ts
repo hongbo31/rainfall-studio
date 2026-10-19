@@ -24,7 +24,7 @@ export function publicationPayload(s: Studio, w: Row) {
       return null;
     }
   };
-  const audio = asset("audio_A", "AUDIO"),
+  const audio = asset(w.selectedAudioVariant==="B"?"audio_B":"audio_A", "AUDIO"),
     cover = asset("cover", "COVER"),
     l = s.lyricService().forWork(w);
   if (!l.cleaned.trim()) warnings.push("LYRICS_MISSING");

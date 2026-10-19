@@ -226,6 +226,7 @@ export function createProductionFlowBroker(o: Options) {
               "PROFILE_PROVIDER_MISMATCH",
               "PUBLICATION_APPROVAL_STALE",
               "MUSIC_PRICING_UNVERIFIED",
+              "MANAGED_MUSIC_WORK_SCOPE",
             ].includes(e.message)
             ? e.message
             : "PROFILE_REVALIDATION_REQUIRED",

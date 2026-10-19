@@ -1,4 +1,4 @@
-import {resolveTmeAiPrepareScope} from './tme-ai-scope';
+import {resolveTmeAiPrepareScope,TmeAiScopeInputSchema} from './tme-ai-scope';
 import {publishSimple} from './simple-publication';
 import {unifiedPublicationService} from './unified-publication-integration';
 import {TmeAiPrepareGrantSchema} from '../shared/tme-ai-prepare';
@@ -34,14 +34,16 @@ function assertPcmWav(file:string){
  }finally{fs.closeSync(fd)}
 }
 export function verifyCurrentTmeAiScope(s:Studio,g:TmeAiPrepareGrant){
- const current=resolveTmeAiPrepareScope(s,{workId:g.workId});
+ const current=resolveTmeAiPrepareScope(s,{workId:g.workId,...(g.publicationTaskId?{publicationTaskId:g.publicationTaskId,accountId:g.accountId}:{})});
+ if(g.publicationTaskId){const account=s.repo.maybe('accounts',g.accountId!);if(current.accountId!==g.accountId||account?.remoteSubject&&account.remoteSubject!==g.identity.subjectHash)throw Error('PREPARATION_ACCOUNT_SCOPE');}
  const material=(v:any)=>({workId:v.workId,sourceAudio:v.sourceAudio,upload:v.upload,cover:v.cover,lyricsHash:v.lyricsHash,metadata:v.metadata,...(v.existingAlbum?{existingAlbum:v.existingAlbum}:{})});
  if(hash(material(current))!==hash(material(g)))throw Error('PREPARATION_GRANT_STALE');
 }
 export function verifyTmeAiPrepareAssets(s:Studio,g:TmeAiPrepareGrant){
  if(s.repo.maybe('settings','tme-ai-prepare:grant:'+g.id)?.value?.scopeSource==='current-work')verifyCurrentTmeAiScope(s,g);
  const work=s.get('works',g.workId);
- if(work.assets?.audio_A!==g.sourceAudio.assetId||g.sourceAudio.variant!=='A')throw Error('SOURCE_AUDIO_SCOPE');
+ const variant=work.selectedAudioVariant==='B'?'B':'A';
+ if(work.assets?.[variant==='B'?'audio_B':'audio_A']!==g.sourceAudio.assetId||g.sourceAudio.variant!==variant)throw Error('SOURCE_AUDIO_SCOPE');
  const audio=s.get('assets',g.sourceAudio.assetId);
  if(audio.kind!=='audio'||audio.sha256!==g.sourceAudio.sha256||g.upload.derivedFromSha256!==audio.sha256)throw Error('SOURCE_AUDIO_SCOPE');
  const source=s.locate(audio.id);
@@ -69,14 +71,18 @@ const idSchema=z.strictObject({id:z.uuid()}),empty=z.strictObject({});
 /** Only the parent Core port routes here; renderer RPC has no corresponding methods. */
 export function executeTmeAiPrepare(s:Studio,action:string,input:unknown={}){
  if(s.mode!=='production')throw Error('PRODUCTION_REQUIRED');
- if(action==='resolveScope')return resolveTmeAiPrepareScope(s,z.strictObject({workId:z.uuid(),createDerivative:z.boolean().optional()}).parse(input));
+ if(action==='resolveScope')return resolveTmeAiPrepareScope(s,TmeAiScopeInputSchema.parse(input));
  if(action==='grantContext'){const id=idSchema.parse(input).id;const grant=s.repo.maybe('settings','tme-ai-prepare:grant:'+id)?.value;if(!grant)throw Error('NOT_FOUND');return grant;}
  if(action==='registerScopedGrant'){
-  const i=z.strictObject({grant:TmeAiPrepareGrantSchema,accountId:z.uuid()}).parse(input);
+  const i=z.strictObject({grant:TmeAiPrepareGrantSchema,accountId:z.uuid(),publicationTaskId:z.uuid().optional()}).parse(input);
   return s.repo.transaction(()=>{
-   const tasks=unifiedPublicationService(s).list().filter(t=>t.workId===i.grant.workId&&t.targets.some((target:string)=>['qqmusic','kugou'].includes(target))&&!['published','reviewing','rejected'].includes(t.state));
+   const taskId=i.publicationTaskId??i.grant.publicationTaskId;
+   if(i.publicationTaskId&&i.grant.publicationTaskId!==i.publicationTaskId||i.grant.accountId&&i.grant.accountId!==i.accountId)throw Error('PREPARATION_ACCOUNT_SCOPE');
+   const tasks=unifiedPublicationService(s).list().filter(t=>t.workId===i.grant.workId&&(!taskId||t.id===taskId)&&t.targets.some((target:string)=>['qqmusic','kugou'].includes(target))&&!['published','reviewing','rejected'].includes(t.state));
    const ids=[...new Set(tasks.map(t=>t.accountId))];
    if(ids.length!==1||ids[0]!==i.accountId||tasks.some(t=>t.dispatchedAt||t.reason==='PROTECTED_PUBLISHED_WORK'))throw Error('PREPARATION_ACCOUNT_SCOPE');
+   const planLink=taskId?s.all('settings').find(r=>r.id.startsWith('plan-publication:v1:')&&r.value?.publicationTaskId===taskId)?.value:null;
+   if(planLink)throw Error(planLink.albumIntent?.mode==='existing'?'ALBUM_APPEND_UNAVAILABLE':'ALBUM_CREATE_UNAVAILABLE');
    const account=s.get('accounts',i.accountId);
    if(!['tme','qqmusic','kugou'].includes(account.provider)||account.remoteSubject&&account.remoteSubject!==i.grant.identity.subjectHash)throw Error('IDENTITY_SCOPE');
    verifyCurrentTmeAiScope(s,i.grant);
@@ -103,7 +109,9 @@ export function executeTmeAiPrepare(s:Studio,action:string,input:unknown={}){
   case 'reconcile':return service.reconcile(input);
   case 'context':{const c=service.context(idSchema.parse(input).id);return{...c,lyricsText:cleanLyricText(s.get('works',c.job.workId).lyrics??'').cleaned,coverPath:s.locate(c.grant.input.cover.assetId).file,sourceAudioPath:s.locate(c.grant.input.sourceAudio.assetId).file};}
   case 'contextPublic':return service.contextPublic(idSchema.parse(input).id);
-  case 'listPublic':empty.parse(input);return service.listPublic();
+  case 'listPublic':{
+   empty.parse(input);const result=service.listPublic();return{...result,grants:result.grants.map(g=>{const row=s.repo.maybe('settings','tme-ai-prepare:grant:'+g.id)?.value?.input;return{...g,...(row?.publicationTaskId?{publicationTaskId:row.publicationTaskId,accountId:row.accountId}:{})}})};
+  }
   default:throw Error('METHOD_NOT_ALLOWED');
  }
 }

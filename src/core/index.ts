@@ -1,3 +1,4 @@
+import {recordPlanModelEvidence,invalidatePlanModelEvidence} from './plan-center-models';
 import {executeUnifiedPublication} from "./unified-publication-integration";
 import { materialEntries } from "./materials";
 export { materialEntries };
@@ -132,6 +133,8 @@ if (port) {
   );
   let chain = Promise.resolve().then(() => studio.scanInbox());
   const execute = async (method: string, input: any) => {
+    if(method==='internal.planCenter.recordModelEvidence')return recordPlanModelEvidence(studio.repo,input,studio.now().toISOString());
+    if(method==='internal.planCenter.invalidateModelEvidence')return invalidatePlanModelEvidence(studio.repo,input);
     if(method==='internal.inboxBridge.configure')return studio.inboxController().configureBridge(input);
     if(method.startsWith('internal.unifiedPublish.'))return executeUnifiedPublication(studio,method.slice('internal.unifiedPublish.'.length),input);
     if(method.startsWith('internal.tmeAiSubmission.'))return executeTmeAiSubmission(studio,method.slice('internal.tmeAiSubmission.'.length),input);

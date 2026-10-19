@@ -80,6 +80,7 @@ export default function PublicationPipelineProgress({
                 .map((target: string) => names[target] ?? target)
                 .join(" / ")}
             </b>
+            {job.accountId&&<span className="publication-task-account">{(data.accounts??[]).find((account:any)=>account.id===job.accountId)?.name??'账号待核对'}</span>}
             <Badge>
               {["reviewing", "published", "rejected"].includes(job.state) &&
               !job.receipt
@@ -131,7 +132,8 @@ export default function PublicationPipelineProgress({
           {(job.state === "awaiting_authorization" || (!job.dispatchedAt && job.state === "blocked" && (job.targets ?? []).some((t:string) => ["qqmusic","kugou"].includes(t)) && !["PROTECTED_PUBLISHED_WORK","AI_PREPARATION_NOT_APPLICABLE","OFFICIAL_RECORD_ALREADY_EXISTS","SUBMISSION_DURABLE_BARRIER_UNREADABLE","EXISTING_ALBUM_WRITE_INTEGRATION_UNVERIFIED"].includes(job.reason))) && (
             <TmeAiPrepareWorkspace
               compact
-              key={job.workId}
+              key={`prepare:${job.id}:${job.accountId??'legacy'}:${job.workId}`}
+              publicationScope={job.accountId?{publicationTaskId:job.id,accountId:job.accountId}:undefined}
               data={data}
               initialWorkId={job.workId}
               notify={() =>
@@ -147,7 +149,8 @@ export default function PublicationPipelineProgress({
             "rejected",
           ].includes(job.state) && (
             <TmeAiSubmissionWorkspace
-              key={`${job.workId}:${job.state}:${job.submissionJobId ?? ""}`}
+              key={`submission:${job.id}:${job.accountId??'legacy'}:${job.workId}:${job.state}:${job.submissionJobId??''}`}
+              publicationScope={job.accountId?{publicationTaskId:job.id,accountId:job.accountId}:undefined}
               data={data}
               initialWorkId={job.workId}
               expanded={

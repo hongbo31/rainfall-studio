@@ -34,6 +34,26 @@ export const FlowMusicGrantSchema = z.strictObject({
   pricingEvidence: z.string().trim().min(1).max(1000),
   consent: z.literal(true),
 });
+// A new plan grant cannot inherit the old one-song authorization or user-entered
+// pricingEvidence. A quote is usable only when Core's trusted verifier resolves it.
+export const FlowMusicCreditPolicySchema = z.discriminatedUnion("mode", [
+  z.strictObject({
+    mode: z.literal("existing_credits"),
+    noRecharge: z.literal(true),
+    actualCostUnknown: z.literal(true),
+    consent: z.literal(true),
+  }),
+  z.strictObject({ mode: z.literal("trusted_quote"), quoteId: uuid }),
+]);
+export const FlowManagedMusicGrantSchema = z.strictObject({
+  profileId: uuid,
+  profileRevision: revision,
+  modelId: z.enum(["chirp-v6", "chirp-v6-wild", "chirp-v6-mini"]),
+  maxCostPerRequestCredits: z.number().int().positive().max(1_000_000),
+  budgetCredits: z.number().int().positive().max(1_000_000),
+  creditPolicy: FlowMusicCreditPolicySchema,
+  consent: z.literal(true),
+});
 export const FlowPublicationSchema = z.strictObject({
   target: z.literal("tme"),
   accountId: uuid,
@@ -68,7 +88,10 @@ export const ProductionFlowPlanSchema = z
       .default("local_template"),
     scoreMode: z.enum(["rule_based", "deepseek"]).default("rule_based"),
     text: FlowTextGrantSchema.nullable().default(null),
-    music: FlowMusicGrantSchema.nullable().default(null),
+    music: z
+      .union([FlowMusicGrantSchema, FlowManagedMusicGrantSchema])
+      .nullable()
+      .default(null),
     publication: FlowPublicationSchema.nullable().default(null),
     autoContinue: z.boolean().default(false),
     inboxEvaluation: z.boolean().default(false),

@@ -4,7 +4,7 @@ import { GenerateTurnSchema, TextConfigurationSchema } from "./creation";
 import { MusicRequestSchema } from "./music";
 import { DailyPlanInputSchema, SelectionSchema } from "./daily";
 import { InboxSetupSchema } from "./inbox";
-import {PlanCenterSaveSchema,PlanCenterToggleSchema,PlanCenterIdSchema,PlanCenterRunSchema,PlanCenterStopSchema,PlanCenterRetrySchema} from './plan-center';
+import {PlanCenterSaveSchema,PlanCenterToggleSchema,PlanCenterIdSchema,PlanCenterRunSchema,PlanCenterStopSchema,PlanCenterRetrySchema,PlanCenterBindWorkSchema,PlanCenterSelectVersionSchema,PlanCenterConfirmMaterialsSchema} from './plan-center';
 import { TmeInputSchema } from './tme';
 import { CoverRequestSchema } from './cover-handoff';
 import { TmeObservationSchemas } from './tme-observations';
@@ -223,6 +223,11 @@ export const methodSchemas: Record<string, z.ZodType> = {
 export function validate(method: string, input: unknown) {
   const planSchemas:Record<string,z.ZodType>={
     'planCenter.list':z.strictObject({}),'planCenter.catalog':z.strictObject({}),
+    'planCenter.status':z.strictObject({}),'planCenter.dotStatus':z.strictObject({}),'planCenter.exportDotRequests':z.strictObject({}),
+    'planCenter.musicStatus':z.strictObject({}),'planCenter.publicationStatus':z.strictObject({}),
+    'planCenter.bindWork':PlanCenterBindWorkSchema,'planCenter.selectVersion':PlanCenterSelectVersionSchema,
+    'planCenter.confirmMaterials':PlanCenterConfirmMaterialsSchema,'planCenter.materialPreview':PlanCenterIdSchema,
+    'planCenter.refreshModels':z.strictObject({profileId:z.uuid(),expectedRevision:z.number().int().positive()}),
     'planCenter.save':PlanCenterSaveSchema,'planCenter.toggle':PlanCenterToggleSchema,
     'planCenter.preview':PlanCenterIdSchema,'planCenter.run':PlanCenterRunSchema,
     'planCenter.stop':PlanCenterStopSchema,'planCenter.retry':PlanCenterRetrySchema,

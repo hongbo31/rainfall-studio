@@ -138,7 +138,7 @@ function material(
     workId: w.id,
     workRevision: w.revision,
     title: w.title,
-    recordingSlot: "audio_A",
+    recordingSlot: w.selectedAudioVariant==="B"?"audio_B":"audio_A",
     audio:
       audio && audioAsset
         ? {
@@ -284,7 +284,7 @@ function pendingTerms(
       !g ||
       grant.suspended ||
       g.workId !== w.id ||
-      g.sourceAudio?.variant !== "A" ||
+      g.sourceAudio?.variant !== (w.selectedAudioVariant === "B" ? "B" : "A") ||
       g.sourceAudio.assetId !== m.audio.assetId ||
       g.sourceAudio.sha256 !== m.audio.sha256
     )
@@ -395,6 +395,8 @@ export function listPublicationPendingTerms(
       job.terms.termsHash !== hash(job.terms.termsText)
     )
       continue;
+    const variant = w.selectedAudioVariant === "B" ? "B" : "A",
+      slot = variant === "B" ? "audio_B" : "audio_A";
     const grant = s.repo.maybe(
         "settings",
         "tme-ai-prepare:grant:" + job.grantId,
@@ -404,11 +406,11 @@ export function listPublicationPendingTerms(
       !g ||
       grant.suspended ||
       g.workId !== w.id ||
-      g.sourceAudio?.variant !== "A" ||
-      g.sourceAudio.assetId !== w.assets?.audio_A
+      g.sourceAudio?.variant !== variant ||
+      g.sourceAudio.assetId !== w.assets?.[slot]
     )
       continue;
-    const audio = s.repo.maybe("assets", w.assets.audio_A);
+    const audio = s.repo.maybe("assets", w.assets[slot]);
     if (
       !audio ||
       audio.kind !== "audio" ||

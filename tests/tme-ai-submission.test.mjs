@@ -31,6 +31,18 @@ test('prepare-only consent cannot authorize or dispatch a formal submission',t=>
  const x=setup(t),r=x.review();assert.equal(r.state,'reviewed');assert.equal(r.termsAccepted,false);assert.equal(r.submissionByClient,false);
  assert.throws(()=>x.claim(r,'submit'),/SUBMISSION_NOT_AUTHORIZED|PHASE_SCOPE/);assert.equal(x.repo.all('operations').length,0);
 });
+test('public submission scope comes from the exact prepared grant and never from row-supplied aliases',t=>{
+ const x=setup(t),publicationTaskId=randomUUID(),accountId=randomUUID();
+ Object.assign(x.prepared.grant.input,{publicationTaskId,accountId});x.prepared.job.grantId=x.prepared.grant.id;
+ x.repo.save('settings',{id:'tme-ai-prepare:job:'+x.prepared.job.id,value:x.prepared.job});x.repo.save('settings',{id:'tme-ai-prepare:grant:'+x.prepared.grant.id,value:x.prepared.grant});
+ const row=x.review();
+ for(const dto of [x.service.publicById(row.id),...x.service.listPublic(x.workId),x.service.publicJob({...row,publicationTaskId:randomUUID(),accountId:randomUUID()})]){
+  assert.equal(dto.publicationTaskId,publicationTaskId);assert.equal(dto.accountId,accountId);assert.equal(dto.sessionId,undefined);assert.equal(dto.snapshot,undefined);
+ }
+ const old=setup(t),legacy=old.review(),dto=old.service.publicJob({...legacy,publicationTaskId:randomUUID(),accountId:randomUUID()});assert.equal(dto.publicationTaskId,undefined);assert.equal(dto.accountId,undefined);
+ x.prepared.job.workId=randomUUID();x.repo.save('settings',{id:'tme-ai-prepare:job:'+x.prepared.job.id,value:x.prepared.job});const mismatched=x.service.publicById(row.id);assert.equal(mismatched.publicationTaskId,undefined);assert.equal(mismatched.accountId,undefined);
+ assert.equal(x.repo.all('operations').length,0);
+});
 test('default unavailable native executor prevents authorization even with consent',t=>{
  const x=setup(t),r=x.review({available:false,reasons:['NATIVE_AI_SUBMIT_CONTRACT_UNVERIFIED'],transport:'windows-uia'});
  assert.throws(()=>x.authorize(r),/EXECUTOR_UNAVAILABLE/);assert.equal(x.repo.all('operations').length,0);

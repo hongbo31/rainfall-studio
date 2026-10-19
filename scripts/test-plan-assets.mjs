@@ -1,0 +1,4 @@
+import {build} from 'esbuild';import fs from 'node:fs';import path from 'node:path';import {spawnSync} from 'node:child_process';
+const entry='src/core/plan-center-assets.ts',file=path.resolve('output/provider-wiring/plan-assets.cjs');
+await build({stdin:{contents:'export {Studio} from "./src/core/studio";export {tickPlanCenter} from "./src/core/plan-center-integration";export {publicationPayload} from "./src/core/publication-payload";'+(fs.existsSync(entry)?'export * from "./'+entry+'";':''),resolveDir:process.cwd()},outfile:file,bundle:true,platform:'node',format:'cjs',packages:'external'});
+const result=spawnSync(process.execPath,['--require',path.resolve('tests/fixtures/offline-only.cjs'),'--test','tests/plan-assets.test.mjs'],{stdio:'inherit',env:{...process.env,RAINFALL_PLAN_ASSETS_BUNDLE:file}});process.exit(result.status??1);

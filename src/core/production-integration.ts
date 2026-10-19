@@ -12,6 +12,9 @@ export function createProductionFlowService(s: Studio) {
     now: s.now,
     // No verified current per-request upper price exists. User text cannot replace a quote.
     verifyMusicPricing: () => false,
+    // No provider/account-bound quote source is installed. The separate explicit
+    // existing-credit policy is validated by Core; arbitrary quote IDs stay blocked.
+    verifyManagedMusicQuote: () => false,
     // Native TME writes require a verified unique identity, AI page contract and scoped terms.
     publicationAuthority: () => ({
       allowed: false,
@@ -89,9 +92,21 @@ export function createProductionFlowService(s: Studio) {
           "settings",
           downloadKey(run.id, a.providerSongId),
         );
+        if (
+          run.managedMusic &&
+          (!record ||
+            record.runId !== run.id ||
+            record.operationId !== run.operationId ||
+            record.providerSongId !== run.songIds[a.ordinal] ||
+            record.assetId !== a.assetId ||
+            record.sha256 !== a.sha256 ||
+            record.ordinal !== a.ordinal)
+        )
+          throw Error("ORIGINAL_ASSET_SCOPE");
         return {
           ...a,
           provider: "yourmusic",
+          operationId: run.musicSubmissionOperationId ?? null,
           providerMetadata: record?.providerMetadata ?? null,
           submittedLyrics: { text: run.candidate.pair.lyrics },
           actualLyrics: record?.providerMetadata?.lyric

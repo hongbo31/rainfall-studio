@@ -56,3 +56,8 @@ PlanCenter 保留 Plan/Run/Item/StageAttempt/PublishAttempt 调度状态和不�
 用隔离SQLite根、既有provider类加录制/合成HTTP响应验证：两Item共享额度；接受→原ID轮询→A/B下载；unknown冻结/原receipt恢复；停止后回收但不新提交；既有音频零POST绑定；每账号材料/任务独立；发布真实service状态回读；专辑不可用原因；dot请求全字段关联、重复/篡改/旧包/迟到/重启。Main契约测试确认实际调用既有adapter路径，任何写入响应均为fixture，不声称线上验证。
 
 运行类型检查、相关回归、无头界面和打包Core验证；独立复核后更新版本、源码提交、便携包、截图和证据。原生窗口、真实账号/音乐/专辑/发布验收不包含在本轮。
+
+
+## 实施后的明确约束
+
+音乐在封面阶段之前，确保已有实际作品供封面工作室使用；已有音频绑定只允许 manual 快照。dot 桥采用 immutable generation 文件而非覆盖固定文件，owner/reservation 单独提交后独占发布；producer 扫描最高完整世代并只处理 pending。详见 [0.10 实施说明](../../release/provider-wiring-0.10.md)。

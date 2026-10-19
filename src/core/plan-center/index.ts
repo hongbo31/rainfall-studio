@@ -103,7 +103,7 @@ export class PlanCenterService {
     return this.repo.transaction(()=>{const run=this.store.get('run',runId);if(!run)throw Error('NOT_FOUND');if(terminalRuns.has(run.state))return run;this.store.put('run',{...run,stopRequested:true,state:'stopping',updatedAt:this.now()});this.refresh(runId);return this.store.get('run',runId)!;});
   }
   private stages(plan:PlanCenterPlan):PlanCenterStage[] {
-    return ['dot','text_score',...(plan.outputs.cover?['cover' as const]:[]),...(plan.outputs.music?['music_submit' as const,'music_assets' as const]:[]),'materials'];
+    return ['dot','text_score',...(plan.outputs.music?['music_submit' as const,'music_assets' as const]:[]),...(plan.outputs.cover?['cover' as const]:[]),'materials'];
   }
   private stageGate(run:PlanCenterRun,item:PlanCenterItem,stage:PlanCenterStage):{state:string;reason?:string} {
     if(run.snapshot.needsConfiguration.length)return {state:'blocked',reason:'LEGACY_CONFIGURATION_REQUIRED'};
@@ -112,8 +112,9 @@ export class PlanCenterService {
     if(cap&&!this.capabilities()[cap].available)return {state:stage==='dot'?'waiting_external_dot':'blocked',reason:this.capabilities()[cap].reason};
     if(stage==='dot'&&(!run.snapshot.material.channel||!run.snapshot.material.identity))return {state:'waiting_external_dot',reason:'DOT_IDENTITY_REQUIRED'};
     if(stage==='text_score'&&(!run.snapshot.authorization.text||!run.snapshot.text.consent||!run.snapshot.text.profileId||!run.snapshot.text.profileRevision||!run.snapshot.text.modelId||!run.snapshot.text.budgetMicros))return {state:'blocked',reason:'TEXT_GRANT_REQUIRED'};
-    if(stage==='music_submit'&&(!run.snapshot.authorization.music||!run.snapshot.music.consent||!run.snapshot.music.profileId||!run.snapshot.music.profileRevision||!run.snapshot.music.modelId||!run.snapshot.music.budgetCredits||!run.snapshot.music.maxCostPerRequestCredits||!run.snapshot.music.pricingEvidence))return {state:'blocked',reason:'MUSIC_GRANT_REQUIRED'};
-    if(stage==='music_submit'&&run.snapshot.music.route!=='yourmusic')return {state:'blocked',reason:'MUSIC_ROUTE_UNAVAILABLE'};
+    if(stage==='music_submit'&&run.snapshot.music.route==='manual')return item.workId?{state:'ready'}:{state:'waiting_materials',reason:'EXISTING_AUDIO_BINDING_REQUIRED'};
+    if(stage==='music_submit'&&(!run.snapshot.authorization.music||!run.snapshot.music.consent||!run.snapshot.music.profileId||!run.snapshot.music.profileRevision||!run.snapshot.music.modelId||!run.snapshot.music.budgetCredits||!run.snapshot.music.maxCostPerRequestCredits||(!run.snapshot.music.pricingEvidence&&!run.snapshot.music.creditPolicy)))return {state:'blocked',reason:'MUSIC_GRANT_REQUIRED'};
+    if(stage==='music_submit'&&!['yourmusic','pule'].includes(run.snapshot.music.route))return {state:'blocked',reason:'MUSIC_ROUTE_UNAVAILABLE'};
     if(stage==='materials'&&!item.materials&&run.snapshot.authorization.publish&&run.snapshot.publishTargets.some(t=>t.enabled))return {state:'waiting_materials',reason:'MATERIALS_INCOMPLETE'};
     return {state:'ready'};
   }
@@ -266,8 +267,26 @@ export class PlanCenterService {
         this.repo.audit('planCenter.managedScore.resumed',attempt.id,{runId:run.id,evaluationRunId:child.id});
         this.refresh(run.id);return resumed;
       }
+      if(['music_submit','music_assets'].includes(attempt.stage)&&typeof attempt.result?.childRunId==='string'){
+        const child=this.repo.maybe('settings',`production-flow:run:${attempt.result.childRunId}`)?.value;
+        const binding=this.repo.maybe('settings','plan-center-music:'+item.id);
+        if(!child?.managedMusic||binding?.childRunId!==child.id||child.managedStopped||child.state==='unknown'||child.paused)throw Error('MANAGED_MUSIC_RESUME_REQUIRED');
+        const resumed=this.store.put('stage',{...attempt,state:'dispatching',reason:undefined,updatedAt:this.now()});this.refresh(run.id);return resumed;
+      }
       const limit=attempt.stage==='text_score'?run.snapshot.text.maxScoreRetries+1:3;if(attempt.ordinal>=limit)throw Error('RETRY_LIMIT');
       return this.newAttempt(run,item,attempt.stage,attempt.ordinal+1);
+    });
+  }
+  bindWork(input:{itemId:string;workId:string;versions:PlanCenterItem['versions'];selectedVersion?:'A'|'B';collectOnly?:boolean}) {
+    return this.repo.transaction(()=>{
+      const item=this.store.get('item',input.itemId);if(!item)throw Error('NOT_FOUND');
+      const run=this.store.get('run',item.runId)!;if(run.stopRequested&&!input.collectOnly)throw Error('STOP_REQUESTED');
+      if(item.workId&&item.workId!==input.workId)throw Error('WORK_ALREADY_BOUND');
+      const versions=z.array(z.strictObject({version:z.enum(['A','B']),assetId:safeId,externalId:safeId.optional(),sha256:z.string().regex(/^[a-f0-9]{64}$/).optional()})).max(2).parse(input.versions);
+      if(new Set(versions.map(v=>v.version)).size!==versions.length)throw Error('DUPLICATE_VERSION');
+      if(input.selectedVersion&&versions.length&&!versions.some(v=>v.version===input.selectedVersion))throw Error('AUDIO_VERSION_MISMATCH');
+      if(run.snapshot.music.versionPolicy==='first'&&input.selectedVersion&&input.selectedVersion!=='A')throw Error('VERSION_POLICY_FIRST');
+      return this.store.put('item',{...item,workId:input.workId,versions,selectedVersion:input.selectedVersion??item.selectedVersion,updatedAt:this.now()});
     });
   }
   setMaterials(input:z.input<typeof PlanCenterMaterialsSchema>) {

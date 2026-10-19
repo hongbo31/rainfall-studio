@@ -1,3 +1,5 @@
+当前独立候选为 **0.10.0-preview.1**。已接通已有生成、A/B 素材、dot 请求及发布队列；真实专辑与线上完成仍按证据阻塞。详见 [本轮能力、启动与限制](docs/release/provider-wiring-0.10.md)。历史版本说明保留如下。
+
 当前 0.7.1 修订：北京时间 09:00（Asia/Shanghai / 01:00 UTC）与腾讯 AI 作品准备执行器，明确停在新三年条款待确认。真实、离线与未接入边界见 [本轮说明](docs/release/beijing-tme-ai-0.7.1.md)。官网可选保存的未知结果保留，不重试，不冒充成功。
 
 # Rainfall Studio · Windows 音乐工作台

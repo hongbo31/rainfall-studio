@@ -1,3 +1,5 @@
+import {createPlanModelBroker} from './plan-center-models';
+import {createPlanPublicationBrokers} from './tme/plan-center-publication';
 import {
   app,
   BrowserWindow,
@@ -111,6 +113,10 @@ let coreGeneration = 0;
 let interruptTme:()=>void=()=>{};
 let importEpoch = 0;
 const apiCredentials = new ApiCredentials({
+  invalidateMusicModelEvidence: async (identity) => {
+    const result=await rpc('internal.planCenter.invalidateModelEvidence',identity);
+    if(!result.ok)throw Error(result.error.code);
+  },
   connectionRequest: nodeHttpsTransport,
   textRequest: nodeHttpsTransport,
   vault: new CredentialVault(path.join(root, "credentials"), safeStorage),
@@ -124,6 +130,7 @@ const apiCredentials = new ApiCredentials({
     return result.value.find((profile: { id: string }) => profile.id === id);
   },
 });
+const planModels=createPlanModelBroker({credentials:apiCredentials,rpc:(method,input)=>rpc(method,input),available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration});
 const liveMusic=createLiveMusicBroker({root,credentials:apiCredentials,rpc:(method,input)=>rpc(method,input),available:()=>mode==='production'&&!switching&&!closing});
 const liveText=createLiveTextBroker({credentials:apiCredentials,rpc:(method,input)=>rpc(method,input),available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration});
 const productionTransport=new WindowsUiaTransport(path.join(__dirname,'tme-uia-host.ps1'));
@@ -136,8 +143,8 @@ const tmeAiTransport=createTmeAiTransportProvider({platform:process.platform,clo
   return nativeSnapshot((await tmeAiNative.request('observe',{binding:g.binding,artistName:g.metadata.artistName})).snapshot);
 }});
 async function checkExternalReceiptBarrier(scope:any){const result=await rpc('internal.tmeAiSubmission.externalRecords',{});if(!result.ok)throw Error('EXTERNAL_RECEIPT_SCAN_REQUIRED');for(const receipt of result.value)persistExternalReceiptStop(root,receipt);return externalReceiptBarrier(root,scope)}
-const tmeAiPrepare=createTmeAiPrepareBroker({publicationBarrier:checkExternalReceiptBarrier,root,rpc:(method,input)=>rpc(method,input),port:tmeAiTransport.prepare,resolveScope:async(workId,createDerivative)=>{const result=await rpc('internal.tmeAiPrepare.resolveScope',{workId,createDerivative});if(!result.ok)throw Error(result.error.code);return result.value},available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,nativeHostHash:()=>createHash('sha256').update(fs.readFileSync(tmeAiNative.script)).digest('hex')});
-const tmeAiSubmission=createTmeAiSubmissionBroker({root,rpc:(method,input)=>rpc(method,input),available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,observe:tmeAiTransport.observe,executor:tmeAiTransport.executor});
+const planPublications=createPlanPublicationBrokers({prepare:{publicationBarrier:checkExternalReceiptBarrier,root,rpc:(method,input)=>rpc(method,input),port:tmeAiTransport.prepare,resolveScope:async(workId,createDerivative)=>{const result=await rpc('internal.tmeAiPrepare.resolveScope',{workId,createDerivative});if(!result.ok)throw Error(result.error.code);return result.value},available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,nativeHostHash:()=>createHash('sha256').update(fs.readFileSync(tmeAiNative.script)).digest('hex')},submission:{root,rpc:(method,input)=>rpc(method,input),available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,observe:tmeAiTransport.observe,executor:tmeAiTransport.executor}});
+const tmeAiPrepare=planPublications.prepare,tmeAiSubmission=planPublications.submission;
 const unifiedPublish=createUnifiedPublishBroker({rpc:(method,input)=>rpc(method,input),available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,publicationBarrier:checkExternalReceiptBarrier,preparationCapability:tmeAiTransport.preparationCapability,prepare:tmeAiPrepare,submission:tmeAiSubmission});
 setInterval(()=>{void productionFlow.pump();void unifiedPublish.pump();},2000).unref();
 const pending = new Map<
@@ -316,6 +323,7 @@ function handlers() {
             networkObservationScope: 'not_measured_by_runtime',
           },
         };
+      if(method==="planCenter.refreshModels")return{ok:true,value:await planModels.ui("refresh",parsed)};
       if (method === "publish.reconcile") return {ok:true,value:await unifiedPublish.reconcile((parsed as {id:string}).id)};
       if (method === "publish.simple" && mode === 'production') {
         const result = await rpc(method, parsed);

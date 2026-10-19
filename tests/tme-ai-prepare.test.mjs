@@ -196,6 +196,15 @@ test('renderer projections and schemas exclude filesystem paths, identity eviden
  assert.equal(w.TmeAiPreparePublicSchemas.record,undefined);assert.equal(w.TmeAiPreparePublicSchemas.accept,undefined);assert.equal(w.TmeAiPreparePublicSchemas.submit,undefined);
  assert.throws(()=>w.TmeAiPreparePublicSchemas.start.parse({grantId:x.grant.id,expectedRevision:1,consent:true,identity:x.identity}));
 });
+test('public grants and jobs expose only their trusted exact task/account scope and legacy stays unscoped',t=>{
+ const x=setup(t),publicationTaskId=randomUUID(),accountId=randomUUID();Object.assign(x.grant,{publicationTaskId,accountId});
+ const job=x.start(),stored=x.repo.get('settings','tme-ai-prepare:job:'+job.id);
+ x.repo.save('settings',{...stored,value:{...stored.value,publicationTaskId:randomUUID(),accountId:randomUUID()}});
+ for(const dto of [x.service.listPublic().grants[0],x.service.listPublic().jobs[0],x.service.contextPublic(job.id).grant,x.service.contextPublic(job.id).job]){
+  assert.equal(dto.publicationTaskId,publicationTaskId);assert.equal(dto.accountId,accountId);assert.equal(dto.input,undefined);assert.equal(dto.upload,undefined);
+ }
+ const old=setup(t),legacy=old.start();for(const dto of [old.service.contextPublic(legacy.id).grant,old.service.contextPublic(legacy.id).job]){assert.equal(dto.publicationTaskId,undefined);assert.equal(dto.accountId,undefined)}
+});
 test('a forged terminal terms snapshot and changed material proof cannot become successful records',t=>{
  const x=setup(t);let j=x.start();
  for(const step of w.tmeAiPrepareSteps){const c=x.service.claim({id:j.id,expectedRevision:j.revision,step,before:x.snapshot()});

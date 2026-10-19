@@ -57,7 +57,7 @@ export class TmeAiPrepareService {
    if(this.rows('grant').some(g=>g.input.workId===input.workId&&g.input.identity.subjectHash===input.identity.subjectHash))throw Error('WORK_ALREADY_REGISTERED');
    const grant={id:input.id,revision:1,input,inputHash,familyKey,createdAt:this.stamp()};
    this.assets(grant);this.put('grant',grant);
-   this.repo.audit('tmeAiPrepare.grant',grant.id,{familyKey,scope:'prepare_only',variant:'A'});return grant;
+   this.repo.audit('tmeAiPrepare.grant',grant.id,{familyKey,scope:'prepare_only',variant:input.sourceAudio.variant});return grant;
   });
  }
  start(raw:unknown){
@@ -261,8 +261,12 @@ export class TmeAiPrepareService {
  context(id:string){const job=this.get('job',IdSchema.parse({id}).id);return{job,grant:this.get('grant',job.grantId),operations:this.repo.all('operations').filter(o=>o.kind==='tme_ai_prepare'&&o.jobId===job.id)}}
  /** Inspection only. No retry, reconciliation acknowledgement or external mutation. */
  reconcile(raw:unknown){return this.context(IdSchema.parse(raw).id)}
- private publicGrant(grant:Row){const g=grant.input;return{id:grant.id,revision:grant.revision,suspended:!!grant.suspended,workId:g.workId,title:g.metadata.title,variant:g.sourceAudio.variant,identity:{subjectType:g.identity.subjectType,maskedKugouId:'***'+g.identity.kugouId.slice(-4),qqDisplayName:g.identity.qqDisplayName,artistName:g.identity.artistName},scope:'prepare_only'}}
- private publicJob(job:Row){return{id:job.id,grantId:job.grantId,workId:job.workId,revision:job.revision,state:job.state,step:job.step,reason:job.reason,audioDisposition:job.audioDisposition,remoteId:null,submissionByClient:false,remoteAlbumSaveVerified:false,localAlbumSnapshot:job.localAlbumSnapshot?{localVerified:job.localAlbumSnapshot.localVerified,externalSaveOutcome:job.localAlbumSnapshot.externalSaveOutcome,noRetry:true,observedAt:job.localAlbumSnapshot.observedAt,...(job.localAlbumSnapshot.existingAlbum?{existingAlbum:job.localAlbumSnapshot.existingAlbum,coverInherited:true,coverReadOnly:true}:{})}:null,terms:job.terms?{termsText:job.terms.termsText,termsHash:job.terms.termsHash,...(job.terms.termsDocumentSha256?{termsDocumentSha256:job.terms.termsDocumentSha256}:{}),modeText:job.terms.modeText,observedAt:job.terms.observedAt,visibleSubmitButton:true}:null,createdAt:job.createdAt,updatedAt:job.updatedAt}}
+ private publicScope(grant:Row|undefined,workId:string,grantId?:string){
+  const g=grant?.input;
+  return g?.workId===workId&&(!grantId||grant?.id===grantId)&&z.uuid().safeParse(g.publicationTaskId).success&&z.uuid().safeParse(g.accountId).success?{publicationTaskId:g.publicationTaskId,accountId:g.accountId}:{};
+ }
+ private publicGrant(grant:Row){const g=grant.input;return{id:grant.id,revision:grant.revision,suspended:!!grant.suspended,workId:g.workId,...this.publicScope(grant,g.workId),title:g.metadata.title,variant:g.sourceAudio.variant,identity:{subjectType:g.identity.subjectType,maskedKugouId:'***'+g.identity.kugouId.slice(-4),qqDisplayName:g.identity.qqDisplayName,artistName:g.identity.artistName},scope:'prepare_only'}}
+ private publicJob(job:Row){return{id:job.id,grantId:job.grantId,workId:job.workId,...this.publicScope(this.maybe('grant',job.grantId),job.workId,job.grantId),revision:job.revision,state:job.state,step:job.step,reason:job.reason,audioDisposition:job.audioDisposition,remoteId:null,submissionByClient:false,remoteAlbumSaveVerified:false,localAlbumSnapshot:job.localAlbumSnapshot?{localVerified:job.localAlbumSnapshot.localVerified,externalSaveOutcome:job.localAlbumSnapshot.externalSaveOutcome,noRetry:true,observedAt:job.localAlbumSnapshot.observedAt,...(job.localAlbumSnapshot.existingAlbum?{existingAlbum:job.localAlbumSnapshot.existingAlbum,coverInherited:true,coverReadOnly:true}:{})}:null,terms:job.terms?{termsText:job.terms.termsText,termsHash:job.terms.termsHash,...(job.terms.termsDocumentSha256?{termsDocumentSha256:job.terms.termsDocumentSha256}:{}),modeText:job.terms.modeText,observedAt:job.terms.observedAt,visibleSubmitButton:true}:null,createdAt:job.createdAt,updatedAt:job.updatedAt}}
  listPublic(){return{grants:this.rows('grant').map(g=>this.publicGrant(g)),jobs:this.rows('job').map(j=>this.publicJob(j))}}
  contextPublic(id:string){const {job,grant}=this.context(id);return{job:this.publicJob(job),grant:this.publicGrant(grant)}}
 }

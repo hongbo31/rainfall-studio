@@ -30,9 +30,9 @@
 
 **Interfaces:** `ProductionFlowService.startManagedMusic(input)` returns stable text-free child; `stopManagedMusic(ownerKey)` preserves existing receipts. `startPlanMusic(s,run,item,attempt)` and `syncPlanMusic(s,run,item)` connect child outputs. Exact returned mapping includes childRunId/workId/operationId and original asset versions.
 
-- [ ] Add failing tests for accepted/query/download, shared budget, strict final draft, duplicate owner, unknown/restart/stop and model-specific history recovery.
-- [ ] Implement managed child and explicit credit-policy grant; reuse original Main broker, downloader and work materializer.
-- [ ] Run new suite and existing ProductionFlow/music/broker regressions with fixture transport only.
+- [x] Add failing tests for accepted/query/download, shared budget, strict final draft, duplicate owner, unknown/restart/stop and model-specific history recovery.
+- [x] Implement managed child and explicit credit-policy grant; reuse original Main broker, downloader and work materializer.
+- [x] Run new suite and existing ProductionFlow/music/broker regressions with fixture transport only.
 
 ### Task 2: Dot request and delivery protocol
 
@@ -40,9 +40,9 @@
 
 **Interfaces:** `syncPlanDot(s)` creates/persists requests and exact delivery associations; `planDotStatus(s)` exposes safe manifest/associations; `exportPlanDotRequests(s)` creates local JSON file for file bridge. `requestId/requestHash/planId/runId/itemId/externalItemId` remain immutable.
 
-- [ ] Add failing tests for emitted manifest, v2 strict echo, legacy unique-ID compatibility, duplicate consumption, wrong channel, reuse, stop/expiry/restart.
-- [ ] Implement strict schema and transactional consumer; preserve Inbox v1 behavior and receipts, persist artistRef.
-- [ ] Verify late outputs remain stored/associated while no new business operation runs.
+- [x] Add failing tests for emitted manifest, v2 strict echo, legacy unique-ID compatibility, duplicate consumption, wrong channel, reuse, stop/expiry/restart.
+- [x] Implement strict schema and transactional consumer; preserve Inbox v1 behavior and receipts, persist artistRef.
+- [x] Verify late outputs remain stored/associated while no new business operation runs.
 
 ### Task 3: Publication and album capability wiring
 
@@ -50,9 +50,9 @@
 
 **Interfaces:** `syncPlanPublications(s)` maps bound item materials to stable existing unified tasks and reads their verified states; `planPublicationCapabilities(s)` reports actual installed capability reasons. Local request state and verified online receipt state are distinct.
 
-- [ ] Add failing tests for same item/account idempotency, two accounts, stale materials, unknown, verified receipt mapping and unsupported album operations.
-- [ ] Reuse existing queue/preparation/submission; add exact publicationTaskId/account scope without removing nonce/terms/identity/production gates.
-- [ ] Run unified/TME scope regressions with no native actions and expose missing real catalog/create/append evidence.
+- [x] Add failing tests for same item/account idempotency, two accounts, stale materials, unknown, verified receipt mapping and unsupported album operations.
+- [x] Reuse existing queue/preparation/submission; add exact publicationTaskId/account scope without removing nonce/terms/identity/production gates.
+- [x] Run unified/TME scope regressions with no native actions and expose missing real catalog/create/append evidence.
 
 ### Task 4: Core/UI integration and asset binding
 
@@ -60,13 +60,13 @@
 
 **Interfaces:** public safe actions include catalog/status/request export, existing-work/audio binding and A/B choice; arbitrary stage records/receipts stay internal.
 
-- [ ] Add failing integration tests for item→existing work, source/hash/artist validation, final scored lyrics, manual selection and stop receipts.
-- [ ] Connect music/dot/publication adapters into the same loop; replace unconditional music/queue blockers with exact dynamic capability evidence.
-- [ ] Add model source/expiry and music budget/credit-policy controls; existing work selector, A/B selection and publication/late delivery status.
-- [ ] Verify complete headless UI path against real isolated Core, then review screenshots.
+- [x] Add failing integration tests for item→existing work, source/hash/artist validation, final scored lyrics, manual selection and stop receipts.
+- [x] Connect music/dot/publication adapters into the same loop; replace unconditional music/queue blockers with exact dynamic capability evidence.
+- [x] Add model source/expiry and music budget/credit-policy controls; existing work selector, A/B selection and publication/late delivery status.
+- [x] Verify complete headless UI path against real isolated Core, then review screenshots.
 
 ### Task 5: Review and delivery
 
-- [ ] Run npm test, typecheck, relevant regressions, desktop build and independent whole-change review.
+- [x] Run npm test, typecheck, relevant regressions, desktop build and independent whole-change review.
 - [ ] Fix findings and verify final portable Core/dependencies/data path without Main GUI.
 - [ ] Commit new version; package with fresh preview root; provide source/artifacts/screens/logs and evidence-backed remaining limits. Do not promote formal install.

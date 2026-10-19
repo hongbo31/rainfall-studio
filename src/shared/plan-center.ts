@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { InboxId } from './inbox';
+import { FlowMusicCreditPolicySchema } from './production-flow';
 
 const id = z.string().trim().min(1).max(500);
 const revision = z.number().int().positive();
@@ -23,7 +24,7 @@ export const PlanCenterPlanSchema = z.strictObject({
   outputs: z.strictObject({ lyrics: z.boolean(), cover: z.boolean(), music: z.boolean() }).refine(v=>v.lyrics||v.cover||v.music, 'OUTPUT_REQUIRED').default({ lyrics: true, cover: false, music: false }),
   material: z.strictObject({ source: z.enum(['dot','manual']).default('dot'), channel: z.string().max(500).default(''), identity: z.string().max(500).default(''), expectedExternalItemIds: z.array(InboxId).max(20).optional() }),
   text: z.strictObject({ profileId: id.optional(), profileRevision: revision.optional(), modelId: id.optional(), maxOutputTokens: z.number().int().min(256).max(16384).optional(), budgetMicros: z.number().int().positive().max(100_000_000).optional(), consent: z.boolean().default(false), threshold: z.number().min(0).max(100).default(75), maxRewrites: z.number().int().min(0).max(2).default(2), maxScoreRetries: z.number().int().min(0).max(2).default(2) }),
-  music: z.strictObject({ route: z.enum(['suno_official','pule','yourmusic','manual']), profileId: id.optional(), profileRevision: revision.optional(), modelId: id.optional(), budgetCredits: z.number().int().positive().optional(), maxCostPerRequestCredits: z.number().int().positive().optional(), pricingEvidence: z.string().max(1000).optional(), consent: z.boolean().default(false), versionPolicy: z.enum(['first','manual']).default('first') }),
+  music: z.strictObject({ route: z.enum(['suno_official','pule','yourmusic','manual']), profileId: id.optional(), profileRevision: revision.optional(), modelId: id.optional(), budgetCredits: z.number().int().positive().optional(), maxCostPerRequestCredits: z.number().int().positive().optional(), pricingEvidence: z.string().max(1000).optional(), creditPolicy: FlowMusicCreditPolicySchema.optional(), consent: z.boolean().default(false), versionPolicy: z.enum(['first','manual']).default('first') }),
   publishTargets: z.array(PlanCenterPublishTargetSchema).max(20).refine(v => new Set(v.map(t=>`${t.platform}\0${t.accountId}`)).size===v.length,'DUPLICATE_TARGET').default([]),
   catchUp: z.strictObject({ mode: z.enum(['latest','skip','bounded']).default('latest'), limit: z.number().int().min(1).max(5).default(1) }).default({ mode:'latest',limit:1 }),
   authorization: z.strictObject({ text: z.boolean().default(false), music: z.boolean().default(false), publish: z.boolean().default(false) }).default({ text:false,music:false,publish:false }),
@@ -55,7 +56,7 @@ export type PlanCenterCapabilityName = typeof PlanCenterCapabilityNames[number];
 export type PlanCenterCapabilities = Record<PlanCenterCapabilityName,z.infer<typeof PlanCenterCapabilitySchema>>;
 export const PlanCenterRunRecordSchema = z.strictObject({id,planId:id,planRevision:revision,snapshot:PlanCenterPlanSchema,summaryHash:id,requestId:id,source:z.enum(['manual','debug','scheduled']),occurrenceKey:id.optional(),state:z.enum(['running','waiting','blocked','stopping','stopped','completed','failed']),stopRequested:z.boolean(),createdAt:stamp,updatedAt:stamp,reason:z.string().optional()});
 export type PlanCenterRun = z.infer<typeof PlanCenterRunRecordSchema>;
-export const PlanCenterItemSchema = z.strictObject({id,runId:id,planId:id,ordinal:z.number().int().positive(),expectedExternalItemId:id,state:z.string(),reason:z.string().optional(),versions:z.array(z.strictObject({version:z.enum(['A','B']),assetId:id.optional(),externalId:id.optional(),sha256:z.string().optional()})).max(2),material:record.optional(),materials:PlanCenterMaterialsSchema.omit({itemId:true}).optional(),createdAt:stamp,updatedAt:stamp});
+export const PlanCenterItemSchema = z.strictObject({id,runId:id,planId:id,ordinal:z.number().int().positive(),expectedExternalItemId:id,state:z.string(),reason:z.string().optional(),workId:id.optional(),selectedVersion:z.enum(['A','B']).optional(),materialFingerprint:id.optional(),versions:z.array(z.strictObject({version:z.enum(['A','B']),assetId:id.optional(),externalId:id.optional(),sha256:z.string().optional()})).max(2),material:record.optional(),materials:PlanCenterMaterialsSchema.omit({itemId:true}).optional(),createdAt:stamp,updatedAt:stamp});
 export type PlanCenterItem = z.infer<typeof PlanCenterItemSchema>;
 export const PlanCenterStageAttemptSchema = z.strictObject({id,runId:id,itemId:id,stage:PlanCenterStageSchema,ordinal:z.number().int().positive(),idempotencyKey:id,requestHash:id,state:z.enum(['dispatching','waiting','unknown','succeeded','failed','not_found']),externalTaskId:id.optional(),evidenceId:id.optional(),result:record.optional(),reason:z.string().optional(),createdAt:stamp,updatedAt:stamp});
 export type PlanCenterStageAttempt = z.infer<typeof PlanCenterStageAttemptSchema>;
@@ -70,3 +71,8 @@ export const PlanCenterMigrationSchema = z.strictObject({id,state:z.enum(['appli
 export type PlanCenterList = {plans:PlanCenterPlan[];runs:PlanCenterRun[];items:PlanCenterItem[];stageAttempts:PlanCenterStageAttempt[];publishAttempts:PlanCenterPublishAttempt[];occurrences:PlanCenterOccurrence[];albumBindings:PlanCenterAlbumBinding[];migration:PlanCenterMigration|null};
 // Aliases keep RPC callers explicit without coupling them to core storage.
 export { PlanCenterSaveSchema as PlanCenterSavePlanSchema, PlanCenterRunSchema as PlanCenterTriggerSchema };
+
+export const PlanCenterBindWorkSchema=z.strictObject({itemId:id,workId:z.uuid(),expectedWorkRevision:revision});
+export const PlanCenterSelectVersionSchema=z.strictObject({itemId:id,version:z.enum(['A','B'])});
+
+export const PlanCenterConfirmMaterialsSchema=z.strictObject({itemId:id,expectedWorkRevision:revision,audioHash:z.string().regex(/^[a-f0-9]{64}$/),coverHash:z.string().regex(/^[a-f0-9]{64}$/),lyricsHash:z.string().regex(/^[a-f0-9]{64}$/),rightsStatement:z.string().trim().min(10).max(4000),confirmed:z.literal(true)});

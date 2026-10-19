@@ -11,7 +11,8 @@ import {
   inboxEvaluationSource,
   syncInboxEvaluation,
 } from "./production-flow-inbox";
-import { hashValue } from "./quality/scoring";
+import { hashValue, pairHash } from "./quality/scoring";
+import { parseDraft } from "../shared/creation";
 import { deepSeekSystemPrompt } from "./workflow/deepseek";
 import { resolveDailyTime } from "./workflow/daily";
 import {
@@ -36,6 +37,7 @@ import {
   FlowRecordSchema,
   FlowUseManualAssetsSchema,
   FlowTextGrantSchema,
+  FlowManagedMusicGrantSchema,
   ProductionFlowPlanSchema,
   type FlowAsset,
 } from "../shared/production-flow";
@@ -56,6 +58,13 @@ const managedInboxInput = z.strictObject({
   maxRevisions: z.number().int().min(0).max(2).default(2),
   maxScoreRetries: z.number().int().min(0).max(2).default(2),
 });
+const managedMusicInput = z.strictObject({
+  ownerKey: z.string().trim().min(1).max(1000),
+  budgetScope: z.string().trim().min(1).max(1000),
+  artistId: z.uuid(),
+  evaluationRunId: z.uuid(),
+  music: FlowManagedMusicGrantSchema,
+});
 function managedInboxId(value: string) {
   const digest = hash(value);
   return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
@@ -65,6 +74,7 @@ type Options = {
   createWork?: (run: Row, candidate: Row) => { workId: string };
   materializeAssets?: (run: Row, assets: FlowAsset[]) => { workId: string };
   verifyMusicPricing?: (grant: Row) => boolean;
+  verifyManagedMusicQuote?: (grant: Row, now: Date) => boolean;
   publicationAuthority?: (input: Row) => {
     allowed: boolean;
     termsHash?: string;
@@ -102,7 +112,11 @@ export class ProductionFlowService {
           (run.state === "dispatching" || (readOnly && run.state === "unknown"))
         )
           this.patch(run, {
-            state: readOnly ? "blocked" : "unknown",
+            state: readOnly
+              ? run.managedMusic && !run.paused
+                ? "ready"
+                : "blocked"
+              : "unknown",
             reasons: [
               readOnly ? "READ_ONLY_INTERRUPTED" : "INTERRUPTED_DISPATCH",
             ],
@@ -165,6 +179,171 @@ export class ProductionFlowService {
         .all("operations")
         .filter((o) => o.kind === "production_flow" && o.runId === id),
     };
+  }
+  private managedMusicEvaluation(id: string, artistId: string) {
+    const evaluation = this.get("run", id),
+      candidate = evaluation.candidate;
+    const score = evaluation.score;
+    const op = score?.operationId
+      ? this.repo.maybe("operations", score.operationId)
+      : null;
+    if (
+      !evaluation.inboxCandidateId ||
+      !evaluation.plan.inboxEvaluation ||
+      evaluation.artistId !== artistId ||
+      evaluation.state !== "completed" ||
+      !candidate ||
+      !score?.passed ||
+      score.source !== "model-scored" ||
+      score.method !== "deepseek" ||
+      score.revisionId !== candidate.id ||
+      !op ||
+      op.kind !== "production_flow" ||
+      op.runId !== evaluation.id ||
+      op.taskType !== "text_score" ||
+      op.state !== "complete" ||
+      op.result?.result?.status !== "complete" ||
+      !op.result.result.score?.passed ||
+      op.task.request.revisionId !== candidate.id ||
+      op.task.request.pair.lyrics !== candidate.pair.lyrics ||
+      op.task.request.pair.musicPrompt !== candidate.pair.musicPrompt ||
+      !evaluation.versions.some(
+        (v: Row) =>
+          v.id === candidate.id && hashValue(v) === hashValue(candidate),
+      )
+    )
+      throw Error("MANAGED_MUSIC_EVALUATION_REQUIRED");
+    const source = inboxEvaluationSource(
+      this.repo,
+      evaluation.plan,
+      evaluation.inboxCandidateId,
+    );
+    const finalDraft = this.repo.maybe("drafts", candidate.id);
+    if (
+      source.sourceHash !== evaluation.inboxSourceHash ||
+      source.candidate.evaluation?.runId !== evaluation.id ||
+      source.candidate.evaluationState !== "model_passed" ||
+      source.candidate.evaluation.currentDraftId !== candidate.id ||
+      !finalDraft ||
+      finalDraft.evaluationRunId !== evaluation.id ||
+      hashValue(finalDraft.draft) !== hashValue(candidate.draft)
+    )
+      throw Error("MANAGED_MUSIC_EVALUATION_REQUIRED");
+    const draft = parseDraft(candidate.draft);
+    if (
+      candidate.pairHash !== pairHash(candidate.pair) ||
+      candidate.pair.lyrics !==
+        draft.sections
+          .map((s) => `[${s.kind}]\n${s.lines.join("\n")}`)
+          .join("\n\n") ||
+      candidate.pair.musicPrompt !== draft.musicPrompts.yourmusic.positiveStyle
+    )
+      throw Error("MANAGED_MUSIC_EVALUATION_REQUIRED");
+    return {
+      evaluation,
+      fingerprint: hashValue({
+        candidate,
+        score,
+        sourceHash: source.sourceHash,
+      }),
+    };
+  }
+  /** Internal-only: stable music child from a completed trusted Inbox evaluation. */
+  startManagedMusic(raw: unknown) {
+    const input = managedMusicInput.parse(raw);
+    return this.repo.transaction(() => {
+      const key = hash(input.ownerKey),
+        inputHash = hashValue(input);
+      const previous = this.maybe("managed-music", key);
+      if (previous) {
+        if (
+          previous.ownerKey !== input.ownerKey ||
+          previous.inputHash !== inputHash
+        )
+          throw Error("MANAGED_MUSIC_CONFLICT");
+        return this.get("run", previous.runId);
+      }
+      const { evaluation, fingerprint } = this.managedMusicEvaluation(
+        input.evaluationRunId,
+        input.artistId,
+      );
+      const planId = managedInboxId("music:" + input.ownerKey + ":plan");
+      if (this.maybe("plan", planId)) throw Error("MANAGED_MUSIC_CONFLICT");
+      const plan = ProductionFlowPlanSchema.parse({
+        id: planId,
+        artistId: input.artistId,
+        title: evaluation.candidate.draft.title,
+        theme: evaluation.plan.theme,
+        timezone: "Asia/Shanghai",
+        music: input.music,
+        autoContinue: true,
+      });
+      this.put("plan", {
+        ...plan,
+        revision: 1,
+        enabled: true,
+        authorizationRevision: 1,
+        managedByPlanCenter: true,
+        managedMusic: true,
+        managedOwnerKey: input.ownerKey,
+        managedBudgetScope: input.budgetScope,
+        updatedAt: this.now().toISOString(),
+      });
+      let run = this.trigger({
+        planId,
+        requestId: managedInboxId("music:" + input.ownerKey + ":request"),
+      });
+      const candidate = structuredClone(evaluation.candidate);
+      run = this.patch(run, {
+        candidate,
+        versions: [candidate],
+        candidateApproved: true,
+        score: structuredClone(evaluation.score),
+        stage: "work",
+        managedMusic: true,
+        managedEvaluationRunId: evaluation.id,
+        managedEvaluationFingerprint: fingerprint,
+        managedStopped: false,
+      });
+      this.put("managed-music", {
+        id: key,
+        ownerKey: input.ownerKey,
+        inputHash,
+        planId,
+        runId: run.id,
+      });
+      return run;
+    });
+  }
+  managedMusic(ownerKey: string) {
+    const key = z.string().trim().min(1).max(1000).parse(ownerKey);
+    const mapping = this.maybe("managed-music", hash(key));
+    return mapping?.ownerKey === key ? this.get("run", mapping.runId) : null;
+  }
+  stopManagedMusic(ownerKey: string) {
+    return this.repo.transaction(() => {
+      const run = this.managedMusic(ownerKey);
+      if (!run) return null;
+      const plan = this.get("plan", run.planId);
+      this.put("plan", {
+        ...plan,
+        enabled: false,
+        authorizationRevision: null,
+      });
+      if (run.managedStopped) return run;
+      // A durable claim is already potentially sent. Its original response/IDs
+      // remain collectable, including after stop; no later submit is authorized.
+      const drain = run.stage === "assets" && run.songIds.length === 2;
+      return this.patch(run, {
+        managedStopped: true,
+        ...(run.state === "dispatching" ||
+        run.state === "unknown" ||
+        run.state === "completed" ||
+        drain
+          ? {}
+          : { state: "blocked", reasons: ["PLAN_CENTER_STOPPED"] }),
+      });
+    });
   }
   /** Internal adapter: one stable plan-center stage owns one text-only evaluation. */
   startManagedInboxEvaluation(raw: unknown) {
@@ -323,6 +502,12 @@ export class ProductionFlowService {
       }
       const p = this.get("plan", i.planId),
         date = this.date(p);
+      if (
+        p.managedMusic &&
+        i.requestId !==
+          managedInboxId("music:" + p.managedOwnerKey + ":request")
+      )
+        throw Error("MANAGED_PLAN_INTERNAL_ONLY");
       if (!p.managedByPlanCenter)
         assertLegacyScheduleEditable(this.repo, "production-flow", p.id);
       if (p.managedCandidateId && p.managedCandidateId !== i.inboxCandidateId)
@@ -528,6 +713,23 @@ export class ProductionFlowService {
       throw Error("PLAN_CENTER_OWNS_SCHEDULE");
     if (plan.revision !== run.planRevision)
       throw Error("PLAN_REVISION_CHANGED");
+    if (run.managedMusic && run.stage !== "assets") {
+      if (
+        run.managedStopped ||
+        !plan.enabled ||
+        plan.authorizationRevision !== plan.revision
+      )
+        throw Error("MANAGED_MUSIC_STOPPED");
+      const source = this.managedMusicEvaluation(
+        run.managedEvaluationRunId,
+        run.artistId,
+      );
+      if (
+        source.fingerprint !== run.managedEvaluationFingerprint ||
+        hashValue(source.evaluation.candidate) !== hashValue(run.candidate)
+      )
+        throw Error("MANAGED_MUSIC_SOURCE_CHANGED");
+    }
     if (run.inboxCandidateId) {
       if (!plan.enabled || plan.authorizationRevision !== plan.revision)
         throw Error("INBOX_EVALUATION_DISABLED");
@@ -571,6 +773,13 @@ export class ProductionFlowService {
           (o.accountRef === profileId || o.profileId === profileId) &&
           (o.state === "unknown" || o.costState === "unknown"),
       );
+  }
+  private musicAuthorized(run: Row) {
+    return run.managedMusic
+      ? run.plan.music.creditPolicy?.mode === "existing_credits" ||
+          this.options.verifyManagedMusicQuote?.(run.plan.music, this.now()) ===
+            true
+      : this.options.verifyMusicPricing?.(run.plan.music) === true;
   }
   private readyTask(run: Row, operationId = run.id): Row | null {
     const p = run.plan;
@@ -883,7 +1092,7 @@ export class ProductionFlowService {
               task: null,
             };
           }
-          if (!this.options.verifyMusicPricing?.(run.plan.music))
+          if (!this.musicAuthorized(run))
             return {
               run: this.patch(run, {
                 state: "blocked",
@@ -1171,6 +1380,20 @@ export class ProductionFlowService {
       if (!task) throw Error(run.reasons[0] ?? "FLOW_TASK_NOT_READY");
       const id = randomUUID(),
         actual = this.readyTask(run, id)!;
+      if (run.managedMusic && actual.type === "music_submit") {
+        const work = this.repo.maybe("works", run.workId);
+        if (
+          !work ||
+          work.artistId !== run.artistId ||
+          work.productionFlowRunId !== run.id ||
+          work.productionCandidateId !== run.candidate.id ||
+          work.productionCandidateHash !== run.candidate.pairHash ||
+          work.title !== run.candidate.draft.title ||
+          work.lyrics !== run.candidate.pair.lyrics ||
+          work.prompt !== run.candidate.pair.musicPrompt
+        )
+          throw Error("MANAGED_MUSIC_WORK_SCOPE");
+      }
       let reserved = 0,
         unit: string | null = null;
       const budgetDate = this.date(run.plan);
@@ -1187,6 +1410,23 @@ export class ProductionFlowService {
       if (
         ["text_generate", "text_score", "music_submit"].includes(actual.type)
       ) {
+        if (run.managedMusic && actual.type === "music_submit") {
+          const shared = this.repo
+            .all("operations")
+            .filter(
+              (o) =>
+                o.unit === "provider_credit" &&
+                (o.budgetScope ?? o.planId) === budgetScope,
+            );
+          if (
+            shared.some(
+              (o) => o.state === "unknown" || o.costState === "unknown",
+            )
+          )
+            throw Error("PROVIDER_RISK_FROZEN");
+          if (shared.some((o) => o.state === "dispatching"))
+            throw Error("FLOW_PROVIDER_BUSY");
+        }
         if (this.risk(actual.profileId)) throw Error("PROVIDER_RISK_FROZEN");
         if (
           this.repo
@@ -1222,7 +1462,7 @@ export class ProductionFlowService {
             throw Error("TEXT_BUDGET_INSUFFICIENT");
         } else {
           unit = "provider_credit";
-          if (!this.options.verifyMusicPricing?.(run.plan.music))
+          if (!this.musicAuthorized(run))
             throw Error("MUSIC_PRICING_UNVERIFIED");
           reserved = run.plan.music.maxCostPerRequestCredits;
           if (
@@ -1335,6 +1575,8 @@ export class ProductionFlowService {
     )
       throw Error("ORIGINAL_ASSET_SCOPE");
     for (const a of assets) {
+      if (run.songIds[a.ordinal] !== a.providerSongId)
+        throw Error("ORIGINAL_ASSET_SCOPE");
       const stored = this.repo.get("assets", a.assetId);
       if (stored.kind !== "audio" || stored.sha256 !== a.sha256)
         throw Error("ASSET_HASH_MISMATCH");
@@ -1352,9 +1594,17 @@ export class ProductionFlowService {
       )
         throw Error("FLOW_OPERATION_SCOPE");
       const hash = hashValue(i.result);
+      const recovery =
+        run.managedMusic &&
+        op.taskType === "music_submit" &&
+        op.state === "unknown" &&
+        op.result?.status === "unknown" &&
+        i.result.type === "music_submit" &&
+        "status" in i.result &&
+        i.result.status === "accepted";
       if (op.resultHash) {
-        if (op.resultHash !== hash) throw Error("IDEMPOTENCY_CONFLICT");
-        return run;
+        if (op.resultHash === hash) return run;
+        if (!recovery) throw Error("IDEMPOTENCY_CONFLICT");
       }
       if (
         run.operationId !== op.id ||
@@ -1501,6 +1751,7 @@ export class ProductionFlowService {
         run = this.settle(run, op, cost);
         change = {
           stage: "assets",
+          musicSubmissionOperationId: op.id,
           songIds: result.songIds,
           trackingId: result.trackingId,
           musicTrackingStartedAt: this.now().toISOString(),
@@ -1536,10 +1787,11 @@ export class ProductionFlowService {
             });
           }
           change = {
-            stage: "publication",
+            stage: run.managedMusic ? "assets" : "publication",
             assets: result.assets,
             pollAttempts: 0,
           };
+          if (run.managedMusic) state = "completed";
         } else if (result.status === "pending") {
           change = {
             pollAttempts: run.pollAttempts + 1,
@@ -1633,6 +1885,18 @@ export class ProductionFlowService {
         actualCost: cost,
         result,
         resultHash: hash,
+        ...(recovery
+          ? {
+              recoveryEvidence: [
+                ...(op.recoveryEvidence ?? []),
+                {
+                  result: op.result,
+                  resultHash: op.resultHash,
+                  at: this.now().toISOString(),
+                },
+              ],
+            }
+          : {}),
         reasons,
         completedAt: this.now().toISOString(),
       });
@@ -1648,6 +1912,8 @@ export class ProductionFlowService {
     return this.repo.transaction(() => {
       const run = this.get("run", i.id);
       if (run.revision !== i.expectedRevision) throw Error("REVISION_CONFLICT");
+      if (run.managedMusic && run.managedStopped && run.stage !== "assets")
+        throw Error("MANAGED_MUSIC_STOPPED");
       if (run.reasons.includes("RESTORED_REQUIRES_REVIEW"))
         throw Error("RESTORED_REQUIRES_REVIEW");
       if (run.state === "unknown") throw Error("OUTCOME_UNKNOWN");
@@ -1689,6 +1955,7 @@ export class ProductionFlowService {
     const i = FlowUseManualAssetsSchema.parse(raw);
     return this.repo.transaction(() => {
       const run = this.get("run", i.id);
+      if (run.managedMusic) throw Error("MANAGED_PLAN_INTERNAL_ONLY");
       if (run.revision !== i.expectedRevision) throw Error("REVISION_CONFLICT");
       if (run.reasons.includes("RESTORED_REQUIRES_REVIEW"))
         throw Error("RESTORED_REQUIRES_REVIEW");

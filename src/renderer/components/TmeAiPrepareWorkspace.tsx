@@ -13,6 +13,14 @@ type Action =
   | "resumePicker"
   | "resumeCrop";
 type PublicRows = { grants: any[]; jobs: any[] };
+export type PublicationScope={publicationTaskId:string;accountId:string};
+export const matchesPublicationScope=(row:any,scope?:PublicationScope)=>!scope||row?.publicationTaskId===scope.publicationTaskId&&row?.accountId===scope.accountId;
+export function preparationInput(action:Action,input:unknown,workId:string,scope?:PublicationScope){
+  return scope&&action!=='list'&&action!=='connectBrowser'?{...(input as Record<string,unknown>),workId,...scope}:input;
+}
+export function preparationRows(rows:PublicRows,scope?:PublicationScope):PublicRows{
+  return {grants:rows.grants.filter(row=>matchesPublicationScope(row,scope)),jobs:rows.jobs.filter(row=>matchesPublicationScope(row,scope))};
+}
 type Inspection = {
   authorizationNonce?: string;
   identity: {
@@ -27,6 +35,7 @@ type Inspection = {
   registered: boolean;
 };
 type PanelProps = {
+  publicationScope?:PublicationScope;
   compact?: boolean;
   data: any;
   workId: string;
@@ -88,15 +97,15 @@ export function TmeAiPreparePanel(props: PanelProps) {
   } = props;
   if (data.mode !== "production") return null;
   const works = data.works ?? [];
-  const grant = grants.find((g) => g.workId === workId),
-    job = context?.job?.workId === workId ? context.job : null;
-  const history = jobs.filter((j) => j.workId === workId),
+  const grant = grants.find((g) => g.workId === workId&&matchesPublicationScope(g,props.publicationScope)),
+    job = context?.job?.workId === workId&&matchesPublicationScope(context.job,props.publicationScope) ? context.job : null;
+  const history = jobs.filter((j) => j.workId === workId&&matchesPublicationScope(j,props.publicationScope)),
     existing = history.length > 0;
   const canWrite = !busy && consent && !!inspection;
   const identity = inspection?.identity ?? grant?.identity;
   if (props.compact)
     return (
-      <section aria-label="确认材料准备">
+      <section aria-label="确认材料准备" data-testid="tme-ai-prepare-compact">
         <button disabled={busy || !workId} onClick={() => onAction("inspect")}>
           核对投稿账号
         </button>
@@ -157,7 +166,7 @@ export function TmeAiPreparePanel(props: PanelProps) {
         <select
           aria-label="已授权作品（仅 A）"
           value={workId}
-          disabled={busy}
+          disabled={busy||!!props.publicationScope}
           onChange={(e) => onSelectWork(e.target.value)}
         >
           {!works.some((w: any) => w.id === workId) && (
@@ -362,17 +371,17 @@ export function TmeAiPreparePanel(props: PanelProps) {
   );
 }
 
-export default function TmeAiPrepareWorkspace({
+type WorkspaceProps={data:any;initialWorkId?:string;compact?:boolean;notify:(text:string)=>void;publicationScope?:PublicationScope};
+export default function TmeAiPrepareWorkspace(props:WorkspaceProps){
+  return <PrepareWorkspaceSession key={`${props.data.mode}:${props.initialWorkId??''}:${props.publicationScope?.publicationTaskId??'legacy'}:${props.publicationScope?.accountId??''}`} {...props}/>;
+}
+function PrepareWorkspaceSession({
   data,
   notify,
   initialWorkId,
   compact = false,
-}: {
-  data: any;
-  initialWorkId?: string;
-  compact?: boolean;
-  notify: (text: string) => void;
-}) {
+  publicationScope,
+}:WorkspaceProps) {
   const [workId, setWorkId] = useState(
     () => initialWorkId ?? data.works?.[0]?.id ?? "",
   );
@@ -395,20 +404,20 @@ export default function TmeAiPrepareWorkspace({
       }
     ).tmeAiPrepare;
     if (!bridge) throw Error("当前客户端尚未连接 AI 页面准备服务。");
-    const result = await bridge(action, input);
+    const result = await bridge(action, preparationInput(action,input,initialWorkId??workId,publicationScope));
     if (!result?.ok)
       throw Error(result?.error?.message ?? "AI 页面准备服务返回失败。");
     return result.value;
   };
   const read = async (id?: string, scope = selectedWork.current) => {
-    const result = (await request("list")) as PublicRows;
+    const result = preparationRows((await request("list")) as PublicRows,publicationScope);
     if (!mounted.current) return;
     setRows(result);
     const candidates = result.jobs.filter((j: any) => j.workId === scope);
     const chosen =
       candidates.find((j: any) => j.id === id) ?? candidates.at(-1);
     const detail = chosen ? await request("context", { id: chosen.id }) : null;
-    if (mounted.current && selectedWork.current === scope) setContext(detail);
+    if (mounted.current && selectedWork.current === scope) setContext(detail&&matchesPublicationScope(detail.job,publicationScope)&&matchesPublicationScope(detail.grant,publicationScope)?detail:null);
   };
   const act = async (action: Action, id?: string) => {
     if (locked.current || data.mode !== "production") return;
@@ -431,7 +440,7 @@ export default function TmeAiPrepareWorkspace({
       else if (action === "context" || action === "reconcile") {
         if (!id) throw Error("请先选择本地准备任务。");
         result = await request(action, { id });
-        if (mounted.current) setContext(result);
+        if (mounted.current) setContext(result&&matchesPublicationScope(result.job,publicationScope)&&matchesPublicationScope(result.grant,publicationScope)?result:null);
         await read(id);
       } else {
         if (!consent || !inspection)
@@ -528,7 +537,8 @@ export default function TmeAiPrepareWorkspace({
   }, [data.mode]);
   return (
     <TmeAiPreparePanel
-      data={data}
+      data={publicationScope?{...data,works:(data.works??[]).filter((work:any)=>work.id===initialWorkId)}:data}
+      publicationScope={publicationScope}
       compact={compact}
       workId={workId}
       inspection={inspection}

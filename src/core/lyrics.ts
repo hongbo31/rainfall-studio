@@ -105,9 +105,10 @@ export class LyricService {
       source = valid ? version.source : { kind: "legacy_unknown" };
     let audioHash: string | null = null;
     try {
-      if (work.assets.audio_A) {
-        this.s.locate(work.assets.audio_A);
-        audioHash = this.s.get("assets", work.assets.audio_A).sha256;
+      const selected=work.assets[work.selectedAudioVariant==="B"?"audio_B":"audio_A"];
+      if (selected) {
+        this.s.locate(selected);
+        audioHash = this.s.get("assets", selected).sha256;
       }
     } catch {}
     const c = work.lyricsConfirmation,
