@@ -1,8 +1,8 @@
 param([string]$SourceRoot)
 $ErrorActionPreference = 'Stop'
-if (-not $SourceRoot) { throw 'Pass -SourceRoot with the existing read-only 100-song collection directory.' }
+if (-not $SourceRoot) { throw 'Pass -SourceRoot with a read-only material collection directory.' }
 $SourceRoot = (Resolve-Path -LiteralPath $SourceRoot).Path
-if (-not (Test-Path -LiteralPath (Join-Path $SourceRoot 'song-map-001-100.json'))) { throw 'Indexed 100-song collection required.' }
+if (-not (Test-Path -LiteralPath $SourceRoot -PathType Container)) { throw 'Material collection directory required.' }
 $acceptanceRoot = Join-Path ([IO.Path]::GetTempPath()) ('rainfall-offline-acceptance-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $acceptanceRoot | Out-Null
 Set-Content -LiteralPath (Join-Path $acceptanceRoot 'offline-acceptance.marker') -Value 'isolated fixture only'

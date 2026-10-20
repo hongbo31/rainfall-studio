@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useStudio, PageHead, Badge } from "../context";
 import HelpNote from "../components/HelpNote";
+import MaterialImportPreview from "../components/MaterialImportPreview";
+import type { MaterialImportPreview as ImportPreview } from "../../shared/material-import";
 import type { ApiProfile } from "../../shared/api-profiles";
 import type {
   MaterialEntry,
@@ -32,6 +34,9 @@ export default function Materials() {
     null,
   );
   const [profiles, setProfiles] = useState<ApiProfile[]>([]);
+  const [importPreview, setImportPreview] = useState<ImportPreview | null>(
+    null,
+  );
   const [sourceId, setSourceId] = useState(""),
     [selected, setSelected] = useState<string[]>([]);
   const [scope, setScope] = useState("pending"),
@@ -85,7 +90,7 @@ export default function Materials() {
       mounted.current = false;
       clearInterval(timer);
     };
-  }, [call]);
+  }, [call, data.mode]);
   const run = async (action: () => Promise<unknown>, success = "") => {
     if (inFlight.current) return;
     inFlight.current = true;
@@ -172,18 +177,23 @@ export default function Materials() {
         <div className="material-toolbar">
           <h2>素材目录</h2>
           <HelpNote label="扫描说明">
-            选择目录仅保存来源配置。扫描读取歌词、编号 Style
-            和封面，不改写源文件。扫描时目录控件暂时只读。
+            选择目录仅保存来源配置。扫描只创建预览，不修改素材、作品或队列；核对标题和文件后再确认导入。源文件只读，扫描时目录控件暂时只读。
           </HelpNote>
         </div>
         <div className="material-toolbar">
           <button
             disabled={busy}
             onClick={() =>
-              void run(
-                () => call("materials.chooseDirectory", {}),
-                "目录已配置，请点击扫描目录",
-              )
+              void run(async () => {
+                const result: MaterialWorkbenchSnapshot = await call(
+                  "materials.chooseDirectory",
+                  {},
+                );
+                const added = result?.sources?.find(
+                  (s) => !snapshot?.sources.some((old) => old.id === s.id),
+                );
+                if (added) setSourceId(added.id);
+              }, "目录已配置，请点击扫描目录")
             }
           >
             选择素材目录
@@ -209,10 +219,28 @@ export default function Materials() {
           <button
             disabled={busy || !sourceId}
             onClick={() =>
-              void run(() => call("materials.scan", { sourceId }), "扫描完成")
+              void run(async () =>
+                setImportPreview(
+                  await call("materials.previewScan", { sourceId }),
+                ),
+              )
             }
           >
             扫描目录
+          </button>
+          <button
+            disabled={busy || !sourceId}
+            onClick={() =>
+              void run(async () => {
+                const preview: ImportPreview | null = await call(
+                  "materials.chooseRebindDirectory",
+                  { sourceId },
+                );
+                if (preview) setImportPreview(preview);
+              })
+            }
+          >
+            重新绑定目录
           </button>
           <button
             disabled={busy}
@@ -726,6 +754,21 @@ export default function Materials() {
             )}
           </section>
         </div>
+      )}
+      {importPreview && (
+        <MaterialImportPreview
+          key={importPreview.id}
+          preview={importPreview}
+          onPreview={setImportPreview}
+          onClose={() => setImportPreview(null)}
+          existingMaterials={materials}
+          onImported={async () => {
+            await reload();
+            setSourceId(importPreview.sourceId);
+            setImportPreview(null);
+            setMessage("素材已导入");
+          }}
+        />
       )}
     </main>
   );

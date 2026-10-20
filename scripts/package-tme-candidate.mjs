@@ -2,6 +2,9 @@
 import fs from 'node:fs';import path from 'node:path';import {execFileSync} from 'node:child_process';import {build} from 'esbuild';
 import {createHash} from 'node:crypto';
 const repo=process.cwd(),commit=execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
+const changedSourceFiles=execFileSync('git',['ls-files','-m','-o','--exclude-standard','-z'],{encoding:'utf8'}).split('\0').filter(Boolean).sort();
+const sourceState={baseCommit:commit,uncommittedChanges:changedSourceFiles.length>0,files:changedSourceFiles.map(name=>({path:name,sha256:fs.existsSync(name)?createHash('sha256').update(fs.readFileSync(name)).digest('hex'):null}))};
+const sourceFingerprint=createHash('sha256').update(JSON.stringify(sourceState)).digest('hex');
 const connectionCheck=process.argv.includes('--connection-check');
 const musicLive=process.argv.includes('--music-live');
 const simplePublish=process.argv.includes('--simple-publish');
@@ -85,6 +88,10 @@ if(albumService){
  fs.writeFileSync(path.join(dest,'candidate-manifest.json'),JSON.stringify(manifest,null,2));
 }
 if(materialWorkbench){
+ Object.assign(manifest,{sourceState,sourceFingerprint,sourceCommitIsExact:!sourceState.uncommittedChanges});
+ fs.cpSync('templates/material-import',path.join(dest,'Material-Import-Template'),{recursive:true});
+ if(fs.existsSync('docs/acceptance/2026-10-20-generic-material-import.md'))fs.copyFileSync('docs/acceptance/2026-10-20-generic-material-import.md',path.join(dest,'docs','generic-material-import-acceptance.md'));
+ fs.copyFileSync('docs/acceptance/2026-10-20-provider-gates-readonly.md',path.join(dest,'docs','provider-gates-readonly.md'));
  fs.mkdirSync(path.join(app,'scripts'),{recursive:true});
  fs.copyFileSync('scripts/seed-material-electron-acceptance.cjs',path.join(app,'scripts','seed-material-electron-acceptance.cjs'));
  fs.copyFileSync('scripts/material-acceptance-launch.ps1',path.join(dest,'Start-Offline-Material-Acceptance.ps1'));
@@ -92,12 +99,14 @@ if(materialWorkbench){
   const evidence=path.join(dest,'docs','publication-feedback-comparison');fs.mkdirSync(evidence,{recursive:true});
   for(const name of ['comparison.json','comparison.md','baseline.tap','candidate.tap','fixed.tap'])fs.copyFileSync(path.join('output/publish-material-feedback',name),path.join(evidence,name));
  }
- Object.assign(manifest,{materialWorkbenchImplemented:true,materialSourcePolicy:'explicit selected directory; song-map-001-100 adapter; read only',materialGenerationSubmitEnabled:false,materialGenerationFeeProof:false,fixtureLifecycleVerified:true,formalPublication:false,realMusicGenerationRequested:false,nativeGuiLaunched:false,installedOrDesktopReplaced:false,accepted:false,acceptancePending:'Native visual acceptance and real provider/official platform integration were not performed. Production material generation remains blocked by absent supplier fee enforcement.'});
+ Object.assign(manifest,{materialWorkbenchImplemented:true,genericMaterialImportImplemented:true,materialImportFormats:['per-song-folder','rainfall-materials.json','song-map-001-100.json'],materialImportPolicy:'preview-repair-explicit-confirm; explicit root rebind; duplicates require acknowledgment',materialSourcePolicy:'explicit selected directory; read only',materialGenerationSubmitEnabled:false,materialGenerationFeeProof:false,fixtureLifecycleVerified:true,formalPublication:false,realMusicGenerationRequested:false,nativeGuiLaunched:false,installedOrDesktopReplaced:false,accepted:false,acceptancePending:'Native visual acceptance and real provider/official platform integration were not performed. Production material generation remains blocked by absent supplier fee enforcement.'});
  fs.copyFileSync('docs/superpowers/specs/2026-10-20-material-workbench-design.md',path.join(dest,'docs','material-workbench-design.md'));
  fs.copyFileSync('docs/acceptance/2026-10-20-material-workbench.md',path.join(dest,'docs','material-workbench-acceptance.md'));
  fs.writeFileSync(path.join(dest,'candidate-manifest.json'),JSON.stringify(manifest,null,2));
  fs.appendFileSync(path.join(dest,'README.txt'),'\r\nMaterial workbench: explicit read-only source scan, frozen cover and A/B audio lifecycle, existing publication center. Real material generation is blocked because supplier-enforced fee evidence is unavailable. No real API, upload, terms acceptance, official submission, GUI launch, installation or desktop promotion was performed. See docs/material-workbench-acceptance.md.\r\n');
- for(const name of ['Start-Offline-Material-Acceptance.ps1','resources/app/scripts/seed-material-electron-acceptance.cjs'])manifest.integrity.push({path:name,sha256:createHash('sha256').update(fs.readFileSync(path.join(dest,name))).digest('hex')});
+ fs.appendFileSync(path.join(dest,'README.txt'),'\r\nGeneric import: see Material-Import-Template for the ordinary per-song folder template and Chinese instructions. Scanning is preview-only; repair and explicitly confirm before import. Start-Offline-Material-Acceptance.ps1 accepts an ordinary source directory (configured only, no automatic import); the known100-song collection additionally seeds clearly marked fixture audio for offline playback checks. See docs/generic-material-import-acceptance.md and docs/provider-gates-readonly.md.\r\n');
+ const materialFiles=['Start-Offline-Material-Acceptance.ps1','resources/app/scripts/seed-material-electron-acceptance.cjs','docs/generic-material-import-acceptance.md','docs/provider-gates-readonly.md',...fs.readdirSync(path.join(dest,'Material-Import-Template'),{recursive:true}).filter(name=>fs.statSync(path.join(dest,'Material-Import-Template',name)).isFile()).map(name=>'Material-Import-Template/'+name.split(path.sep).join('/'))];
+ for(const name of materialFiles)manifest.integrity.push({path:name,sha256:createHash('sha256').update(fs.readFileSync(path.join(dest,name))).digest('hex')});
  fs.writeFileSync(path.join(dest,'candidate-manifest.json'),JSON.stringify(manifest,null,2));
 }
 console.log(JSON.stringify(manifest));

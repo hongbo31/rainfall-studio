@@ -6,6 +6,7 @@ const {Studio,MaterialWorkbenchService,prepareMaterialWork,importMaterialAudio,c
   assert.equal((await s.call('apiProfile.list',{})).length,0);
   const source=path.resolve(process.env.RAINFALL_ACCEPTANCE_SOURCE_ROOT??'../Rainfall-Materials-Pending/2026-10-20_100-songs');
   const service=new MaterialWorkbenchService({getSetting:k=>s.repo.maybe('settings',k)?.value,setSetting:(k,value)=>s.save('settings',{id:k,value})},{fixture:true,fixtureFeeBoundCredits:2,verifyAsset:v=>{const w=s.get('works',v.workId),a=s.get('assets',v.assetId);s.locate(a.id);return a.sha256===v.sha256&&w.assets['audio_'+v.version]===a.id;}});s.materialWorkbench=()=>service;
+  if(!fs.existsSync(path.join(source,'song-map-001-100.json'))){service.configure({root:source});fs.writeFileSync(path.join(root,'fixture.json'),JSON.stringify({source,fixtureOnly:true,configuredOnly:true}));return;}
   service.configure({root:source});await service.scan({sourceId:service.list().sources[0].id});const m=service.list().materials[0];assert.equal(service.list().materials.length,100);
   const artist=s.all('artists')[0];service.enqueue({materialIds:[m.id],expectedRevisions:{[m.id]:m.revision},requestId:'offline-electron-fixture',profileId:'fixture-only',profileRevision:1,modelId:'fixture-only',artistId:artist.id,budgetCredits:10,consent:true});
   const job=service.list().jobs[0],prepared=await prepareMaterialWork(s,{jobId:job.id});service.claimNext();service.recordSubmitted({jobId:job.id,providerSongIds:['fixture-a','fixture-b']});

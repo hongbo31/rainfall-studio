@@ -8,6 +8,12 @@ import {
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import sharp from "sharp";
+import { MaterialImportService,materialImportRoot } from "./material-import";
+import type {
+  MaterialImportPreviewInput,
+  MaterialImportUpdateInput,
+  MaterialImportConfirmInput,
+} from "../shared/material-import";
 import type {
   MaterialEntry,
   MaterialSource,
@@ -59,6 +65,7 @@ const active = new Set([
 export class MaterialWorkbenchService {
   private state: State;
   private now: () => string;
+  private importer?: MaterialImportService;
   constructor(
     private repo: MaterialWorkbenchRepository,
     private options: MaterialWorkbenchOptions = {},
@@ -88,6 +95,65 @@ export class MaterialWorkbenchService {
   }
   private save() {
     this.repo.setSetting(KEY, copy(this.state));
+  }
+  private importService() {
+    return (this.importer ??= new MaterialImportService(this.repo, {
+      snapshot: () => this.list(),
+      now: this.now,
+      commit: (preview, rows) => {
+        const next = copy(this.state),
+          source = next.sources.find((s) => s.id === preview.sourceId)!;
+        if (source.revision !== preview.baseSourceRevision)
+          throw Error("IMPORT_PREVIEW_STALE_SOURCE");
+        if (
+          preview.rebind &&
+          next.jobs.some(
+            (j) =>
+              j.state !== "completed" &&
+              j.state !== "blocked" &&
+              next.materials.some(
+                (m) => m.id === j.materialId && m.sourceId === source.id,
+              ),
+          )
+        )
+          throw Error("IMPORT_REBIND_ACTIVE_JOBS");
+        for (const { material, manifests } of rows) {
+          const old = next.materials.find((m) => m.id === material.id);
+          if (old) Object.assign(old, copy(material));
+          else next.materials.push(copy(material));
+          next.manifests![material.id] = copy(manifests);
+        }
+        if (preview.rebind) {
+          for (const m of next.materials.filter(
+            (m) =>
+              m.sourceId === source.id &&
+              !rows.some((r) => r.material.id === m.id),
+          )) {
+            m.state = "invalid";
+            m.validationReasons = ["IMPORT_REBIND_ROW_CONFIRMATION_REQUIRED"];
+          }
+          source.root = preview.root;
+        }
+        source.revision++;
+        source.lastScanAt = this.now();
+        delete source.error;
+        this.repo.setSetting(KEY, copy(next));
+        this.state = next;
+        return this.list();
+      },
+    }));
+  }
+  previewScan(input: MaterialImportPreviewInput) {
+    return this.importService().previewScan(input);
+  }
+  updatePreview(input: MaterialImportUpdateInput) {
+    return this.importService().updatePreview(input);
+  }
+  confirmImport(input: MaterialImportConfirmInput) {
+    return this.importService().confirmImport(input);
+  }
+  previewCoverPath(input: { previewId: string; rowId: string;sha256?:string }) {
+    return this.importService().previewCoverPath(input);
   }
   private material(id: string) {
     const m = this.state.materials.find((x) => x.id === id);
@@ -137,7 +203,7 @@ export class MaterialWorkbenchService {
     });
   }
   configure({ root }: { root: string }) {
-    const real = realpathSync(root);
+    const real = materialImportRoot(root);
     if (!statSync(real).isDirectory())
       throw Error("Source must be a directory");
     let s = this.state.sources.find(

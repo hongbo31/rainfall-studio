@@ -16,7 +16,7 @@ await build({
 });
 fs.writeFileSync(
   path.join(folder, "index.html"),
-  '<meta charset="utf-8"><div id="root"></div><script src="fixture.js"></script>',
+  '<meta charset="utf-8"><link rel="stylesheet" href="fixture.css"><div id="root"></div><script src="fixture.js"></script>',
 );
 let browser;
 before(async () => {
@@ -63,6 +63,10 @@ test("filtering and rescanning preserve hidden selection; generated success clea
   await p.getByLabel("选择 Pending two", { exact: true }).check();
   await p.getByLabel("搜索素材").fill("two");
   await p.getByRole("button", { name: "扫描目录", exact: true }).click();
+  await p
+    .getByRole("dialog", { name: "素材导入预览" })
+    .getByRole("button", { name: "取消导入", exact: true })
+    .click();
   await p.getByLabel("搜索素材").fill("");
   assert.equal(
     await p.getByLabel("选择 Pending one", { exact: true }).isChecked(),
@@ -87,7 +91,13 @@ test("directory selection does not scan and fee gate blocks enqueue", async (t) 
   assert.equal(
     await p.evaluate(
       () =>
-        window.fixture.calls.filter((c) => c[0] === "materials.scan").length,
+        window.fixture.calls.filter((c) =>
+          [
+            "materials.scan",
+            "materials.previewScan",
+            "materials.confirmImport",
+          ].includes(c[0]),
+        ).length,
     ),
     0,
   );

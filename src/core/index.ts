@@ -148,6 +148,8 @@ if (port) {
       if(action==='completeJob')return completeMaterialJob(studio,input);
       if(action==='configure')return service.configure(input);
       if(action==='coverPath')return service.coverPath(input);
+        if(action==='previewCoverPath')return service.previewCoverPath(input);
+        if(action==='previewRebind')return service.previewScan(input);
       if(['claimNext','getJobContext','recordSubmitted','recordProgress','recordFailure'].includes(action))return (service as any)[action](input);
       return studio.call('materials.'+action,input);
     }

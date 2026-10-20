@@ -113,7 +113,7 @@ function App() {
       window.removeEventListener("unhandledrejection", unhandled);
     };
   }, []);
-  const call = async (method: string, input: any = {}) => {
+  const call = useCallback(async (method: string, input: any = {}) => {
     const r = await window.rainfall.call(method, input);
     if (!r.ok) {
       notify(r.error.message);
@@ -121,7 +121,7 @@ function App() {
     }
     await refresh();
     return r.value;
-  };
+  }, [notify, refresh]);
   const native = async (p: Promise<any>, success: string) => {
     const r = await p;
     if (!r.ok) {

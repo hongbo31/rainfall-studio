@@ -98,6 +98,12 @@ export function createMaterialWorkbenchBroker(o: Options) {
         ];
       if (!schema) throw Error("METHOD_NOT_ALLOWED");
       const input = schema.parse(raw);
+      if(action==='chooseRebindDirectory'){
+        if(!o.chooseDirectory)throw Error('DIRECTORY_PICKER_UNAVAILABLE');
+        const picked=await o.chooseDirectory();guard(generation);
+        if(picked.canceled||picked.filePaths.length!==1)return null;
+        return rpc('previewRebind',{sourceId:(input as {sourceId:string}).sourceId,root:picked.filePaths[0]});
+      }
       if (action === "chooseDirectory") {
         if (!o.chooseDirectory) throw Error("DIRECTORY_PICKER_UNAVAILABLE");
         const picked = await o.chooseDirectory();

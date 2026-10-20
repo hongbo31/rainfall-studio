@@ -623,7 +623,10 @@ export class Studio {
         return this.saveWork(v);
       case 'work.selectAudioVersion':return selectPublicationAudio(this,v);
       case 'materials.list':return this.materialWorkbench().list();
-      case 'materials.scan':return this.materialWorkbench().scan(v);
+      case 'materials.scan':
+      case 'materials.previewScan':return this.materialWorkbench().previewScan(v);
+      case 'materials.updatePreview':return this.materialWorkbench().updatePreview(v);
+      case 'materials.confirmImport':return this.materialWorkbench().confirmImport(v);
       case 'materials.enqueue':{
         this.get('artists',v.artistId);
         const snapshot=this.materialWorkbench().enqueue(v);

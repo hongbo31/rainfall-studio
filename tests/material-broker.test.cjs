@@ -5,6 +5,16 @@ const { test } = require("node:test"),
 const { MaterialWorkbenchService, createMaterialWorkbenchBroker } = require(
   process.env.RAINFALL_MATERIAL_BROKER_BUNDLE,
 );
+test('Main root rebinding passes only the native picker result and never accepts a renderer root',async()=>{
+ const sourceId=crypto.randomUUID(),calls=[];let picks=0;
+ const broker=createMaterialWorkbenchBroker({rpc:async(method,input)=>{calls.push({method,input});return{ok:true,value:{id:'preview',root:input.root}};},credentials:{withMusicAdapter:()=>{throw Error('NO_CREDENTIAL_ACCESS');}},available:()=>true,generation:()=>1,chooseDirectory:async()=>{picks++;return{canceled:false,filePaths:['C:\\fixture\\picked-root']};}});
+ await assert.rejects(broker.ui('chooseRebindDirectory',{sourceId,root:'C:\\untrusted'}));assert.equal(picks,0);assert.equal(calls.length,0);
+ const result=await broker.ui('chooseRebindDirectory',{sourceId});assert.equal(result.root,'C:\\fixture\\picked-root');assert.equal(picks,1);assert.deepEqual(calls,[{method:'internal.materials.previewRebind',input:{sourceId,root:'C:\\fixture\\picked-root'}}]);
+});
+test('canceling native root rebinding performs no Core mutation',async()=>{
+ let calls=0;const broker=createMaterialWorkbenchBroker({rpc:async()=>{calls++;throw Error('UNEXPECTED_RPC');},credentials:{withMusicAdapter:()=>{throw Error('NO_CREDENTIAL_ACCESS');}},available:()=>true,generation:()=>1,chooseDirectory:async()=>({canceled:true,filePaths:[]})});
+ assert.equal(await broker.ui('chooseRebindDirectory',{sourceId:crypto.randomUUID()}),null);assert.equal(calls,0);
+});
 test("Main reuses provider tasks and serializes full lifecycle without credentials in fixture", async () => {
   const saved = new Map(),
     service = new MaterialWorkbenchService(

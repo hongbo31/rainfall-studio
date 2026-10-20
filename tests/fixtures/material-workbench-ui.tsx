@@ -1,8 +1,12 @@
 import React from "react";
+import "../../src/renderer/ui-system.css";
+import "../../src/renderer/plan-center.css";
+import "../../src/renderer/themes.css";
 import { createRoot } from "react-dom/client";
 import { Context } from "../../src/renderer/context";
 import Materials from "../../src/renderer/pages/Materials";
 import type { MaterialWorkbenchSnapshot } from "../../src/shared/material-workbench";
+import type { MaterialImportPreview } from "../../src/shared/material-import";
 const check = { path: "fixture/source", exists: true, valid: true };
 const entry = (id: string, state: any, number: string) => ({
   id,
@@ -46,6 +50,49 @@ let snapshot: MaterialWorkbenchSnapshot = {
   },
 };
 const calls: any[] = [];
+let cancelRebind = false,
+  chooseNewSource = false,
+  rejectConfirm = false;
+let preview: MaterialImportPreview = {
+  id: "preview-one",
+  sourceId: "source",
+  root: "fixture/source",
+  baseSourceRevision: 1,
+  rebind: false,
+  format: "folders",
+  createdAt: "fixture",
+  errors: [],
+  warnings: [],
+  rows: [
+    {
+      id: "row-one",
+      sourceKey: "song",
+      number: "1",
+      title: "Suggested title",
+      suggestedTitle: "Suggested title",
+      lyricsPath: "song/lyrics.txt",
+      stylePath: "song/style.txt",
+      coverPath: "song/cover.png",
+      lyrics: "Preview actual lyrics",
+      style: "Preview actual style",
+      checks: {
+        lyrics: { ...check, path: "fixture/source/song/lyrics.txt" },
+        style: { ...check, path: "fixture/source/song/style.txt" },
+        cover: { ...check, path: "fixture/source/song/cover.png" },
+      },
+      cover: entry("preview", "pending", "1").cover,
+      candidates: {
+        lyrics: ["song/lyrics.txt"],
+        style: ["song/style.txt"],
+        cover: ["song/cover.png", "song/alternate.jpg"],
+      },
+      errors: [],
+      warnings: [],
+      duplicateMaterialIds: ["Pending two"],
+      ready: true,
+    },
+  ],
+};
 snapshot.materials[2].versions = [
   {
     id: "version-a",
@@ -60,6 +107,77 @@ snapshot.materials[2].versions = [
 ];
 const fixture = {
   calls,
+  previewSuggestedTitle: () => {
+    preview.rows[0].title = "Previously confirmed title";
+    preview.rows[0].suggestedTitle = "Changed source title";
+  },
+  previewMany: (bulkCandidates = false) => {
+    preview = {
+      ...preview,
+      rows: Array.from({ length: 100 }, (_, i) => ({
+        ...structuredClone(preview.rows[0]),
+        id: "row-" + i,
+        sourceKey: "song-" + i,
+        title: "Preview " + i,
+        suggestedTitle: "Preview " + i,
+        duplicateMaterialIds: [],
+        duplicateRowIds: [],
+        ...(bulkCandidates
+          ? {
+              candidates: {
+                lyrics: Array.from(
+                  { length: 200 },
+                  (_, n) => `song-${n}/lyrics.txt`,
+                ),
+                style: Array.from(
+                  { length: 200 },
+                  (_, n) => `song-${n}/style.txt`,
+                ),
+                cover: Array.from(
+                  { length: 100 },
+                  (_, n) => `song-${n}/cover.png`,
+                ),
+              },
+            }
+          : {}),
+      })),
+    };
+  },
+  previewIssue: (message: string) => {
+    preview.rows[0].errors = [message];
+    preview.rows[0].ready = false;
+    preview.rows[0].checks.cover = {
+      path: "fixture/source/song/cover.png",
+      exists: true,
+      valid: false,
+      reason: message,
+    };
+  },
+  cancelRebind: () => {
+    cancelRebind = true;
+  },
+  chooseNewSource: () => {
+    chooseNewSource = true;
+  },
+  rejectConfirm: () => {
+    rejectConfirm = true;
+  },
+  previewInternalDuplicate: () => {
+    preview.rows[0].duplicateMaterialIds = [];
+    preview.rows[0].duplicateRowIds = ["other-preview-row"];
+  },
+  previewMissing: () => {
+    preview.rows[0].coverPath = "";
+    preview.rows[0].ready = false;
+    preview.rows[0].errors = ["cover_missing"];
+    preview.rows[0].cover.previewUrl = "";
+    preview.rows[0].checks.cover = {
+      path: "",
+      exists: false,
+      valid: false,
+      reason: "cover_missing",
+    };
+  },
   setMany: () => {
     snapshot = {
       ...snapshot,
@@ -96,6 +214,55 @@ const context: any = {
   call: async (method: string, input: any) => {
     calls.push([method, input]);
     if (method === "materials.list") return structuredClone(snapshot);
+    if (method === "materials.previewScan") return structuredClone(preview);
+    if (method === "materials.chooseRebindDirectory") {
+      if (cancelRebind) return null;
+      preview = { ...preview, rebind: true, root: "fixture/moved-source" };
+      return structuredClone(preview);
+    }
+    if (method === "materials.updatePreview") {
+      preview = {
+        ...preview,
+        rows: preview.rows.map((row) =>
+          row.id === input.rowId
+            ? {
+                ...row,
+                ...input,
+                ready: !!input.coverPath,
+                errors: input.coverPath ? [] : ["cover_missing"],
+                cover: {
+                  ...row.cover,
+                  previewUrl: entry("preview", "pending", "1").cover.previewUrl,
+                },
+                checks: {
+                  ...row.checks,
+                  cover: {
+                    ...check,
+                    path: "fixture/source/" + input.coverPath,
+                  },
+                },
+              }
+            : row,
+        ),
+      };
+      return structuredClone(preview);
+    }
+    if (method === "materials.confirmImport") {
+      if (rejectConfirm) throw Error("SOURCE_CHANGED_RESCAN_REQUIRED");
+      snapshot = {
+        ...snapshot,
+        materials: [
+          ...snapshot.materials,
+          ...preview.rows
+            .filter((r) => input.rowIds.includes(r.id))
+            .map((r) => ({
+              ...entry(r.id, "pending", r.number),
+              title: r.title,
+            })),
+        ],
+      };
+      return structuredClone(snapshot);
+    }
     if (method === "apiProfile.list")
       return [
         {
@@ -106,7 +273,17 @@ const context: any = {
           revision: 1,
         },
       ];
-    if (method === "materials.chooseDirectory") return { id: "source" };
+    if (method === "materials.chooseDirectory") {
+      if (chooseNewSource)
+        snapshot = {
+          ...snapshot,
+          sources: [
+            ...snapshot.sources,
+            { id: "new-source", root: "fixture/new-source", revision: 1 },
+          ],
+        };
+      return structuredClone(snapshot);
+    }
     return {};
   },
 };

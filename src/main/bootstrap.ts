@@ -55,10 +55,12 @@ import {pathToFileURL} from 'node:url';
 import {offlineAcceptanceEnabled,offlineAcceptanceInvocationAllowed} from '../shared/offline-acceptance';
 const offlineAcceptance=offlineAcceptanceEnabled();
 let offlineNetworkBlocks=0;
+const offlineInvocationCounts:Record<string,number>={};
 if(offlineAcceptance){
  const registerHandle=ipcMain.handle.bind(ipcMain);
  ipcMain.handle=(channel,listener)=>registerHandle(channel,(event,...args)=>{
   if(!offlineAcceptanceInvocationAllowed(channel,args))return{ok:false,error:{code:'OFFLINE_ACCEPTANCE_ACTION_DISABLED',message:'离线验收仅允许本地素材操作与发布预检'}};
+  const method=args[0] as string;offlineInvocationCounts[method]=(offlineInvocationCounts[method]??0)+1;
   return listener(event,...args);
  });
  app.on('web-contents-created',(_event,contents)=>{
@@ -368,6 +370,7 @@ function handlers() {
             packaged: app.isPackaged,
               offlineAcceptance,
               offlineNetworkBlocks,
+              offlineInvocationCounts:{...offlineInvocationCounts},
             appVersion: app.getVersion(),
             externalConnections: null,
             networkObservationScope: 'not_measured_by_runtime',
@@ -519,11 +522,15 @@ app
     });
     protocol.handle('material-cover',async request=>{
       try{
-        const url=new URL(request.url),materialId=url.pathname.slice(1),revision=Number(url.searchParams.get('revision')),generation=coreGeneration;
-        if(switching||closing||url.host!=='cover'||!/^[a-f0-9-]{36}$/.test(materialId)||!Number.isSafeInteger(revision)||revision<1)return new Response('Not found',{status:404});
-        const result=await rpc('internal.materials.coverPath',{materialId,revision});
+        const url=new URL(request.url),generation=coreGeneration,parts=url.pathname.slice(1).split('/'),uuid=/^[a-f0-9-]{36}$/;
+        if(switching||closing)return new Response('Not found',{status:404});
+        let result;
+        if(url.host==='preview'&&parts.length===2&&parts.every(part=>uuid.test(part))){const sha256=url.searchParams.get('sha256');if(!sha256||!/^[a-f0-9]{64}$/.test(sha256))return new Response('Not found',{status:404});result=await rpc('internal.materials.previewCoverPath',{previewId:parts[0],rowId:parts[1],sha256});}
+        else{const materialId=parts[0],revision=Number(url.searchParams.get('revision'));if(url.host!=='cover'||parts.length!==1||!uuid.test(materialId)||!Number.isSafeInteger(revision)||revision<1)return new Response('Not found',{status:404});result=await rpc('internal.materials.coverPath',{materialId,revision});}
         if(!result.ok||generation!==coreGeneration||switching||closing)return new Response('Not found',{status:404});
-        return net.fetch(pathToFileURL(result.value).href);
+        const response=await net.fetch(pathToFileURL(result.value).href);
+        if(url.host==='preview'){const bytes=Buffer.from(await response.arrayBuffer());if(createHash('sha256').update(bytes).digest('hex')!==url.searchParams.get('sha256'))return new Response('Changed source',{status:404});return new Response(bytes,{headers:{'Content-Type':response.headers.get('content-type')??'application/octet-stream','Cache-Control':'no-store'}});}
+        return response;
       }catch{return new Response('Not found',{status:404});}
     });
     protocol.handle("media", async (request) => {
