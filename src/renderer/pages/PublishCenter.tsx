@@ -1,3 +1,4 @@
+import {fanqieCapabilities} from '../../shared/fanqie';
 import React, { useEffect, useRef, useState } from "react";
 import { useStudio, PageHead, Badge, names, label } from "../context";
 import HelpHint from "../components/HelpHint";
@@ -197,6 +198,7 @@ export default function PublishCenter() {
   return (
     <div className="simple-publishing">
       <PageHead title="发布中心" />
+      {!fanqieCapabilities.upload && <p role="status">番茄音乐：已核对第一步表单，尚不可自动上传或提交。</p>}
       <section className="panel publish-choices" aria-label="选择歌曲和平台">
         <fieldset
           className="simple-publish-grid publish-selection-fields"

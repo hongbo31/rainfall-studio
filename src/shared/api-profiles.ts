@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type {CredentialFailureCode} from './credential-errors';
 
 export const textProviderBaseUrls = Object.freeze({deepseek:'https://api.deepseek.com',doubao:'https://ark.cn-beijing.volces.com/api/v3'});
 export const TextPricingSchema = z.strictObject({
@@ -152,4 +153,5 @@ export type CredentialStatus = {
   profileId: string;
   state: "absent" | "stored_unverified" | "unavailable";
   configured: boolean;
+  failureCode?: CredentialFailureCode;
 };

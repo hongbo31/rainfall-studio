@@ -9,6 +9,7 @@ import {
   type ApiConnectionCheck,
 } from "../shared/api-profiles";
 import type { CredentialVault } from "./credentials";
+import {credentialFailureCode,credentialFailureMessages} from '../shared/credential-errors';
 import type { HttpTransport } from "../core/workflow/yourmusic";
 import {YourMusicAdapter} from '../core/workflow/yourmusic';
 import {DeepSeekAdapter} from '../core/workflow/deepseek';
@@ -96,12 +97,12 @@ export class ApiCredentials {
     if (!canStoreApiCredential(profile)) return absent;
     try {
       if (!this.options.vault.isAvailable())
-        return { ...absent, state: "unavailable" };
+        return { ...absent, state: "unavailable", failureCode:'SECURE_STORAGE_UNAVAILABLE' };
       return this.options.vault.has(this.binding(profile))
         ? { ...absent, state: "stored_unverified", configured: true }
         : absent;
-    } catch {
-      return { ...absent, state: "unavailable" };
+    } catch (error) {
+      return { ...absent, state: "unavailable", failureCode:credentialFailureCode(error) };
     }
   }
   async apiCredentialStatus(input: unknown): Promise<CredentialStatus> {
@@ -133,7 +134,9 @@ export class ApiCredentials {
       }
       this.options.vault.put(this.binding(profile), secret);
       await this.lookup(profileId, scope, expectedRevision);
-      return this.status(profile);
+      const saved=this.status(profile);
+      if(!saved.configured)throw Error(saved.failureCode??'CREDENTIAL_READBACK_FAILED');
+      return saved;
     });
   }
   async clearApiCredential(input: unknown): Promise<CredentialStatus> {
@@ -273,6 +276,7 @@ export class ApiCredentials {
 }
 
 const publicErrors = new Set([
+  ...Object.keys(credentialFailureMessages),
   "IPC_SOURCE_REJECTED",
   "WORKSPACE_CHANGED",
   "PROFILE_NOT_FOUND",

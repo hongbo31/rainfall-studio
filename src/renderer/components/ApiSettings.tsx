@@ -1,4 +1,6 @@
 import React, { useEffect, useState } from "react";
+import CredentialInput from './CredentialInput';
+import {credentialFailureText} from '../../shared/credential-errors';
 import { useStudio } from "../context";
 import HelpHint from "./HelpHint";
 import {
@@ -41,6 +43,7 @@ function ProfileCard({
   const [priceVersion,setPriceVersion]=useState(profile.textPricing?.version??'');
   const [responseModels,setResponseModels]=useState(profile.textPricing?.responseModelIds.join(', ')??'');
   const [secret, setSecret] = useState("");
+  useEffect(()=>setSecret(''),[profile.id,profile.revision,simulation]);
   const [status, setStatus] = useState<CredentialStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -58,7 +61,7 @@ function ProfileCard({
       .then((r) => {
         if (active) {
           if (r.ok) setStatus(r.value);
-          else setError("无法读取凭据状态，请稍后重试。");
+          else setError(credentialFailureText(r.error.code));
         }
       })
       .catch(() => {
@@ -109,8 +112,8 @@ function ProfileCard({
         if (!result.ok) throw Error(result.error.code);
         setStatus(result.value);
       }
-    } catch {
-      setError("操作未完成，请检查配置版本与安全存储后重试。");
+    } catch (e) {
+      setError(credentialFailureText(e));
     } finally {
       setBusy(false);
     }
@@ -124,10 +127,10 @@ function ProfileCard({
         profileId: profile.id,
         expectedRevision: profile.revision,
       });
-      if (!r.ok) throw Error("CONNECTION_CHECK_FAILED");
+      if (!r.ok) throw Error(r.error.code);
       setConnection(r.value);
-    } catch {
-      setError("连接检查未完成，请检查配置版本与本机网络。");
+    } catch (e) {
+      setError(credentialFailureText(e));
     } finally {
       setBusy(false);
     }
@@ -196,25 +199,7 @@ function ProfileCard({
       {eligible && !simulation ? (
         <>
           <div className="api-profile-fields api-secret-row">
-            <label>
-              新的 API Key
-              <input
-                aria-label="新的 API Key"
-                type="password"
-                value={secret}
-                disabled={busy}
-                autoComplete="new-password"
-                spellCheck={false}
-                autoCapitalize="none"
-                maxLength={100000}
-                placeholder={
-                  status?.configured
-                    ? "输入新 Key 以替换；已有内容不回显"
-                    : "仅在本机加密保存"
-                }
-                onChange={(e) => setSecret(e.target.value)}
-              />
-            </label>
+            <CredentialInput value={secret} onChange={setSecret} disabled={busy} configured={!!status?.configured} initialVisible={profile.providerId==='yourmusic'} />
             <div className="api-actions">
               <button
                 className="primary"
@@ -277,7 +262,8 @@ function ProfileCard({
             : "接口与模型配置完成后，再开放凭据录入。"}
         </HelpHint>
       )}
-      {error && (
+        {status?.failureCode && <p role="status">{credentialFailureText(status.failureCode)}</p>}
+        {error && (
         <p role="alert" className="api-error">
           {error}
         </p>

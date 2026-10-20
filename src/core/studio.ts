@@ -1,3 +1,4 @@
+import {fanqieCapabilities} from '../shared/fanqie';
 import {AccountIdentityService,type AccountIdentityAdapter} from './account-identity';
 import {readGenerationConfig,saveGenerationConfig} from './generation-config';
 import {prepareManualCreation,listManualCreations} from './manual-creation';
@@ -756,6 +757,7 @@ export class Studio {
     return {
       mode: this.mode,
       platformConfigurations: listPlatformConfigurations(this.repo),
+      fanqieCapabilities,
       publicationRequests: listSimplePublicationRequests(this),
       publicationPipelineJobs: this.mode === "production" ? unifiedPublicationService(this).list() : [],
       publicationPendingTerms: listPublicationPendingTerms(this),

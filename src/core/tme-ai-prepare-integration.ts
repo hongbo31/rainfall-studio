@@ -1,3 +1,4 @@
+import {assertPublicationFile} from './publication-foundation';
 import {resolveTmeAiPrepareScope,TmeAiScopeInputSchema,verifyPlanTmeAppendWrite} from './tme-ai-scope';
 import {publishSimple} from './simple-publication';
 import {unifiedPublicationService} from './unified-publication-integration';
@@ -7,7 +8,7 @@ import path from 'node:path';
 import {z} from 'zod';
 import type {Studio} from './studio';
 import {hash} from './database';
-import {digest} from './assets';
+
 import {cleanLyricText} from '../shared/tme-lyrics';
 import type {TmeAiPrepareGrant} from '../shared/tme-ai-prepare';
 import {TmeAiPrepareService} from './tme-ai-prepare';
@@ -55,7 +56,7 @@ export function verifyTmeAiPrepareAssets(s:Studio,g:TmeAiPrepareGrant,context?:{
  // The approved official artist identity may differ from a legacy local placeholder.
  // registerGrant binds metadata.artistName to the trusted official identity; never rename the artist row.
  if(!path.isAbsolute(g.upload.path)||!fs.existsSync(g.upload.path)||fs.lstatSync(g.upload.path).isSymbolicLink()||!fs.statSync(g.upload.path).isFile()||fs.realpathSync(g.upload.path)===fs.realpathSync(source.file))throw Error('UPLOAD_PATH_SCOPE');
- if(digest(g.upload.path)!==g.upload.sha256)throw Error('UPLOAD_HASH_CHANGED');
+ assertPublicationFile({file:g.upload.path,sha256:g.upload.sha256},{error:'UPLOAD_HASH_CHANGED',rejectSymlinks:true});
  assertPcmWav(g.upload.path);
  // These hashes bind approved local originals and the approved derived PCM intent.
  // They do not assert that the official site exposes a remotely verified byte hash.

@@ -82,6 +82,7 @@ export function syncPlanPublications(s:Studio):PlanPublicationLink[]{
     const fingerprint=planPublicationMaterialFingerprint(s,run,item);
     if(link.workId&&link.workId!==item.workId||link.materialFingerprint&&link.materialFingerprint!==fingerprint||item.materialFingerprint&&item.materialFingerprint!==fingerprint)throw Error('PLAN_PUBLICATION_MATERIALS_CHANGED');
     if(!link.materialFingerprint)link={...link,workId:item.workId,materialFingerprint:fingerprint};
+    if(target.platform==='fanqie')throw Error('FANQIE_BROWSER_RUNTIME_UNAVAILABLE');
     if(!hasPlanAlbumAdapter(target.platform))throw Error('PLATFORM_ALBUM_ADAPTER_NOT_IMPLEMENTED');
     const binding=albums?.bindingForRun({runId:run.id,platform:target.platform,accountId:target.accountId})??null;
     const albumOps=albums?.status().operations??[],append=albumOps.find(o=>o.kind==='append'&&o.runId===run.id&&o.itemId===item.id&&o.scope.accountId===target.accountId&&(['qqmusic','kugou'].includes(target.platform)?['qqmusic','kugou'].includes(o.scope.platform):o.scope.platform===target.platform)&&o.selectionHash===digest(target.album)&&o.materialFingerprint===fingerprint);
