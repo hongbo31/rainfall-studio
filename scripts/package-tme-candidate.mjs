@@ -10,13 +10,14 @@ const beijingTmeAi=process.argv.includes('--beijing-tme-ai');
 const deepCopy=process.argv.includes('--deep-copy');
 const dotBridge=process.argv.includes('--dot-bridge');
 const albumService=process.argv.includes('--album-service');
+const materialWorkbench=process.argv.includes('--material-workbench');
 const planCenter=process.argv.includes('--plan-center')||albumService;
 const uiConsistency=process.argv.includes('--ui-consistency')||deepCopy;
 const simplePublishing=process.argv.includes('--simple-publishing')||uiConsistency||dotBridge||planCenter;
 const productionFlow=process.argv.includes('--production-flow')||beijingTmeAi||simplePublishing;
 if([simplePublish,musicLive,connectionCheck,nightly,productionFlow].filter(Boolean).length>1)throw Error('CANDIDATE_SCOPE_CONFLICT');
 const purpose=albumService?'album-service':planCenter?'unified-plan-center':dotBridge?'dot-delivery-bridge':deepCopy?'deep-copy-cleanup':uiConsistency?'ui-consistency':simplePublishing?'simple-publishing':beijingTmeAi?'beijing-tme-ai':productionFlow?'production-flow':nightly?'nightly-workflow':simplePublish?'simple-publish':musicLive?'music-live-once':connectionCheck?'api-connection':'tme-readiness';
-const dest=path.resolve('out',purpose+'-'+commit.slice(0,12)+'-'+Date.now());
+const dest=path.resolve('out',(materialWorkbench?'material-workbench':purpose)+'-'+commit.slice(0,12)+'-'+Date.now());
 if(!dest.startsWith(path.join(repo,'out')+path.sep)||fs.existsSync(dest))throw Error('FRESH_WORKSPACE_OUTPUT_REQUIRED');
 const runtime=path.resolve('node_modules/electron/dist'),app=path.join(dest,'resources','app');
 await fs.promises.cp(runtime,dest,{recursive:true});await fs.promises.mkdir(app,{recursive:true});
@@ -82,5 +83,12 @@ if(albumService){
  const programFiles=['RainfallStudioCandidate.exe','resources/app/package.json',...['main.cjs','core.cjs','preload.cjs','dot-inbox-host.cjs','dot-rename-exclusive.ps1','dot-volume-facts.ps1','tme-ai-uia-host.ps1','tme-uia-host.ps1','uia-grid.ps1'].map(name=>'resources/app/build/'+name),...fs.readdirSync(path.join(dest,'resources/app/build/ui'),{recursive:true}).filter(name=>fs.statSync(path.join(dest,'resources/app/build/ui',name)).isFile()).map(name=>'resources/app/build/ui/'+name.split(path.sep).join('/'))];
  manifest.integrity=programFiles.sort().map(name=>({path:name,sha256:createHash('sha256').update(fs.readFileSync(path.join(dest,name))).digest('hex')}));
  fs.writeFileSync(path.join(dest,'candidate-manifest.json'),JSON.stringify(manifest,null,2));
+}
+if(materialWorkbench){
+ Object.assign(manifest,{materialWorkbenchImplemented:true,materialSourcePolicy:'explicit selected directory; song-map-001-100 adapter; read only',materialGenerationSubmitEnabled:false,materialGenerationFeeProof:false,fixtureLifecycleVerified:true,formalPublication:false,realMusicGenerationRequested:false,nativeGuiLaunched:false,installedOrDesktopReplaced:false,accepted:false,acceptancePending:'Native visual acceptance and real provider/official platform integration were not performed. Production material generation remains blocked by absent supplier fee enforcement.'});
+ fs.copyFileSync('docs/superpowers/specs/2026-10-20-material-workbench-design.md',path.join(dest,'docs','material-workbench-design.md'));
+ fs.copyFileSync('docs/acceptance/2026-10-20-material-workbench.md',path.join(dest,'docs','material-workbench-acceptance.md'));
+ fs.writeFileSync(path.join(dest,'candidate-manifest.json'),JSON.stringify(manifest,null,2));
+ fs.appendFileSync(path.join(dest,'README.txt'),'\r\nMaterial workbench: explicit read-only source scan, frozen cover and A/B audio lifecycle, existing publication center. Real material generation is blocked because supplier-enforced fee evidence is unavailable. No real API, upload, terms acceptance, official submission, GUI launch, installation or desktop promotion was performed. See docs/material-workbench-acceptance.md.\r\n');
 }
 console.log(JSON.stringify(manifest));

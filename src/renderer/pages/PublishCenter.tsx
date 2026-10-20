@@ -1,4 +1,5 @@
-import {fanqieCapabilities} from '../../shared/fanqie';
+import PublicationMusicList from "../components/PublicationMusicList";
+import { fanqieCapabilities } from "../../shared/fanqie";
 import React, { useEffect, useRef, useState } from "react";
 import { useStudio, PageHead, Badge, names, label } from "../context";
 import HelpHint from "../components/HelpHint";
@@ -41,8 +42,8 @@ export default function PublishCenter() {
   );
   const selection = publishSelection ?? fallback;
   const [query, setQuery] = useState(""),
-    [queueTaskId,setQueueTaskId]=useState(''),
-    [queueAccountId,setQueueAccountId]=useState(''),
+    [queueTaskId, setQueueTaskId] = useState(""),
+    [queueAccountId, setQueueAccountId] = useState(""),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [message, setMessage] = useState("");
@@ -63,8 +64,8 @@ export default function PublishCenter() {
     }
   }, [currentResult]);
   useEffect(() => {
-    setQueueTaskId('');
-    setQueueAccountId('');
+    setQueueTaskId("");
+    setQueueAccountId("");
     setCurrentResult(null);
     setError("");
     setMessage("");
@@ -170,8 +171,12 @@ export default function PublishCenter() {
     pipelineJobs.set(job.id, job);
   for (const job of data.publicationPipelineJobs ?? [])
     pipelineJobs.set(job.id, job);
-  const queuedJobs=[...pipelineJobs.values()];
-  const pipeline = queuedJobs.filter((job:any)=>(!queueTaskId||job.id===queueTaskId)&&(!queueAccountId||job.accountId===queueAccountId));
+  const queuedJobs = [...pipelineJobs.values()];
+  const pipeline = queuedJobs.filter(
+    (job: any) =>
+      (!queueTaskId || job.id === queueTaskId) &&
+      (!queueAccountId || job.accountId === queueAccountId),
+  );
   const activePipeline = queuedJobs.some((job: any) =>
     ["queued", "preparing", "awaiting_authorization"].includes(job.state),
   );
@@ -198,7 +203,13 @@ export default function PublishCenter() {
   return (
     <div className="simple-publishing">
       <PageHead title="发布中心" />
-      {!fanqieCapabilities.upload && <p role="status">番茄音乐：已核对第一步表单，尚不可自动上传或提交。</p>}
+      {!fanqieCapabilities.upload && (
+        <p role="status">番茄音乐：已核对第一步表单，尚不可自动上传或提交。</p>
+      )}
+      <p>
+        番茄真实提交暂不可用；封面最低 1440 × 1440，1024 × 1024 不满足要求。AI
+        披露、署名、权利及条款须逐项确认。
+      </p>
       <section className="panel publish-choices" aria-label="选择歌曲和平台">
         <fieldset
           className="simple-publish-grid publish-selection-fields"
@@ -219,55 +230,28 @@ export default function PublishCenter() {
                 onChange={(e) => setQuery(e.target.value)}
               />
             </label>
-            <div className="simple-song-list">
-              {data.works
-                .filter((work: any) =>
-                  work.title
-                    .toLocaleLowerCase()
-                    .includes(query.toLocaleLowerCase()),
-                )
-                .map((work: any) => (
-                  <label
-                    className={
-                      "simple-song" +
-                      (selection.workIds.includes(work.id)
-                        ? " is-selected"
-                        : "")
-                    }
-                    key={work.id}
-                  >
-                    <input
-                      type="checkbox"
-                      aria-label={"选择歌曲：" + work.title}
-                      checked={selection.workIds.includes(work.id)}
-                      onChange={() =>
-                        change({
-                          ...selection,
-                          workIds: selection.workIds.includes(work.id)
-                            ? selection.workIds.filter((id) => id !== work.id)
-                            : [...selection.workIds, work.id],
-                        })
-                      }
-                    />
-                    <span>
-                      <b>{work.title}</b>
-                      <small>
-                        {data.artists.find(
-                          (artist: any) => artist.id === work.artistId,
-                        )?.name ?? "未设艺人"}{" "}
-                        · {work.assets?.audio_A ? "音频 A" : "缺少音频 A"}
-                      </small>
-                    </span>
-                  </label>
-                ))}
-            </div>
-            {!data.works.length && (
-              <button onClick={() => go("create")}>去创作</button>
-            )}
+            <PublicationMusicList
+              selection={selection}
+              onChange={change}
+              query={query}
+              busy={busy}
+              onVersionBusy={setBusy}
+            />
           </div>
           <div className="target-choice">
             <h2>2 · 选择平台</h2>
             <div className="simple-target-list">
+              <article className="simple-target">
+                <label className="inline-check">
+                  <input
+                    type="checkbox"
+                    aria-label="发布到 番茄音乐"
+                    disabled
+                  />
+                  <b>番茄音乐</b>
+                </label>
+                <small>真实上传及提交暂不可用 · 封面最低 1440 × 1440</small>
+              </article>
               {platformTargets.map((target) => {
                 const config = configurations.find(
                   (item: any) => item.target === target,
@@ -292,6 +276,10 @@ export default function PublishCenter() {
                           type="checkbox"
                           aria-label={"发布到 " + names[target]}
                           checked={chosen}
+                          disabled={
+                            data.mode !== "simulation" &&
+                            !["qqmusic", "kugou"].includes(target)
+                          }
                           onChange={() =>
                             change({
                               ...selection,
@@ -369,7 +357,13 @@ export default function PublishCenter() {
           <button
             className="primary"
             disabled={
-              busy || !selection.workIds.length || !selection.targets.length
+              busy ||
+              !selection.workIds.length ||
+              !selection.targets.length ||
+              (data.mode !== "simulation" &&
+                selection.targets.some(
+                  (target) => !["qqmusic", "kugou"].includes(target),
+                ))
             }
             onClick={() => void publish()}
           >
@@ -431,86 +425,131 @@ export default function PublishCenter() {
           </section>
         )}
       </section>
-      {!!queuedJobs.length&&<section className="publication-queue-filters" aria-label="发布队列筛选">
-        <label>发布任务<select data-testid="publication-task-filter" value={queueTaskId} onChange={event=>setQueueTaskId(event.target.value)}><option value="">全部任务</option>{queuedJobs.map((job:any)=><option key={job.id} value={job.id}>{job.title} · {(data.accounts??[]).find((account:any)=>account.id===job.accountId)?.name??'未指定账号'}</option>)}</select></label>
-        <label>发布账号<select data-testid="publication-account-filter" value={queueAccountId} onChange={event=>setQueueAccountId(event.target.value)}><option value="">全部账号</option>{[...new Set<string>(queuedJobs.map((job:any)=>job.accountId).filter(Boolean))].map(id=><option key={id} value={id}>{(data.accounts??[]).find((account:any)=>account.id===id)?.name??'账号待核对'}</option>)}</select></label>
-      </section>}
+      {!!queuedJobs.length && (
+        <section
+          className="publication-queue-filters"
+          aria-label="发布队列筛选"
+        >
+          <label>
+            发布任务
+            <select
+              data-testid="publication-task-filter"
+              value={queueTaskId}
+              onChange={(event) => setQueueTaskId(event.target.value)}
+            >
+              <option value="">全部任务</option>
+              {queuedJobs.map((job: any) => (
+                <option key={job.id} value={job.id}>
+                  {job.title} ·{" "}
+                  {(data.accounts ?? []).find(
+                    (account: any) => account.id === job.accountId,
+                  )?.name ?? "未指定账号"}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            发布账号
+            <select
+              data-testid="publication-account-filter"
+              value={queueAccountId}
+              onChange={(event) => setQueueAccountId(event.target.value)}
+            >
+              <option value="">全部账号</option>
+              {[
+                ...new Set<string>(
+                  queuedJobs.map((job: any) => job.accountId).filter(Boolean),
+                ),
+              ].map((id) => (
+                <option key={id} value={id}>
+                  {(data.accounts ?? []).find(
+                    (account: any) => account.id === id,
+                  )?.name ?? "账号待核对"}
+                </option>
+              ))}
+            </select>
+          </label>
+        </section>
+      )}
       {!!pipeline.length && (
         <PublicationPipelineProgress
           jobs={pipeline}
           data={data}
           onRefresh={refresh}
-          onReconcile={(id) => call("publish.reconcile", {id})}
+          onReconcile={(id) => call("publish.reconcile", { id })}
           onTrack={(id) => go("track", id)}
           onConfigure={(target) => void configure(target)}
         />
       )}
-      {!!queuedJobs.length&&!pipeline.length&&<p role="status">没有符合筛选的发布任务。</p>}
-      {!queuedJobs.length && (requests.length > 0 || pendingTerms.length > 0) && (
-        <section className="panel simple-request-list" aria-label="发布任务">
-          <h2>发布任务</h2>
-          {pendingTerms.map((term) => (
-            <article className="simple-request" key={"terms-" + term.id}>
-              <div className="simple-request-heading">
-                <b>
-                  {term.title} · {term.platformLabel}
-                </b>
-                <Badge>待条款确认 · 未接受条款</Badge>
-              </div>
-              <details>
-                <summary>查看条款</summary>
-                <pre>{term.termsText}</pre>
-              </details>
-            </article>
-          ))}
-          {requests.map((request) => (
-            <article
-              className="simple-request"
-              key={request.id}
-              data-request-id={request.id}
-            >
-              <div className="simple-request-heading">
-                <b>
-                  {request.title} · {names[request.target]}
-                </b>
-                <Badge>
-                  {request.stale
-                    ? "资料已变化 · 请重新检查"
-                    : request.state === "ready" &&
-                        request.source !== "simulation"
-                      ? "未接通"
-                      : (states[request.state] ?? request.summary)}
-                </Badge>
-              </div>
-              <div className="simple-request-meta">
-                <small>
-                  {request.source === "simulation" ? "模拟" : "本地检查"} ·{" "}
-                  {request.summary}
-                </small>
-                <button
-                  className="text-button"
-                  onClick={() => void configure(request.configurationTarget)}
-                >
-                  {"配置 " + names[request.configurationTarget]}
-                </button>
-              </div>
-              {!!request.issues.length && (
-                <details>
-                  <summary>查看问题</summary>
-                  <ul>
-                    {request.issues.map((issue, index) => (
-                      <li key={index}>{issue}</li>
-                    ))}
-                  </ul>
-                  <button onClick={() => go("track", request.workId)}>
-                    查看素材
-                  </button>
-                </details>
-              )}
-            </article>
-          ))}
-        </section>
+      {!!queuedJobs.length && !pipeline.length && (
+        <p role="status">没有符合筛选的发布任务。</p>
       )}
+      {!queuedJobs.length &&
+        (requests.length > 0 || pendingTerms.length > 0) && (
+          <section className="panel simple-request-list" aria-label="发布任务">
+            <h2>发布任务</h2>
+            {pendingTerms.map((term) => (
+              <article className="simple-request" key={"terms-" + term.id}>
+                <div className="simple-request-heading">
+                  <b>
+                    {term.title} · {term.platformLabel}
+                  </b>
+                  <Badge>待条款确认 · 未接受条款</Badge>
+                </div>
+                <details>
+                  <summary>查看条款</summary>
+                  <pre>{term.termsText}</pre>
+                </details>
+              </article>
+            ))}
+            {requests.map((request) => (
+              <article
+                className="simple-request"
+                key={request.id}
+                data-request-id={request.id}
+              >
+                <div className="simple-request-heading">
+                  <b>
+                    {request.title} · {names[request.target]}
+                  </b>
+                  <Badge>
+                    {request.stale
+                      ? "资料已变化 · 请重新检查"
+                      : request.state === "ready" &&
+                          request.source !== "simulation"
+                        ? "未接通"
+                        : (states[request.state] ?? request.summary)}
+                  </Badge>
+                </div>
+                <div className="simple-request-meta">
+                  <small>
+                    {request.source === "simulation" ? "模拟" : "本地检查"} ·{" "}
+                    {request.summary}
+                  </small>
+                  <button
+                    className="text-button"
+                    onClick={() => void configure(request.configurationTarget)}
+                  >
+                    {"配置 " + names[request.configurationTarget]}
+                  </button>
+                </div>
+                {!!request.issues.length && (
+                  <details>
+                    <summary>查看问题</summary>
+                    <ul>
+                      {request.issues.map((issue, index) => (
+                        <li key={index}>{issue}</li>
+                      ))}
+                    </ul>
+                    <button onClick={() => go("track", request.workId)}>
+                      查看素材
+                    </button>
+                  </details>
+                )}
+              </article>
+            ))}
+          </section>
+        )}
     </div>
   );
 }

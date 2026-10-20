@@ -1,0 +1,32 @@
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto');
+const {Studio}=require('../../build/core.cjs');
+const {MaterialWorkbenchService,prepareMaterialWork,importMaterialAudio,completeMaterialJob}=require('../../build/core.cjs');
+test('all 100 source lyrics and exact styles form offline drafts without provider calls',async()=>{
+ const {materialDraft}=require('../../build/core.cjs'),map=new Map(),service=new MaterialWorkbenchService({getSetting:k=>map.get(k),setSetting:(k,v)=>map.set(k,v)});
+ service.configure({root:path.resolve('../Rainfall-Materials-Pending/2026-10-20_100-songs')});await service.scan({sourceId:service.list().sources[0].id});const rows=service.list().materials;assert.equal(rows.length,100);
+ for(const material of rows){const draft=materialDraft(material,{defaults});assert.equal(draft.title,material.title);assert.equal(draft.musicPrompts.yourmusic.positiveStyle,material.style);}
+});
+const defaults={genre:'pop',voice:'female',lyricTone:'warm',bpmMin:72,bpmMax:96,coverStyle:'photo',language:'zh',mood:'warm',duration:180};
+function wav(file){const n=16000,b=Buffer.alloc(44+n*2);b.write('RIFF');b.writeUInt32LE(b.length-8,4);b.write('WAVEfmt ',8);b.writeUInt32LE(16,16);b.writeUInt16LE(1,20);b.writeUInt16LE(1,22);b.writeUInt32LE(n,24);b.writeUInt32LE(n*2,28);b.writeUInt16LE(2,32);b.writeUInt16LE(16,34);b.write('data',36);b.writeUInt32LE(n*2,40);fs.writeFileSync(file,b);}
+test('isolated material lifecycle imports verified A/B and retains frozen cover after source changes',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'rainfall-material-lifecycle-')),source=path.join(root,'source');fs.mkdirSync(source);const s=new Studio(path.join(root,'db'),'simulation');
+ try{
+  fs.writeFileSync(path.join(source,'lyrics.txt'),'[Verse]\nFixture words\n[Chorus]\nFixture chorus');fs.writeFileSync(path.join(source,'style.txt'),'Warm acoustic pop');
+  await require('sharp')({create:{width:16,height:16,channels:3,background:'red'}}).png().toFile(path.join(source,'cover.png'));
+  fs.writeFileSync(path.join(source,'song-map-001-100.json'),JSON.stringify([{id:'001',title:'Fixture',lyrics_file:'lyrics.txt',style_file:'style.txt',cover_file:'cover.png'}]));
+  const service=new MaterialWorkbenchService({getSetting:k=>s.repo.maybe('settings',k)?.value,setSetting:(k,value)=>s.save('settings',{id:k,value})},{fixture:true,fixtureFeeBoundCredits:2,verifyAsset:v=>{const w=s.get('works',v.workId),a=s.get('assets',v.assetId);s.locate(a.id);return a.sha256===v.sha256&&w.assets['audio_'+v.version]===a.id;}});s.materialWorkbench=()=>service;
+  service.configure({root:source});await service.scan({sourceId:service.list().sources[0].id});const material=service.list().materials[0];assert.equal(material.state,'pending');
+  const artist=await s.call('artist.save',{name:'Fixture',defaults});service.enqueue({materialIds:[material.id],expectedRevisions:{[material.id]:1},requestId:'fixture',profileId:'fixture',profileRevision:1,modelId:'fixture',artistId:artist.id,budgetCredits:10,consent:true});
+  const job=service.list().jobs[0],prepared=await prepareMaterialWork(s,{jobId:job.id});const cover=s.get('works',prepared.workId).assets.cover;assert.equal(prepared.draft.musicPrompts.yourmusic.positiveStyle,'Warm acoustic pop');
+  assert.equal(service.claimNext().id,job.id);service.recordSubmitted({jobId:job.id,providerSongIds:['fixture-a','fixture-b']});
+  const f=path.join(root,'fixture.wav');wav(f);const bytes=fs.readFileSync(f);
+  await importMaterialAudio(s,{jobId:job.id,providerSongId:'fixture-a',providerMetadata:{id:'fixture-a'},bytes:new Uint8Array(bytes),mime:'audio/wav'});
+  assert.equal(s.get('works',prepared.workId).assets.audio_A,undefined);assert.throws(()=>completeMaterialJob(s,{jobId:job.id,actualCredits:2}));assert.notEqual(service.list().materials[0].state,'generated');
+  await importMaterialAudio(s,{jobId:job.id,providerSongId:'fixture-b',providerMetadata:{id:'fixture-b'},bytes:new Uint8Array(bytes),mime:'audio/wav'});
+  completeMaterialJob(s,{jobId:job.id,actualCredits:2});const generated=service.list().materials[0];assert.equal(generated.state,'generated');assert.equal(generated.versions.length,2);assert.equal(s.get('works',prepared.workId).ai,'generated');s.locate(generated.versions[0].assetId);
+  const beforeSelection=JSON.stringify(service.list().materials[0]),audio=s.get('assets',generated.versions[1].assetId);s.save('assets',{...audio,kind:'image'});
+  await assert.rejects(s.call('materials.selectVersion',{materialId:material.id,versionId:generated.versions[1].id}),/ASSET_ROLE/);assert.equal(JSON.stringify(service.list().materials[0]),beforeSelection);s.save('assets',audio);
+  await require('sharp')({create:{width:16,height:16,channels:3,background:'blue'}}).png().toFile(path.join(source,'cover.png'));await service.scan({sourceId:material.sourceId});assert.equal(service.list().materials[0].revision,2);assert.equal(s.get('works',prepared.workId).assets.cover,cover);s.locate(cover);
+ }finally{s.close();}
+});
+test('publication audio selection uses existing verified asset and invalidates lyric confirmation',async()=>{const root=fs.mkdtempSync(path.join(os.tmpdir(),'rainfall-material-routing-')),s=new Studio(root,'simulation');try{const a=await s.call('artist.save',{name:'Fixture',defaults});let w=await s.call('work.save',{title:'Fixture Song',artistId:a.id,story:'fixture',lyrics:'lyrics',prompt:'pop',parameters:{},rights:'fixture only',ai:'generated'});const f=path.join(root,'fixture.wav');wav(f);const asset=await s.importFile(f,'audio_B',w.id);w=s.get('works',w.id);s.save('works',{...w,lyricsConfirmation:{confirmed:true}});const selected=await s.call('work.selectAudioVersion',{workId:w.id,expectedRevision:w.revision,version:'B'});assert.equal(selected.selectedAudioVariant,'B');assert.equal(selected.assets.audio_B,asset.id);assert.equal(selected.lyricsConfirmation,null);assert.equal(selected.revision,w.revision+1);await assert.rejects(s.call('work.selectAudioVersion',{workId:w.id,expectedRevision:w.revision,version:'B'}),/REVISION_CONFLICT/);const before=JSON.stringify(s.get('works',w.id));await assert.rejects(s.call('work.selectAudioVersion',{workId:w.id,expectedRevision:selected.revision,version:'A'}),/AUDIO_REQUIRED/);assert.equal(JSON.stringify(s.get('works',w.id)),before);}finally{s.close();}});

@@ -6,6 +6,7 @@ import "./themes.css";
 import { initializeTheme } from "./theme";
 import ThemeToggle from "./components/ThemeToggle";
 import PlanCenter from "./pages/PlanCenter";
+import Materials from './pages/Materials';
 import HelpHint from "./components/HelpHint";
 import { clientVersionLabel } from "./client-version";
 import { Context, Badge } from "./context";
@@ -26,6 +27,7 @@ import {
 import ChatCreation from "./pages/ChatCreation";
 initializeTheme();
 const pages = [
+  ['materials','▦','素材列表'],
   ["plans", "◷", "计划中心"],
   ["chat", "♫", "创作中心"],
   ["overview", "◫", "总览"],
@@ -277,7 +279,7 @@ function App() {
           </div>
         </header>
         <div id="content">
-          {page === "plans" ? (
+          {page === 'materials' ? <Materials /> : page === "plans" ? (
             <PlanCenter initialRunId={id} />
           ) : page === "chat" ? (
             <ChatCreation />

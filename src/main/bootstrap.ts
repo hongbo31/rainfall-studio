@@ -50,8 +50,11 @@ import {installNativeDiagnostics} from './native-diagnostics';
 import {chooseInboxBridgeProject} from './inbox-bridge';
 import {chooseDirectoryTaskSource} from './directory-tasks';
 import {createProviderTextBroker} from './provider-text';
+import {createMaterialWorkbenchBroker} from './material-workbench';
+import {pathToFileURL} from 'node:url';
 if (require("electron-squirrel-startup")) app.quit();
 protocol.registerSchemesAsPrivileged([
+  {scheme:'material-cover',privileges:{standard:true,secure:true,supportFetchAPI:true}},
   {
     scheme: "app",
     privileges: { standard: true, secure: true, supportFetchAPI: true },
@@ -166,8 +169,9 @@ const planAlbums=createPlanAlbumBroker({rpc:(method,input)=>rpc(method,input),av
  return{transport,account:()=>planPublications.native(()=>session.account())};
 },onAppend:()=>unifiedPublish.pump(),reconcileAppend:taskId=>unifiedPublish.reconcile(taskId)});
 const providerText=createProviderTextBroker({credentials:apiCredentials,rpc,available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration});
+const materialWorkbench=createMaterialWorkbenchBroker({credentials:apiCredentials,rpc,available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,chooseDirectory:()=>dialog.showOpenDialog(window,{title:'选择只读素材目录',properties:['openDirectory']})});
 app.on('before-quit',()=>providerText.stop());
-setInterval(()=>{void productionFlow.pump();void unifiedPublish.pump();void providerText.pump().catch(()=>undefined);},2000).unref();
+setInterval(()=>{void productionFlow.pump();void unifiedPublish.pump();void providerText.pump().catch(()=>undefined);void materialWorkbench.pump().catch(()=>undefined);},2000).unref();
 const pending = new Map<
   string,
   { resolve: (v: any) => void; reject: (e: any) => void; timer: NodeJS.Timeout }
@@ -331,6 +335,7 @@ function handlers() {
     safe(async () => {
       trusted(e);
       const parsed = validate(method, input);
+        if(method.startsWith('materials.'))return{ok:true,value:await materialWorkbench.ui(method.slice('materials.'.length),parsed)};
       if(method.startsWith('accountIdentity.'))return accountIdentityUiResponse(()=>accountIdentity.ui(method.slice('accountIdentity.'.length),parsed));
       if(method==='directoryTasks.chooseDirectory')return chooseDirectoryTaskSource(parsed,{
         capture:()=>({mode,generation:coreGeneration,epoch:importEpoch,available:!switching&&!closing}),
@@ -496,6 +501,15 @@ app
       if (url.host !== "ui" || !target.startsWith(allowed + path.sep))
         return new Response("Forbidden", { status: 403 });
       return net.fetch("file:///" + target.replace(/\\/g, "/"));
+    });
+    protocol.handle('material-cover',async request=>{
+      try{
+        const url=new URL(request.url),materialId=url.pathname.slice(1),revision=Number(url.searchParams.get('revision')),generation=coreGeneration;
+        if(switching||closing||url.host!=='cover'||!/^[a-f0-9-]{36}$/.test(materialId)||!Number.isSafeInteger(revision)||revision<1)return new Response('Not found',{status:404});
+        const result=await rpc('internal.materials.coverPath',{materialId,revision});
+        if(!result.ok||generation!==coreGeneration||switching||closing)return new Response('Not found',{status:404});
+        return net.fetch(pathToFileURL(result.value).href);
+      }catch{return new Response('Not found',{status:404});}
     });
     protocol.handle("media", async (request) => {
       try {
