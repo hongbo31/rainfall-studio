@@ -57,7 +57,7 @@ export default function PublicationMaterialResult({
         <div className="publication-material-chips">
           <span>
             {a
-              ? `音频 A · ${(a.format ?? a.mime?.split("/")[1] ?? "").toUpperCase()} ${duration(a.durationSeconds)}`
+              ? `音频 ${m?.recordingSlot === 'audio_B' ? 'B' : 'A'} · ${(a.format ?? a.mime?.split("/")[1] ?? "").toUpperCase()} ${duration(a.durationSeconds)}`
               : "缺少音频"}
           </span>
           <span>{missingLyrics ? "缺少歌词" : "歌词已准备"}</span>

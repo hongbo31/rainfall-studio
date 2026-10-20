@@ -189,6 +189,7 @@ function App() {
   return (
     <Context.Provider value={context}>
       {runtime.previewFixture&&<div className="plan-fixture-ribbon">离线交互演示 · 全部账号与数据为隔离测试样本</div>}
+      {runtime.offlineAcceptance&&<div className="plan-fixture-ribbon">离线验收 · 临时数据库 / 测试音频 · 外网与自动执行已禁用</div>}
       {switching && (
         <div className="mode-screen" role="status">
           <h2>正在切换独立工作区…</h2>

@@ -52,6 +52,19 @@ import {chooseDirectoryTaskSource} from './directory-tasks';
 import {createProviderTextBroker} from './provider-text';
 import {createMaterialWorkbenchBroker} from './material-workbench';
 import {pathToFileURL} from 'node:url';
+import {offlineAcceptanceEnabled,offlineAcceptanceInvocationAllowed} from '../shared/offline-acceptance';
+const offlineAcceptance=offlineAcceptanceEnabled();
+let offlineNetworkBlocks=0;
+if(offlineAcceptance){
+ const registerHandle=ipcMain.handle.bind(ipcMain);
+ ipcMain.handle=(channel,listener)=>registerHandle(channel,(event,...args)=>{
+  if(!offlineAcceptanceInvocationAllowed(channel,args))return{ok:false,error:{code:'OFFLINE_ACCEPTANCE_ACTION_DISABLED',message:'离线验收仅允许本地素材操作与发布预检'}};
+  return listener(event,...args);
+ });
+ app.on('web-contents-created',(_event,contents)=>{
+  contents.session.webRequest.onBeforeRequest({urls:['http://*/*','https://*/*','ws://*/*','wss://*/*']},(_details,callback)=>{offlineNetworkBlocks++;callback({cancel:true});});
+ });
+}
 if (require("electron-squirrel-startup")) app.quit();
 protocol.registerSchemesAsPrivileged([
   {scheme:'material-cover',privileges:{standard:true,secure:true,supportFetchAPI:true}},
@@ -171,7 +184,7 @@ const planAlbums=createPlanAlbumBroker({rpc:(method,input)=>rpc(method,input),av
 const providerText=createProviderTextBroker({credentials:apiCredentials,rpc,available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration});
 const materialWorkbench=createMaterialWorkbenchBroker({credentials:apiCredentials,rpc,available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,chooseDirectory:()=>dialog.showOpenDialog(window,{title:'选择只读素材目录',properties:['openDirectory']})});
 app.on('before-quit',()=>providerText.stop());
-setInterval(()=>{void productionFlow.pump();void unifiedPublish.pump();void providerText.pump().catch(()=>undefined);void materialWorkbench.pump().catch(()=>undefined);},2000).unref();
+setInterval(()=>{if(offlineAcceptance)return;void productionFlow.pump();void unifiedPublish.pump();void providerText.pump().catch(()=>undefined);void materialWorkbench.pump().catch(()=>undefined);},2000).unref();
 const pending = new Map<
   string,
   { resolve: (v: any) => void; reject: (e: any) => void; timer: NodeJS.Timeout }
@@ -353,6 +366,8 @@ function handlers() {
             root,
             versions: process.versions,
             packaged: app.isPackaged,
+              offlineAcceptance,
+              offlineNetworkBlocks,
             appVersion: app.getVersion(),
             externalConnections: null,
             networkObservationScope: 'not_measured_by_runtime',
@@ -364,7 +379,7 @@ function handlers() {
       if (method === "publish.reconcile") return {ok:true,value:await unifiedPublish.reconcile((parsed as {id:string}).id)};
       if (method === "publish.simple" && mode === 'production') {
         const result = await rpc(method, parsed);
-        if (result.ok) void unifiedPublish.pump();
+        if (result.ok&&!offlineAcceptance) void unifiedPublish.pump();
         return result;
       }
       return method === "apiProfile.save"

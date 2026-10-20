@@ -3,6 +3,7 @@ import {executeInternalPlanAlbums} from './plan-albums-integration';
 import {prepareMaterialWork,importMaterialAudio,completeMaterialJob} from './material-integration';
 export {prepareMaterialWork,importMaterialAudio,completeMaterialJob};
 export {materialDraft} from './material-integration';
+export {offlineAcceptanceEnabled} from '../shared/offline-acceptance';
 export {MaterialWorkbenchService} from './material-workbench';
 import {executeUnifiedPublication} from "./unified-publication-integration";
 import { materialEntries } from "./materials";

@@ -389,7 +389,7 @@ export default function PublishCenter() {
             </span>
           )}
         </div>
-        {currentResult && !queuedJobs.length && (
+        {currentResult && (
           <section
             className="publication-current-result"
             ref={resultRef}
@@ -484,8 +484,7 @@ export default function PublishCenter() {
       {!!queuedJobs.length && !pipeline.length && (
         <p role="status">没有符合筛选的发布任务。</p>
       )}
-      {!queuedJobs.length &&
-        (requests.length > 0 || pendingTerms.length > 0) && (
+      {(requests.length > 0 || pendingTerms.length > 0) && (
           <section className="panel simple-request-list" aria-label="发布任务">
             <h2>发布任务</h2>
             {pendingTerms.map((term) => (

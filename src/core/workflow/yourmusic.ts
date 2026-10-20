@@ -51,6 +51,7 @@ export function publicIpv4(value: string) {
 // Paid generation remains unregistered.
 // DNS resolves once; the connection is pinned to a public IPv4 address. No redirects/proxies.
 export const nodeHttpsTransport: HttpTransport = async (input) => {
+  if(process.env.RAINFALL_OFFLINE_ACCEPTANCE==='1')throw Error('OFFLINE_ACCEPTANCE_NETWORK_DISABLED');
   input.assertActive?.();
   const u = new URL(input.url);
   if (

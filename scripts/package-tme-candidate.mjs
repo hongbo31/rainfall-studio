@@ -85,10 +85,19 @@ if(albumService){
  fs.writeFileSync(path.join(dest,'candidate-manifest.json'),JSON.stringify(manifest,null,2));
 }
 if(materialWorkbench){
+ fs.mkdirSync(path.join(app,'scripts'),{recursive:true});
+ fs.copyFileSync('scripts/seed-material-electron-acceptance.cjs',path.join(app,'scripts','seed-material-electron-acceptance.cjs'));
+ fs.copyFileSync('scripts/material-acceptance-launch.ps1',path.join(dest,'Start-Offline-Material-Acceptance.ps1'));
+ if(fs.existsSync('output/publish-material-feedback/comparison.json')){
+  const evidence=path.join(dest,'docs','publication-feedback-comparison');fs.mkdirSync(evidence,{recursive:true});
+  for(const name of ['comparison.json','comparison.md','baseline.tap','candidate.tap','fixed.tap'])fs.copyFileSync(path.join('output/publish-material-feedback',name),path.join(evidence,name));
+ }
  Object.assign(manifest,{materialWorkbenchImplemented:true,materialSourcePolicy:'explicit selected directory; song-map-001-100 adapter; read only',materialGenerationSubmitEnabled:false,materialGenerationFeeProof:false,fixtureLifecycleVerified:true,formalPublication:false,realMusicGenerationRequested:false,nativeGuiLaunched:false,installedOrDesktopReplaced:false,accepted:false,acceptancePending:'Native visual acceptance and real provider/official platform integration were not performed. Production material generation remains blocked by absent supplier fee enforcement.'});
  fs.copyFileSync('docs/superpowers/specs/2026-10-20-material-workbench-design.md',path.join(dest,'docs','material-workbench-design.md'));
  fs.copyFileSync('docs/acceptance/2026-10-20-material-workbench.md',path.join(dest,'docs','material-workbench-acceptance.md'));
  fs.writeFileSync(path.join(dest,'candidate-manifest.json'),JSON.stringify(manifest,null,2));
  fs.appendFileSync(path.join(dest,'README.txt'),'\r\nMaterial workbench: explicit read-only source scan, frozen cover and A/B audio lifecycle, existing publication center. Real material generation is blocked because supplier-enforced fee evidence is unavailable. No real API, upload, terms acceptance, official submission, GUI launch, installation or desktop promotion was performed. See docs/material-workbench-acceptance.md.\r\n');
+ for(const name of ['Start-Offline-Material-Acceptance.ps1','resources/app/scripts/seed-material-electron-acceptance.cjs'])manifest.integrity.push({path:name,sha256:createHash('sha256').update(fs.readFileSync(path.join(dest,name))).digest('hex')});
+ fs.writeFileSync(path.join(dest,'candidate-manifest.json'),JSON.stringify(manifest,null,2));
 }
 console.log(JSON.stringify(manifest));
