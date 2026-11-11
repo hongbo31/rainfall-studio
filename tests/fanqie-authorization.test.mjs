@@ -34,5 +34,6 @@ test('existing work authorization verifies ID, persists signature boundary and r
  assert.equal(result[0].phase,'awaiting_signature');const count=context.pages().length;
  const again=await authorizeFanqieRecords(root,session,'account',['1234567890'],pref,()=>{});assert.equal(again[0].phase,'awaiting_signature');assert.equal(context.pages().length,count);
  assert.equal(await context.pages().at(-1).evaluate(()=>window.signed),undefined);
+ await assert.rejects(authorizeFanqieRecords(root,session,'account',['1234567890'],{...pref,mode:'nonexclusive'},()=>{}),/RECONCILIATION_REQUIRED/);
  await context.pages().at(-1).close();await assert.rejects(authorizeFanqieRecords(root,session,'account',['1234567890'],pref,()=>{}),/RECONCILIATION_REQUIRED/);
 });

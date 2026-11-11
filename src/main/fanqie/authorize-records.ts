@@ -22,7 +22,7 @@ export async function authorizeFanqieRecords(root:string,session:FanqieCatalogSe
    const previous=fs.existsSync(file)?JSON.parse(fs.readFileSync(file,'utf8')):null;
    const existing=preparedPages.get(context)?.get(row.id);
    if(previous?.phase==='awaiting_signature'&&(!existing||existing.isClosed()))throw Error('FANQIE_AUTHORIZATION_RECONCILIATION_REQUIRED');
-   if(existing&&!existing.isClosed()&&previous?.phase==='awaiting_signature'){await existing.bringToFront();results.push({id:row.id,title:row.title,status:'等待合同确认',phase:'awaiting_signature'});continue;}
+   if(existing&&!existing.isClosed()&&previous?.phase==='awaiting_signature'){if(JSON.stringify(previous.preference)!==JSON.stringify(preference))throw Error('FANQIE_AUTHORIZATION_RECONCILIATION_REQUIRED');await existing.bringToFront();results.push({id:row.id,title:row.title,status:'等待合同确认',phase:'awaiting_signature'});continue;}
    const page=await context.newPage();save('preparing');
    try{
     session.mark('正在准备《'+row.title+'》授权');
