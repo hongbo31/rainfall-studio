@@ -5,6 +5,7 @@ import {chromium, type BrowserContext, type Page} from 'playwright-core';
 import {z} from 'zod';
 import {readFanqieAccountUid, readFanqieArtists} from './identity';
 import {readFanqieCatalog} from './catalog';
+import {fanqieChromeLaunchOptions} from './chrome-executable';
 import type {FanqieCatalog, FanqieCatalogReport} from '../../shared/fanqie-catalog';
 type Options = {
   root: string; available: () => boolean; generation: () => number;
@@ -92,7 +93,7 @@ export class FanqieCatalogSession {
         const profile = path.join(this.options.root, 'browser-sessions', 'fanqie');
         fs.mkdirSync(profile, {recursive: true});
         const context = await (this.options.launch ?? (p => chromium.launchPersistentContext(p, {
-          channel: 'chrome', headless: false, chromiumSandbox: true,
+          ...fanqieChromeLaunchOptions(), headless: false, chromiumSandbox: true,
           acceptDownloads: false, viewport: null, timeout: 30000,
         })))(profile);
         this.context = context;
@@ -114,6 +115,7 @@ export class FanqieCatalogSession {
 export function fanqieCatalogError(error: unknown) {
   const code = error instanceof Error && error.name === 'TimeoutError' ? 'FANQIE_BROWSER_TIMEOUT' : error instanceof Error && /strict mode violation/.test(error.message) ? 'FANQIE_CONTROL_AMBIGUOUS' : error instanceof Error && /^[A-Z0-9_]+$/.test(error.message) ? error.message : 'FANQIE_BROWSER_OPERATION_FAILED';
   const messages: Record<string, string> = {
+    FANQIE_CHROME_NOT_FOUND: '未找到已安装的 Google Chrome，请检查浏览器安装位置。',
     FANQIE_BATCH_SCOPE_CHANGED: '账号或批次选择已变化，已停止操作，请重新核对。',
     FANQIE_AUTHORIZATION_RECONCILIATION_REQUIRED: '已有待确认合同，请先在官网完成或核对签约，再更新状态；不会重新上传。',
     FANQIE_AUTHORIZATION_WORK_MISMATCH: '授权页作品与当前任务不一致，已停止操作。',

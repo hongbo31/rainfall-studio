@@ -179,3 +179,11 @@ test('configured batch uploads two distinct works once and skips them on a repea
  const request={items:ids.map(workId=>({workId,variant:'A'}))};const first=await broker.ui('publishBatch',request);assert.equal(first.batch.state,'complete',JSON.stringify(first.batch));assert.equal(uploads,2);assert.equal(first.jobs.length,2);
  const second=await broker.ui('publishBatch',request);assert.equal(second.batch.state,'complete');assert.equal(uploads,2);assert.equal(f.current.catalog.rows.length,2);
 });
+
+test('packaged Chrome lookup finds system installation before a missing per-user channel',()=>{
+ const {fanqieChromeLaunchOptions}=require(path.join(path.dirname(process.env.RAINFALL_FANQIE_BUNDLE),'upload.cjs'));
+ const installed='C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+ assert.deepEqual(fanqieChromeLaunchOptions('win32',{SystemDrive:'C:',LOCALAPPDATA:'C:\\Users\\test\\AppData\\Local'},file=>file===installed),{executablePath:installed});
+ assert.throws(()=>fanqieChromeLaunchOptions('win32',{},()=>false),/CHROME_NOT_FOUND/);
+ assert.deepEqual(fanqieChromeLaunchOptions('linux',{},()=>false),{channel:'chrome'});
+});

@@ -31,7 +31,7 @@ export default function FanqieCatalogPanel({mode, selectedTitles = []}: {mode: s
       const result = await window.rainfall.fanqieCatalog(action);
       if (current !== epoch.current) return;
       if (!result.ok) {setError(result.error.message); return;}
-      setAuthorizationIds([]);setConnected(result.value.connected); setReport(result.value.report);
+      setAuthorizationIds([]);setConnected(result.value.connected); setReport(result.value.report); setProgress(result.value.progress ?? "");
     } catch {if (current === epoch.current) setError('番茄窗口连接未完成，请稍后重试。');}
     finally {if (current === epoch.current) setBusy(false);}
   };

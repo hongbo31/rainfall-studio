@@ -15,7 +15,7 @@ export default function FanqieConfigurationPanel(){
     <p className="muted">歌词、封面与 AI 标注跟随每首作品；音频使用发布时选定的版本，格式和尺寸自动处理。</p>
     <div className="form-grid"><label>签约模式<select value={authorizationPreference.mode} onChange={e=>setAuthorizationPreference({...authorizationPreference,mode:e.target.value as 'exclusive'|'nonexclusive'})}><option value="exclusive">独家签约</option><option value="nonexclusive">非独家签约</option></select></label></div>
     <fieldset><legend>发布平台</legend>{(['fanqie_music','fanqie_audio'] as const).map(platform=><label className="inline-check" key={platform}><input type="checkbox" disabled={platform==='fanqie_music'} checked={authorizationPreference.platforms.includes(platform)} onChange={e=>setAuthorizationPreference({...authorizationPreference,platforms:e.target.checked?[...authorizationPreference.platforms,platform]:authorizationPreference.platforms.filter(p=>p!==platform)})}/>{platform==='fanqie_music'?'番茄音乐':'番茄畅听'}</label>)}</fieldset>
-    <p className="muted">上传后自动准备授权信息，最终合同由你确认；完整客户端流程仍待官网验收。</p>
+    <p className="muted">上传后自动准备授权信息，最终合同由你确认。</p>
     <label className="inline-check"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)}/>我仅选择有权发布、歌词与音频已核对的作品；点击发布即允许自动上传，停在待授权。</label>
     <button className="primary" disabled={!authorizationPreference.platforms.length||!consent||!Object.values(authors).every(v=>v.trim())}>保存配置</button>
    </fieldset>
