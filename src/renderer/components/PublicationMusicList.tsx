@@ -240,6 +240,7 @@ export default function PublicationMusicList({
                   ))}
                 </select>
               </label>
+              <details className="publication-audio-details"><summary>试听与素材来源</summary>
               {versions.map(({ version, asset }) => (
                 <div className="publication-audio-version" key={asset.id}>
                   <span>
@@ -277,6 +278,7 @@ export default function PublicationMusicList({
               ) : (
                 <small>来源：现有作品库</small>
               )}
+              </details>
               <button
                 type="button"
                 className="text-button"

@@ -25,6 +25,7 @@ export interface StudioContext {
 export const Context = createContext<StudioContext>(null!);
 export const useStudio = () => useContext(Context);
 export const names: Record<string, string> = {
+  fanqie: "番茄音乐",
   netease: "网易云音乐",
   qishui: "汽水音乐",
   qqmusic: "QQ 音乐",

@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer } from "electron";
 contextBridge.exposeInMainWorld(
   "rainfall",
   Object.freeze({
+    fanqieCatalog:(action:string,input:unknown={})=>ipcRenderer.invoke('rainfall:fanqie-catalog',action,input),
+    fanqieUpload:(action:string,input:unknown={})=>ipcRenderer.invoke('rainfall:fanqie-upload',action,input),
     tmeAiSubmission:(action:string,input:unknown={})=>ipcRenderer.invoke('rainfall:tme-ai-submission',action,input),
     tmeAiPrepare:(action:string,input:unknown={})=>ipcRenderer.invoke('rainfall:tme-ai-prepare',action,input),
     productionFlow:(action:string,input:unknown={})=>ipcRenderer.invoke('rainfall:production-flow',action,input),

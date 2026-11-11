@@ -21,6 +21,7 @@ import type {MusicAdapter} from './workflow/yourmusic';
 import {ProductionFlowSchemas} from '../shared/production-flow';
 import {importProductionAudio} from './production-integration';
 import {executeTmeAiPrepare} from './tme-ai-prepare-integration';
+import {resolveFanqieWork} from './fanqie-work';
 import {executeTmeAiSubmission} from './tme-ai-submission-integration';
 import {createAccountIdentityBridge} from './account-identity-channel';
 export { Studio };
@@ -225,6 +226,7 @@ if (port) {
       studio.close();
       return true;
     }
+    if (method === 'internal.fanqie.work') return resolveFanqieWork(studio,input);
     if (method === "internal.locate") return studio.locate(input.id);
     if (method === 'internal.tme.get') return studio.tmeDraftService().get(input.id);
     if (method === 'internal.tme.list') return studio.tmeDraftService().list();

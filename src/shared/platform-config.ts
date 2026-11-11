@@ -7,6 +7,7 @@ export const platformTargets = [
   "qqmusic",
   "kugou",
   "douyin",
+  "fanqie",
 ] as const;
 export type PlatformTarget = (typeof platformTargets)[number];
 export const PlatformTargetSchema = z.enum(platformTargets);

@@ -4,6 +4,7 @@ import sharp from 'sharp';
 import { hash, type Repository } from './database';
 import { probe } from './assets';
 import { fanqieOrigin, type FanqieInput, type FanqieObservation, type FanqieBrowserPort, type FanqieRole, type FanqieStage } from '../shared/fanqie';
+import {checkFanqieNewUpload} from '../shared/fanqie-catalog';
 import {assertPublicationFile,assertPublicationUploadReceipt,publicationRecordingKey,nextPublicationCheckpoint,interruptedPublicationState,fanqiePreparationPhases,publicationPhase,readPublicationAfterRecovery,auditPublicationTransition} from './publication-foundation';
 
 const roles: FanqieRole[] = ['audio', 'lyrics', 'cover'];
@@ -35,8 +36,10 @@ export async function verifyFanqieMaterials(input: FanqieInput) {
       if (stream?.length !== 1 || !format.includes(ext.slice(1)) || !Number.isFinite(Number(metadata.format?.duration)) ||
           Number(metadata.format.duration) <= 30 || Number(s.sample_rate) < 44100 || Number(s.channels) !== 2 ||
           !Number.isFinite(Number(s.sample_rate))) throw Error('FANQIE_AUDIO_PROPERTIES');
-      // Compressed MP3 does not expose PCM bit depth; fail closed until the platform semantics are verified.
-      if (Number(s.bits_per_raw_sample || s.bits_per_sample) < 16 || !Number.isFinite(Number(s.bits_per_raw_sample || s.bits_per_sample))) throw Error('FANQIE_AUDIO_BIT_DEPTH_UNVERIFIED');
+      // The official form accepts MP3 (verified with an uploaded record on 2026-11-11).
+      // MP3 has no PCM bit-depth field; this requirement applies to the WAV input.
+      if (ext === '.mp3' && s.codec_name !== 'mp3') throw Error('FANQIE_AUDIO_FORMAT');
+      if (ext === '.wav' && (Number(s.bits_per_raw_sample || s.bits_per_sample) < 16 || !Number.isFinite(Number(s.bits_per_raw_sample || s.bits_per_sample)))) throw Error('FANQIE_AUDIO_BIT_DEPTH_UNVERIFIED');
     } else if (role === 'cover') {
       if (!['.jpg', '.jpeg', '.png'].includes(ext) || a.bytes > 10 * max) throw Error('FANQIE_COVER_FORMAT');
       const m = await sharp(a.file, { limitInputPixels: 100_000_000 }).metadata();
@@ -99,6 +102,11 @@ export class FanqiePreparationService {
       return this.put({ ...fresh, source: 'offline-fixture', stage: 'uploading', pending: 'observe' });
     });
     try {
+      const catalog = await port.readCatalog();
+      if (catalog.source !== port.source || ['accountId','artistId','sessionId'].some(k =>
+        catalog.scope?.[k as keyof typeof catalog.scope] !== j.input.scope[k as keyof typeof j.input.scope])) throw Error('FANQIE_CATALOG_SCOPE_CHANGED');
+      const duplicate = checkFanqieNewUpload(catalog, j.input.title);
+      if (!duplicate.allowed) throw Error(duplicate.reason);
       let o = await this.observe(port); this.assertScope(j, o, port.source);
       if (Object.keys(o.uploads).length || o.metadataFingerprint) throw Error('FANQIE_EXISTING_FORM_REQUIRES_RECONCILIATION');
       j = this.put({ ...j, songKey: o.songKey, pending: 'metadata' });

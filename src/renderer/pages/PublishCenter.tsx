@@ -1,5 +1,4 @@
 import PublicationMusicList from "../components/PublicationMusicList";
-import { fanqieCapabilities } from "../../shared/fanqie";
 import React, { useEffect, useRef, useState } from "react";
 import { useStudio, PageHead, Badge, names, label } from "../context";
 import HelpHint from "../components/HelpHint";
@@ -48,6 +47,13 @@ export default function PublishCenter() {
     [error, setError] = useState(""),
     [message, setMessage] = useState("");
   const inFlight = useRef(false);
+  const [fanqieState,setFanqieState]=useState<any>(null),[fanqieConfigured,setFanqieConfigured]=useState(false);
+  const [channelResults,setChannelResults]=useState<string[]>([]);
+  useEffect(()=>{let active=true;setFanqieState(null);setFanqieConfigured(false);if(data.mode==='production'&&window.rainfall?.fanqieUpload){
+    void window.rainfall.fanqieUpload('status').then(r=>{if(active&&r.ok)setFanqieState(r.value)}).catch(()=>{});
+    void window.rainfall.fanqieUpload('configuration').then(r=>{if(active&&r.ok)setFanqieConfigured(!!r.value.configuration)}).catch(()=>{});
+  }return()=>{active=false};},[data.mode]);
+  useEffect(()=>{if(!busy||!selection.targets.includes('fanqie'))return;let active=true;const timer=setInterval(()=>{void window.rainfall.fanqieCatalog('status').then(r=>{if(active&&r.ok&&r.value.progress)setMessage('番茄音乐：'+r.value.progress)}).catch(()=>{});},1200);return()=>{active=false;clearInterval(timer)};},[busy,data.mode]);
   const [currentResult, setCurrentResult] = useState<{
     requests: SimplePublicationRequest[];
     reused: boolean;
@@ -98,10 +104,30 @@ export default function PublishCenter() {
     setError("");
     setMessage("");
     setCurrentResult(null);
+    setChannelResults([]);
     const submittedScope = currentScope;
     try {
       await save(selection);
-      const result = await call("publish.simple", selection);
+      if(selection.targets.includes('fanqie')){
+        if(data.mode!=='production')throw Error('番茄音乐暂不提供模拟发布');
+        const config=await window.rainfall.fanqieUpload('configuration');
+        if(!config.ok)throw Error(config.error.message);
+        if(!config.value.configuration)throw Error('请先在配置中心保存番茄音乐设置');
+        for(const workId of selection.workIds){
+          if(scopeRef.current!==submittedScope)return;
+          const work=data.works.find((w:any)=>w.id===workId);if(!work)throw Error('作品已变化，请重新选择');
+          setMessage('番茄音乐：正在处理《'+work.title+'》');
+          const uploaded=await window.rainfall.fanqieUpload('publishConfigured',{workId,variant:work.selectedAudioVariant==='B'?'B':'A'});
+          if(!uploaded.ok){const status=await window.rainfall.fanqieUpload('status');if(status.ok)setFanqieState(status.value);throw Error(uploaded.error.message);}
+          setFanqieState(uploaded.value);
+          const outcome=uploaded.value.result;
+          if(!outcome?.uploaded&&!outcome?.matches?.length)throw Error('番茄结果待核对，后续作品已暂停');
+          setChannelResults(rows=>[...rows,`${work.title} · 番茄音乐 · ${outcome.uploaded?outcome.officialRecord.officialStatus:'官网已有同名作品，已跳过上传'}`]);
+        }
+      }
+      const otherTargets=selection.targets.filter(t=>t!=='fanqie');
+      if(!otherTargets.length){setMessage('番茄处理完成，请查看发布记录');return;}
+      const result = await call("publish.simple", {...selection,targets:otherTargets});
       if (scopeRef.current !== submittedScope) return;
       setCurrentResult({
         requests: result.requests ?? [],
@@ -118,7 +144,7 @@ export default function PublishCenter() {
     } catch (e: any) {
       if (scopeRef.current === submittedScope)
         setError(
-          "材料准备失败：" + (e instanceof Error ? e.message : "请重试"),
+          "发布未完成：" + (e instanceof Error ? e.message : "请重试"),
         );
     } finally {
       inFlight.current = false;
@@ -203,13 +229,6 @@ export default function PublishCenter() {
   return (
     <div className="simple-publishing">
       <PageHead title="发布中心" />
-      {!fanqieCapabilities.upload && (
-        <p role="status">番茄音乐：已核对第一步表单，尚不可自动上传或提交。</p>
-      )}
-      <p>
-        番茄真实提交暂不可用；封面最低 1440 × 1440，1024 × 1024 不满足要求。AI
-        披露、署名、权利及条款须逐项确认。
-      </p>
       <section className="panel publish-choices" aria-label="选择歌曲和平台">
         <fieldset
           className="simple-publish-grid publish-selection-fields"
@@ -241,17 +260,6 @@ export default function PublishCenter() {
           <div className="target-choice">
             <h2>2 · 选择平台</h2>
             <div className="simple-target-list">
-              <article className="simple-target">
-                <label className="inline-check">
-                  <input
-                    type="checkbox"
-                    aria-label="发布到 番茄音乐"
-                    disabled
-                  />
-                  <b>番茄音乐</b>
-                </label>
-                <small>真实上传及提交暂不可用 · 封面最低 1440 × 1440</small>
-              </article>
               {platformTargets.map((target) => {
                 const config = configurations.find(
                   (item: any) => item.target === target,
@@ -277,7 +285,7 @@ export default function PublishCenter() {
                           aria-label={"发布到 " + names[target]}
                           checked={chosen}
                           disabled={
-                            data.mode !== "simulation" &&
+                            target==='fanqie'?data.mode!=='production':data.mode !== "simulation" &&
                             !["qqmusic", "kugou"].includes(target)
                           }
                           onChange={() =>
@@ -296,13 +304,13 @@ export default function PublishCenter() {
                       <HelpHint label="平台说明">
                         {target === "douyin"
                           ? "使用作品已有视频。"
-                          : "使用原音频 A、已选封面和已有歌词。"}
-                        正式提交前需逐首确认当前条款。
+                          : "使用所选音频版本、已选封面和已有歌词。"}
+                        {target==='fanqie'?'自动上传至待授权，合同在官网处理。':'正式提交前需逐首确认当前条款。'}
                       </HelpHint>
                     </div>
                     <div className="simple-target-meta">
                       <span>
-                        {data.mode === "simulation"
+                        {target==='fanqie'?(fanqieConfigured?'已配置 · 自动上传':'待配置'):data.mode === "simulation"
                           ? "模拟"
                           : ["qqmusic", "kugou"].includes(target)
                             ? "腾讯 AI 投稿"
@@ -315,7 +323,7 @@ export default function PublishCenter() {
                         {"配置 " + names[target]}
                       </button>
                     </div>
-                    {chosen &&
+                    {chosen && target!=='fanqie' &&
                       (accounts.length ? (
                         <label className="target-account">
                           发布账号
@@ -362,15 +370,15 @@ export default function PublishCenter() {
               !selection.targets.length ||
               (data.mode !== "simulation" &&
                 selection.targets.some(
-                  (target) => !["qqmusic", "kugou"].includes(target),
+                  (target) => !["fanqie", "qqmusic", "kugou"].includes(target),
                 ))
             }
             onClick={() => void publish()}
           >
             {busy
-              ? "正在准备材料…"
+              ? "正在发布…"
               : error
-                ? "重试准备"
+                ? "重新发布"
                 : data.mode === "simulation"
                   ? "发布（模拟）"
                   : "发布"}
@@ -389,6 +397,8 @@ export default function PublishCenter() {
             </span>
           )}
         </div>
+        {channelResults.map((text,index)=><p role="status" key={index}>{text}</p>)}
+        {!!fanqieState?.jobs?.length&&<section className="publication-current-result" aria-label="番茄发布记录"><h3>发布记录</h3>{fanqieState.jobs.map((job:any)=><div className="publication-channel-result" key={job.id}><span><b>{job.title}</b> · 番茄音乐 · {job.officialRecord?.officialStatus??(job.phase==='unknown'?'待核对':'处理中')}{job.officialRecord&&` · ${job.officialRecord.id}`}</span><button disabled={busy} onClick={async()=>{if(inFlight.current)return;inFlight.current=true;setBusy(true);try{const r=await window.rainfall.fanqieUpload('reconcile',{id:job.id});if(!r.ok)throw Error(r.error.message);setFanqieState(r.value);}catch(e:any){setError(e.message)}finally{inFlight.current=false;setBusy(false)}}}>更新状态</button></div>)}</section>}
         {currentResult && (
           <section
             className="publication-current-result"

@@ -58,3 +58,13 @@
 .publication-cover small {
   display: block;
 }
+.simple-publishing { max-width: 1360px; margin-inline: auto; }
+.simple-publishing .publish-choices { margin-top: 0; }
+.simple-publishing .section-title { margin-top: 0; }
+.publication-music-row > label { margin-bottom: 0; }
+.publication-audio-details { border-top: 1px solid var(--line); padding-top: 8px; }
+.publication-audio-details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.publication-audio-details .publication-audio-version { margin-block: 12px; }
+.publication-channel-result { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.platform-connection { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 16px; }
+.platform-connection > summary { cursor: pointer; }

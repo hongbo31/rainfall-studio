@@ -1,0 +1,111 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {createRequire} from 'node:module';
+import {chromium} from 'playwright-core';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import {createHash} from 'node:crypto';
+import sharp from 'sharp';
+import {build} from 'esbuild';
+import {installFanqieNativeSite} from './fixtures/fanqie-native-site.mjs';
+const require=createRequire(import.meta.url);
+const {nativeFanqiePage}=require('../output/fanqie-tests/upload.cjs');
+const {probeFanqieForm}=require('../output/fanqie-tests/core.cjs');
+const {readFanqieArtists}=require('../output/fanqie-tests/core.cjs');
+const {FanqieUploadBroker}=require('../output/fanqie-tests/upload.cjs');
+const {FanqieCatalogSession}=require('../output/fanqie-tests/session.cjs');
+
+test('artist reader waits for the roster after its search field has already mounted',async()=>{
+ const browser=await chromium.launch({channel:'chrome',headless:true,chromiumSandbox:true});
+ try{
+  const context=await browser.newContext({serviceWorkers:'block'});
+  await context.route('**/*',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:`<meta charset="utf-8"><input aria-label="请输入艺人名"><script>setTimeout(()=>{document.body.insertAdjacentHTML('beforeend','<div class="artist-item"><div class="artist-name">测试艺人</div><div>艺人ID：123456789</div></div>')},700)</script>`}));
+  const page=await context.newPage();await page.goto('https://www.novelfm.com/creator/music/account/artist');
+  const result=await readFanqieArtists(nativeFanqiePage(page));assert.deepEqual(result.artists,[{artistId:'123456789',name:'测试艺人'}]);
+ }finally{await browser.close();}
+});
+
+async function nativeFixture(t, options={}) {
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'rainfall-native-flow-'));
+ const browser=await chromium.launch({channel:'chrome',headless:true,chromiumSandbox:true});
+ t.after(async()=>{await browser.close();fs.rmSync(root,{recursive:true,force:true});});
+ const context=await browser.newContext({serviceWorkers:'block',acceptDownloads:false});
+ const dataSize=44100*4*31,wav=Buffer.alloc(44+dataSize);
+ wav.write('RIFF');wav.writeUInt32LE(36+dataSize,4);wav.write('WAVEfmt ',8);wav.writeUInt32LE(16,16);wav.writeUInt16LE(1,20);wav.writeUInt16LE(2,22);wav.writeUInt32LE(44100,24);wav.writeUInt32LE(44100*4,28);wav.writeUInt16LE(4,32);wav.writeUInt16LE(16,34);wav.write('data',36);wav.writeUInt32LE(dataSize,40);
+ const cover=await sharp({create:{width:1440,height:1440,channels:3,background:'#123456'}}).png().toBuffer();
+ const files={audio:'合成音频.wav',lyrics:'合成歌词.txt',cover:'合成封面.png'};
+ for(const [role,bytes] of Object.entries({audio:wav,lyrics:Buffer.from('仅用于离线测试的合成歌词'),cover}))fs.writeFileSync(path.join(root,files[role]),bytes);
+ const title='离线新作品',artist='合成艺人';
+ const site=await installFanqieNativeSite(context,{title,artist,accountId:'12345678',cover,countDelay:350,...options});
+ const manifest=path.join(root,'bundle.json');fs.writeFileSync(manifest,JSON.stringify({version:1,title,ai:true,musicType:'original',authors:{lyricist:artist,composer:artist,singer:artist},files}));
+ const session=new FanqieCatalogSession({root,available:()=>true,generation:()=>1,launch:async()=>context});
+ const asset=role=>{const file=path.join(root,files[role]);return{file,bytes:fs.statSync(file).size,sha256:createHash('sha256').update(fs.readFileSync(file)).digest('hex')};};
+ const broker=new FanqieUploadBroker({root,session,available:()=>true,generation:()=>1,pickBundle:async()=>manifest,
+  work:async selection=>({...selection,title,ai:'generated',lyrics:'仅用于离线测试的合成歌词',audio:asset('audio'),cover:asset('cover'),fingerprint:'synthetic-current-work'})});
+ await session.ui('open');
+ return {root,context,site,session,broker,title,files,artist};
+}
+test('native Playwright snapshot recognizes the calibrated single-song form',async()=>{
+ const browser=await chromium.launch({channel:'chrome',headless:true,chromiumSandbox:true});
+ try{
+  const context=await browser.newContext({serviceWorkers:'block'});
+  // Every request is intercepted; no official network request or upload is sent.
+  await context.route('**/*',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:`<!doctype html><html lang="zh"><meta charset="utf-8"><body><form>
+   <p>上传歌曲信息 授权签约模式 预览合同协议</p><div>歌曲1: 合成测试</div>
+   <label for="songs_0_name_input">作品名称</label><input id="songs_0_name_input" value="合成测试">
+   <div>音乐类型</div><div>完整歌曲</div><div>歌词</div><div>词作者</div><div>曲作者</div><div>歌手</div><div>歌曲封面</div><div>是否为AI作品</div>
+  </form></body></html>`}));
+  const page=await context.newPage();await page.goto('https://www.novelfm.com/creator/music/finished/ugc/uploadProduct');
+  const result=await probeFanqieForm(nativeFanqiePage(page));assert.equal(result.songCount,1);assert.equal(result.firstStepObserved,true,await page.locator('body').ariaSnapshot());
+ }finally{await browser.close();}
+});
+
+test('native broker reads delayed catalog, uploads once, verifies saved ID and refuses a duplicate', {timeout:60000},async t=>{
+ const f=await nativeFixture(t);
+ const read=await f.session.ui('read');assert.equal(read.report.complete,true);assert.equal(read.report.total,1);
+ const selection={workId:'00000000-0000-4000-8000-000000000003',variant:'A'};
+ await assert.rejects(f.broker.ui('publishConfigured',selection),/FANQIE_CONFIGURATION_REQUIRED/);
+ await f.broker.ui('saveConfiguration',{version:1,authors:{lyricist:f.artist,composer:f.artist,singer:f.artist},useWorkMaterials:true,publicationConsent:true});
+ const done=await f.broker.ui('publishConfigured',selection);
+ assert.equal(done.jobs[0].phase,'contract_pending');assert.equal(done.jobs[0].officialRecord.id,'9876543210987654321');
+ const picked=f.site.events.filter(event=>event.kind==='file');assert.deepEqual(picked.map(event=>event.role),['audio','lyrics','cover']);
+ const saved=JSON.parse(fs.readFileSync(path.join(f.root,'production/fanqie/uploads',done.jobs[0].id+'.json'),'utf8'));
+ for(const event of picked){const material=saved.input.assets[event.role];assert.equal(event.files.length,1);assert.equal(event.files[0].name,path.basename(material.file));assert.equal(event.files[0].sha256,createHash('sha256').update(fs.readFileSync(material.file)).digest('hex'));}
+ assert.deepEqual(f.site.events.filter(event=>event.kind==='credit').map(event=>event.role),['lyricist_id_list','composer_id_list','singer_id_list']);
+ assert.equal(f.site.events.filter(event=>event.kind==='crop').length,1);assert.equal(f.site.events.filter(event=>event.kind==='confirm-upload').length,1);
+ assert.equal(f.site.events.some(event=>event.kind==='SIGN_FORBIDDEN'),false);
+ const count=f.site.events.length;
+ const duplicate=await f.broker.ui('check',{title:f.title});assert.equal(duplicate.result.reason,'FANQIE_OFFICIAL_RECORD_ALREADY_EXISTS');
+ const again=await f.broker.ui('prepare',{rightsConfirmed:true,lyricsMatchConfirmed:true});assert.equal(again.ready,false);assert.equal(f.site.events.length,count);
+ assert.deepEqual(f.site.failures,[]);
+ const editor=f.context.pages().find(page=>page.url().endsWith('/uploadProduct'));assert(editor);assert.equal(await editor.getByRole('heading',{name:'选择签约模式',exact:true}).count(),1);
+});
+
+test('native upload stops after account changes and preserves the uncertain operation', {timeout:60000},async t=>{
+ let uid='12345678';
+ const f=await nativeFixture(t,{accountId:()=>uid,beforeEvent:event=>{if(event.kind==='credit')uid='87654321';}});
+ await f.broker.ui('pick');const ready=await f.broker.ui('prepare',{rightsConfirmed:true,lyricsMatchConfirmed:true});
+ await assert.rejects(f.broker.ui('upload',{token:ready.token,consent:true}),/FANQIE_CATALOG_SCOPE_CHANGED/);
+ assert.equal(f.broker.status().jobs[0].phase,'unknown');assert.equal(f.site.events.some(event=>event.kind==='file'||event.kind==='confirm-upload'),false);
+ assert.equal(f.context.pages().filter(page=>page.url().endsWith('/uploadProduct')).length,1);assert.deepEqual(f.site.failures,[]);
+});
+
+test('library upload UI binds the exact version and invalidates prepared materials after editing',async()=>{
+ const built=await build({stdin:{contents:`import React from 'react';import{createRoot}from'react-dom/client';import Panel from './src/renderer/components/FanqieUploadPanel';
+ const work={id:'00000000-0000-4000-8000-000000000003',title:'测试作品',ai:'generated',assets:{audio_A:'a',audio_B:'b'},publicationMetadata:{lyricist:'测试艺人',composer:'测试艺人',singer:'测试艺人'}};
+ let bundle=null;window.calls=[];window.rainfall={fanqieCatalog:async()=>({ok:true,value:{}}),fanqieUpload:async(action,input)=>{window.calls.push({action,input});if(action==='selectWork')bundle={title:work.title,ai:input.ai,authors:input.authors,source:{workId:input.workId,variant:input.variant},files:{audio:{name:'测试.wav',bytes:123}}};return{ok:true,value:{bundle,ready:action==='prepare',token:'test',jobs:[]}};}};
+ createRoot(document.getElementById('root')).render(<Panel mode="production" works={[work]}/>);`,loader:'tsx',resolveDir:process.cwd()},bundle:true,write:false,platform:'browser',format:'iife'});
+ const browser=await chromium.launch({channel:'chrome',headless:true,chromiumSandbox:true});
+ try{
+  const context=await browser.newContext({serviceWorkers:'block'});
+  await context.route('**/*',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:'<meta charset="utf-8"><div id="root"></div><script>'+built.outputFiles[0].text+'</script>'}));
+  const page=await context.newPage();await page.goto('https://fixture.invalid');
+  await page.getByLabel('番茄上传作品').selectOption('00000000-0000-4000-8000-000000000003');await page.getByLabel('番茄音频版本').selectOption('B');
+  await page.getByLabel('歌词与所选音频一致，署名及素材使用权已确认').check();
+  await page.getByRole('button',{name:'上传番茄',exact:true}).click();
+  const calls=await page.evaluate(()=>window.calls);const selected=calls.find(call=>call.action==='publishWork');assert.equal(selected.input.variant,'B');assert.equal(selected.input.rightsConfirmed,true);
+  await page.getByLabel('番茄音频版本').selectOption('A');assert.equal(await page.getByRole('button',{name:'上传番茄',exact:true}).isEnabled(),false);
+  assert.equal(calls.some(call=>['selectWork','prepare','upload','recoverOpening'].includes(call.action)),false);
+ }finally{await browser.close();}
+});

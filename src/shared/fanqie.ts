@@ -1,4 +1,4 @@
-/** Calibrated from the visible novelfm form on 2026-10-20. No upload/contract receipt was observed. */
+/** Live first-step upload verified 2026-11-11. Desktop upload transport is still gated pending integration acceptance. */
 export const fanqieCapabilities = Object.freeze({
   preparation: true, formObserved: true, upload: false, draft: false,
   submission: false, album: false, reason: 'FANQIE_BROWSER_RUNTIME_UNAVAILABLE',
@@ -29,6 +29,8 @@ export type FanqieObservation = {
 /** Main-owned interface. Production bridge is intentionally not installed yet. */
 export interface FanqieBrowserPort {
   source: 'browser' | 'fixture';
+  /** Read the full catalog in the verified account/session, preserving any active editor. */
+  readCatalog(): Promise<import('./fanqie-catalog').FanqieCatalog & {scope: FanqieScope}>;
   observe(): Promise<FanqieObservation>;
   /** Supported re-claim only. Must preserve tab/login and perform no site writes. */
   reclaim(): Promise<void>;

@@ -44,6 +44,8 @@ import {createTmeAiPrepareBroker,TmeAiNativePort,nativeSnapshot} from './tme/ai-
 import {createTmeAiSubmissionBroker} from './tme/ai-submission';
 import {TmeAiCloudSessionManager} from './tme/ai-cloud-session';
 import {createAccountIdentityBroker,accountIdentityUiResponse} from './account-identity-broker';
+import {FanqieCatalogSession, fanqieCatalogError} from './fanqie/catalog-session';
+import {FanqieUploadBroker} from './fanqie/upload-broker';
 import {createUnifiedPublishBroker,createTmeAiTransportProvider} from './tme/unified-publish';
 import {externalReceiptBarrier,persistExternalReceiptBarrier,persistExternalReceiptStop} from './tme/external-receipt-barrier';
 import {installNativeDiagnostics} from './native-diagnostics';
@@ -161,6 +163,10 @@ const productionFlow=createProductionFlowBroker({credentials:apiCredentials,rpc:
 const tmeAiNative=new TmeAiNativePort(path.join(__dirname,'tme-ai-uia-host.ps1'));
 const tmeAiCloud=new TmeAiCloudSessionManager({enableExistingAlbum:true,available:()=>mode==='production'&&!switching&&!closing});
 const accountIdentity=createAccountIdentityBroker({session:tmeAiCloud,rpc:(method,input)=>rpc(method,input),available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration});
+const fanqieCatalog = new FanqieCatalogSession({root, available:()=>mode==='production'&&!switching&&!closing, generation:()=>coreGeneration});
+const fanqieUpload = new FanqieUploadBroker({root,session:fanqieCatalog,available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,
+  work:async selection=>{const result=await rpc('internal.fanqie.work',selection);if(!result.ok)throw Error(result.error.code);return result.value;},
+  pickBundle:async()=>{const result=await dialog.showOpenDialog(window,{title:'选择番茄发布材料清单',properties:['openFile'],filters:[{name:'番茄发布材料清单',extensions:['json']}]});return result.canceled?null:result.filePaths[0];}});
 tmeAiCloud.onIdentityInvalidated(()=>{try{child?.postMessage({kind:'account-identity-invalidated'})}catch{/* Old worker already stopped. */}});
 // Cloud sessions and calibrated browser contracts must be supplied by Main, never renderer flags.
 const tmeAiTransport=createTmeAiTransportProvider({platform:process.platform,cloudSession:()=>tmeAiCloud.submissionSession(),cloudExistingAlbumSession:()=>tmeAiCloud.existingAlbumSession(),readExternalReceipt:async(context)=>{const receipt=await tmeAiCloud.readExternalReceipt(context);persistExternalReceiptBarrier(root,receipt);return receipt},cloudPreparationSession:()=>tmeAiCloud.preparationSession(),native:tmeAiNative,nativeObserve:async(context)=>{
@@ -289,6 +295,16 @@ const official: Record<string, string> = {
   douyin: "https://creator.douyin.com/",
 };
 function handlers() {
+  ipcMain.handle('rainfall:fanqie-upload',(event,action,input)=>safe(async()=>{
+    trusted(event);
+    try {return {ok:true,value:await fanqieUpload.ui(action,input)}}
+    catch (error) {return {ok:false,error:fanqieCatalogError(error)}}
+  }));
+  ipcMain.handle('rainfall:fanqie-catalog',(event,action,input)=>safe(async()=>{
+    trusted(event);
+    try {return {ok:true,value:await fanqieCatalog.ui(action,input)}}
+    catch (error) {return {ok:false,error:fanqieCatalogError(error)}}
+  }));
     ipcMain.handle('rainfall:tme-ai-submission',(event,action,input)=>safe(async()=>{
       trusted(event);
       try{return{ok:true,value:await tmeAiSubmission.ui(action,input)}}catch(e){

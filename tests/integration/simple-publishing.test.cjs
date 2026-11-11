@@ -103,7 +103,8 @@ test("versioned migration is additive, preserves old bytes/schema3 and is idempo
     f.s.close();
     next = new Studio(f.root, "production");
     const configs = await next.call("platformConfig.list");
-    assert.equal(configs.length, 5);
+    assert.equal(configs.length, 6);
+    assert(configs.some(config=>config.target==='fanqie'));
     assert.equal(
       configs.find((c) => c.target === "qqmusic").accountId,
       account.id,
