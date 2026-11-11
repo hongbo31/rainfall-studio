@@ -131,3 +131,51 @@ test('only pre-editor opening failures may be explicitly recovered after a fresh
   else{await broker.ui('recoverOpening',{id});assert.equal(broker.status().jobs.length,0);assert.equal(fs.readdirSync(path.join(f.root,'production/fanqie/uploads/opening-history')).length,1);const prepared=await broker.ui('prepare',{rightsConfirmed:true,lyricsMatchConfirmed:true});assert.equal(prepared.ready,true);}
  }
 });
+
+test('authorization preferences persist without granting automatic contract signature',async()=>{
+ const f=uploadFixture(),broker=new FanqieUploadBroker(f.options);
+ const authorizationPreference={mode:'exclusive',platforms:['fanqie_music','fanqie_audio'],confirmContractManually:true};
+ const config={version:1,authors:f.raw.authors,useWorkMaterials:true,publicationConsent:true,authorizationPreference};
+ await broker.ui('saveConfiguration',config);
+ const restarted=new FanqieUploadBroker(f.options);
+ assert.deepEqual((await restarted.ui('configuration')).configuration.authorizationPreference,authorizationPreference);
+ for(const patch of [{confirmContractManually:false},{platforms:[]},{platforms:['fanqie_music','fanqie_music']},{platforms:['unknown']}]){
+  await assert.rejects(broker.ui('saveConfiguration',{...config,authorizationPreference:{...authorizationPreference,...patch}}));
+ }
+ assert.equal(f.calls(),0);
+});
+
+test('batch pauses on uncertain work, survives restart and resumes only unfinished items',async()=>{
+ const {FanqieBatch}=require(path.join(path.dirname(process.env.RAINFALL_FANQIE_BUNDLE),'upload.cjs'));
+ const root=fs.mkdtempSync(path.join(dir,'batch-')),batch=new FanqieBatch(root),items=[{workId:'one',variant:'A'},{workId:'two',variant:'B'},{workId:'three',variant:'A'}],calls=[];
+ const result=await batch.run(items,'account',async item=>{calls.push(item.workId);assert.equal(batch.read().state,'running');if(item.workId==='two')throw Error('FANQIE_RECONCILIATION_REQUIRED');return {id:'saved-one'};},()=>{});
+ assert.equal(result.state,'paused');assert.deepEqual(calls,['one','two']);
+ const restarted=new FanqieBatch(root);await assert.rejects(restarted.run(items,'another',async()=>{},()=>{},true),/SCOPE_CHANGED/);
+ calls.length=0;const finished=await restarted.run(items,'account',async i=>{calls.push(i.workId);return {reconciled:true}},()=>{},true);
+ assert.equal(finished.state,'complete');assert.deepEqual(calls,['two','three']);assert.equal(finished.items[0].result.id,'saved-one');
+});
+test('interrupted running batch is paused without invoking any external operation',async()=>{
+ const {FanqieBatch}=require(path.join(path.dirname(process.env.RAINFALL_FANQIE_BUNDLE),'upload.cjs'));
+ const root=fs.mkdtempSync(path.join(dir,'interrupted-')),file=path.join(root,'production/fanqie/batch.json');fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,JSON.stringify({id:'batch',accountKey:'account',state:'running',items:[{workId:'one',variant:'A',state:'running'}]}));
+ const state=new FanqieBatch(root).read();assert.equal(state.state,'paused');assert.equal(state.items[0].error,'FANQIE_RECONCILIATION_REQUIRED');
+});
+test('authorization skips all reviewing works and rejects changed account without opening editors',async()=>{
+ const {authorizeFanqieRecords}=require(path.join(path.dirname(process.env.RAINFALL_FANQIE_BUNDLE),'upload.cjs'));
+ const f=uploadFixture();f.current.catalog.rows=[{id:'1234567890',title:'Already sent',stage:'reviewing',officialStatus:'审核中'}];f.current.catalog.total=1;
+ const pref={mode:'exclusive',platforms:['fanqie_music','fanqie_audio'],confirmContractManually:true};
+ const result=await authorizeFanqieRecords(f.root,f.options.session,f.current.report.accountKey,['1234567890'],pref,()=>{});assert.equal(result[0].phase,'already_processed');assert.equal(f.calls(),0);
+ await assert.rejects(authorizeFanqieRecords(f.root,f.options.session,'other',['1234567890'],pref,()=>{}),/SCOPE_CHANGED/);
+});
+
+test('configured batch uploads two distinct works once and skips them on a repeated batch',async()=>{
+ const f=uploadFixture(),ids=['00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000002'];
+ f.options.session.status=()=>({connected:true,report:f.current.report});
+ f.options.work=async selection=>({workId:selection.workId,variant:selection.variant,title:'合成作品'+selection.workId.slice(-1),ai:'generated',fingerprint:h(selection.workId)});
+ f.options.materials=async(_root,source)=>{
+  const result={};for(const role of ['audio','lyrics','cover']){const file=path.join(f.root,source.workId+'-'+role);const bytes=Buffer.from(source.workId+role);fs.writeFileSync(file,bytes);result[role]={file,bytes:bytes.length,sha256:h(bytes)};}return result;
+ };
+ let uploads=0;f.options.execute=async(_context,input,callbacks)=>{await callbacks.intent('first-step:confirm-upload');uploads++;f.current.catalog.rows.push({id:'987654321098765432'+uploads,title:input.title,stage:'contract_pending',officialStatus:'待授权',createdAtText:'fixture',publishedAtText:'-'});f.current.catalog.total=f.current.catalog.rows.length;return{authorizationPageObserved:true,officialRecordVerified:false};};
+ const broker=new FanqieUploadBroker(f.options);await broker.ui('saveConfiguration',{version:1,authors:f.raw.authors,useWorkMaterials:true,publicationConsent:true});
+ const request={items:ids.map(workId=>({workId,variant:'A'}))};const first=await broker.ui('publishBatch',request);assert.equal(first.batch.state,'complete',JSON.stringify(first.batch));assert.equal(uploads,2);assert.equal(first.jobs.length,2);
+ const second=await broker.ui('publishBatch',request);assert.equal(second.batch.state,'complete');assert.equal(uploads,2);assert.equal(f.current.catalog.rows.length,2);
+});

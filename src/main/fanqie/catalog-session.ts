@@ -114,6 +114,12 @@ export class FanqieCatalogSession {
 export function fanqieCatalogError(error: unknown) {
   const code = error instanceof Error && error.name === 'TimeoutError' ? 'FANQIE_BROWSER_TIMEOUT' : error instanceof Error && /strict mode violation/.test(error.message) ? 'FANQIE_CONTROL_AMBIGUOUS' : error instanceof Error && /^[A-Z0-9_]+$/.test(error.message) ? error.message : 'FANQIE_BROWSER_OPERATION_FAILED';
   const messages: Record<string, string> = {
+    FANQIE_BATCH_SCOPE_CHANGED: '账号或批次选择已变化，已停止操作，请重新核对。',
+    FANQIE_AUTHORIZATION_RECONCILIATION_REQUIRED: '已有待确认合同，请先在官网完成或核对签约，再更新状态；不会重新上传。',
+    FANQIE_AUTHORIZATION_WORK_MISMATCH: '授权页作品与当前任务不一致，已停止操作。',
+    FANQIE_AUTHORIZATION_IDENTITY_REQUIRED: '请在官网完成个人签约身份认证。',
+    FANQIE_AUTHORIZATION_PLATFORM_UNVERIFIED: '官网发行平台未能核对，已保留当前页面。',
+    FANQIE_AUTHORIZATION_INCOMPLETE: '官网授权信息尚未完整，已保留页面供核对。',
     PRODUCTION_REQUIRED: '请切换到真实作品库。',
     FANQIE_CONFIGURATION_REQUIRED: '请先在配置中心保存番茄音乐的署名和发布规则。',
     FANQIE_AI_DISCLOSURE_REQUIRED: '请先在作品资料中设置 AI 标注。',

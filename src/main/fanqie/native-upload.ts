@@ -105,7 +105,8 @@ export async function executeFanqieNativeUpload(context: BrowserContext, input: 
   }
   assertFanqieFirstStepReadback(await readFanqieVisibleForm(adapter), expected);
   callbacks.progress('正在确认上传结果');
-  return await confirmFanqieFirstStep(adapter, expected, intent, assertScope);
+  const uploaded=await confirmFanqieFirstStep(adapter, expected, intent, assertScope);
+  return uploaded;
   } finally {
     await accountProbe?.close().catch(() => {});
   }

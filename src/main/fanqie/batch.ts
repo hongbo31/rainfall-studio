@@ -1,0 +1,34 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import {randomUUID} from 'node:crypto';
+
+export type BatchItem={workId:string;variant:'A'|'B'};
+export type BatchState={id:string;accountKey:string;state:'running'|'paused'|'complete';items:(BatchItem&{state:'queued'|'running'|'complete'|'paused';result?:unknown;error?:string})[];updatedAt:string};
+/** Durable sequential queue. A failed item stops the batch; restart never blindly replays writes. */
+export class FanqieBatch {
+  private busy=false;
+  constructor(private root:string){}
+  private file(){return path.join(this.root,'production','fanqie','batch.json');}
+  read():BatchState|null{
+    if(!fs.existsSync(this.file()))return null;
+    const state=JSON.parse(fs.readFileSync(this.file(),'utf8')) as BatchState;
+    if(!this.busy&&state.state==='running'){state.state='paused';for(const item of state.items)if(item.state==='running'){item.state='paused';item.error='FANQIE_RECONCILIATION_REQUIRED';}this.save(state);}
+    return state;
+  }
+  private save(state:BatchState){state.updatedAt=new Date().toISOString();fs.mkdirSync(path.dirname(this.file()),{recursive:true});fs.writeFileSync(this.file()+'.tmp',JSON.stringify(state,null,2));fs.renameSync(this.file()+'.tmp',this.file());}
+  async run(items:BatchItem[],accountKey:string,execute:(item:BatchItem)=>Promise<unknown>,guard:()=>void,resume=false){
+    if(this.busy)throw Error('FANQIE_BROWSER_BUSY');
+    const prior=this.read();
+    if(resume&&(!prior||prior.accountKey!==accountKey||JSON.stringify(prior.items.map(({workId,variant})=>({workId,variant})))!==JSON.stringify(items)))throw Error('FANQIE_BATCH_SCOPE_CHANGED');
+    const state:BatchState=resume?prior!:{id:randomUUID(),accountKey,state:'running',items:items.map(item=>({...item,state:'queued'})),updatedAt:''};
+    this.busy=true;state.state='running';this.save(state);
+    try{
+      for(const item of state.items){
+        if(item.state==='complete')continue;
+        try{guard();item.state='running';delete item.error;this.save(state);item.result=await execute({workId:item.workId,variant:item.variant});guard();item.state='complete';this.save(state);}
+        catch(error){item.state='paused';item.error=error instanceof Error&&/^[A-Z0-9_]+$/.test(error.message)?error.message:'FANQIE_BROWSER_OPERATION_FAILED';state.state='paused';this.save(state);return state;}
+      }
+      state.state='complete';this.save(state);return state;
+    }finally{this.busy=false;}
+  }
+}

@@ -1,6 +1,6 @@
-# Cloud handoff override
+# Current Windows delivery scope (2026-11-12)
 
-Read CLOUD-HANDOFF.md first. The user has stopped browser operations on the source Windows host. Do not replay the manually submitted song or reuse old machine bindings/data roots. Historical machine-specific instructions below are reference only.
+The user has explicitly resumed development and desktop acceptance on their Windows host. Preserve the existing production library and configuration; resolve paths from the current verified-desktop.json, never from CLOUD_USER placeholders. Update the same desktop entry only after acceptance. CLOUD-HANDOFF.md is a historical export record, not the current execution restriction. Do not replay songs already submitted to review. Contract acceptance remains a user confirmation boundary.
 
 # Rainfall Studio 项目约定
 

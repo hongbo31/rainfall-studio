@@ -4,7 +4,7 @@ export type RpcResult =
   | { ok: false; error: { code: string; message: string } };
 export interface Bridge {
   fanqieCatalog(action:'open'|'read'|'status',input?:unknown):Promise<RpcResult>;
-  fanqieUpload(action:'configuration'|'saveConfiguration'|'publishConfigured'|'publishWork'|'status'|'pick'|'selectWork'|'check'|'prepare'|'upload'|'reconcile'|'recoverOpening',input?:unknown):Promise<RpcResult>;
+  fanqieUpload(action:'configuration'|'saveConfiguration'|'publishBatch'|'authorizeExisting'|'publishConfigured'|'publishWork'|'status'|'pick'|'selectWork'|'check'|'prepare'|'upload'|'reconcile'|'recoverOpening',input?:unknown):Promise<RpcResult>;
   tmeAiSubmission(action:'preflight'|'status'|'authorizeAndSubmit'|'reconcile',input?:unknown):Promise<RpcResult>;
   tmeAiPrepare(action:'inspect'|'register'|'list'|'context'|'start'|'run'|'reconcile'|'resumePicker'|'resumeCrop'|'connectBrowser'|'browserStatus'|'disconnectBrowser',input?:unknown):Promise<RpcResult>;
   productionFlow(action:'savePlan'|'enable'|'disable'|'trigger'|'list'|'context'|'next'|'approve'|'retry'|'capability'|'useManualAssets',input?:unknown):Promise<RpcResult>;
