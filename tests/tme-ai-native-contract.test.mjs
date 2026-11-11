@@ -267,6 +267,13 @@ test('symbol-prefixed smart-cover banners cannot certify a manual cover',()=>{
   const r=probe({action:'cover-state',nodes:[node(1,'Button','更换图片'),node(2,'Button','智能封面'),node(3,'Text',name)]});assert.equal(r.ok,true,r.error);assert.equal(r.state.generatorBanner,true);assert.equal(r.state.manualSelected,false);
  }
 });
+
+test('information icon exception never admits prose, suffixes or an oversized decorative prefix',()=>{
+ for(const name of ['i 已为您生成智能专辑封面','ℹ歌词 已为您生成智能专辑封面','已为您生成智能专辑封面 其他文字','✓✓✓✓✓✓✓✓✓已为您生成智能专辑封面']){
+  const r=probe({action:'cover-state',nodes:[node(1,'Button','更换图片'),node(2,'Button','智能封面'),node(3,'Text',name)]});
+  assert.equal(r.ok,true,r.error);assert.equal(r.state.generatorBanner,false);
+ }
+});
 test('prefixed user text, hidden labels and editable descendants remain outside banner evidence',()=>{
  for(const extra of [{name:'歌词：已为您生成智能专辑封面'}, {name:'✓ 已为您生成智能专辑封面',offscreen:true}, {name:'✓ 已为您生成智能专辑封面',parentId:4}]){
   const r=probe({action:'cover-state',nodes:[node(1,'Button','更换图片'),node(2,'Button','智能封面'),node(3,'Text',extra.name,extra),node(4,'Edit','歌词')]});assert.equal(r.ok,true,r.error);assert.equal(r.state.generatorBanner,false);

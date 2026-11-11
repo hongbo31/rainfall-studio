@@ -19,7 +19,7 @@ User scope: dot creates one set of lyrics/style prompt/cover per day (provisiona
 ## Transport capability discovery (2026-10-18)
 
 - Google Drive connector harmless reads succeeded; list_drives returned no shared drives and folder search Rainfall returned no results. This demonstrates cloud read connectivity, not a selected writable delivery folder.
-- Local environment has C:/Users/PUBLIC_USER/OneDrive with old directory metadata. No OneDrive/GoogleDriveFS/Dropbox/Box process was observed. Folder presence alone is not an authorized working sync bridge.
+- Local environment has C:/Users/31559/OneDrive with old directory metadata. No OneDrive/GoogleDriveFS/Dropbox/Box process was observed. Folder presence alone is not an authorized working sync bridge.
 - Source scan found no installed Google Drive/OneDrive/Library cloud-poll adapter.
 - Library artifacts can be copied by authenticated conversation tools. No standalone authorized Library polling API/credential is available to the local client. Signed transfer URLs are temporary; they are not a reliable permanent daily source.
 - No public service, OAuth client, credential, file-share permission, shared folder or new scheduler was created.

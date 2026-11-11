@@ -4,7 +4,9 @@ import "./ui-system.css";
 import "./plan-center.css";
 import "./themes.css";
 import { initializeTheme } from "./theme";
+import ThemeToggle from "./components/ThemeToggle";
 import PlanCenter from "./pages/PlanCenter";
+import Materials from './pages/Materials';
 import HelpHint from "./components/HelpHint";
 import { clientVersionLabel } from "./client-version";
 import { Context, Badge } from "./context";
@@ -25,6 +27,7 @@ import {
 import ChatCreation from "./pages/ChatCreation";
 initializeTheme();
 const pages = [
+  ['materials','▦','素材列表'],
   ["plans", "◷", "计划中心"],
   ["chat", "♫", "创作中心"],
   ["overview", "◫", "总览"],
@@ -110,7 +113,7 @@ function App() {
       window.removeEventListener("unhandledrejection", unhandled);
     };
   }, []);
-  const call = async (method: string, input: any = {}) => {
+  const call = useCallback(async (method: string, input: any = {}) => {
     const r = await window.rainfall.call(method, input);
     if (!r.ok) {
       notify(r.error.message);
@@ -118,7 +121,7 @@ function App() {
     }
     await refresh();
     return r.value;
-  };
+  }, [notify, refresh]);
   const native = async (p: Promise<any>, success: string) => {
     const r = await p;
     if (!r.ok) {
@@ -186,6 +189,7 @@ function App() {
   return (
     <Context.Provider value={context}>
       {runtime.previewFixture&&<div className="plan-fixture-ribbon">离线交互演示 · 全部账号与数据为隔离测试样本</div>}
+      {runtime.offlineAcceptance&&<div className="plan-fixture-ribbon">离线验收 · 临时数据库 / 测试音频 · 外网与自动执行已禁用</div>}
       {switching && (
         <div className="mode-screen" role="status">
           <h2>正在切换独立工作区…</h2>
@@ -233,6 +237,7 @@ function App() {
             <b>{title}</b>
           </div>
           <div className="header-right">
+            <ThemeToggle />
             <Badge>
               {data.mode === "simulation"
                 ? "模拟演练 · 不进行真实投稿"
@@ -275,7 +280,7 @@ function App() {
           </div>
         </header>
         <div id="content">
-          {page === "plans" ? (
+          {page === 'materials' ? <Materials /> : page === "plans" ? (
             <PlanCenter initialRunId={id} />
           ) : page === "chat" ? (
             <ChatCreation />

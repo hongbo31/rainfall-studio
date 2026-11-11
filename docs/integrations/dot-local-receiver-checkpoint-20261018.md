@@ -2,8 +2,8 @@
 
 Follow-up: trusted bridge, actual Drive-path setup and packaging continuation are recorded in `dot-sync-bridge-checkpoint-20261018.md`; the remaining-gates section below describes the earlier receiver-only checkpoint.
 
-Implemented in the independent candidate repository on EXAMPLE-HOST:
-`C:/Users/PUBLIC_USER/Documents/Codex/2026-10-15/task/rainfall-studio-unified-acceptance-20261018`.
+Implemented in the independent candidate repository on DESKTOP-90VCPDC:
+`C:/Users/31559/Documents/Codex/2026-10-15/task/rainfall-studio-unified-acceptance-20261018`.
 
 The existing inbox schemaVersion1 text contract is unchanged. A separate deliveryVersion1 directory envelope binds text.json and one immutable cover per item revision. Full image decoding and exact SHA256/size/MIME/dimensions precede a single SQLite metadata transaction for candidates, drafts, image assets, cover relations and delivery receipt. Incomplete sync waits with capped retry intervals; permanent protocol/security conflicts refuse the package. Missing receipt files recover from committed database receipts after restart. Pause stops an in-flight asynchronous decode before import. Status remains available while paused. No HTTP/model/CLI/music/publication adapter is part of this receiver.
 

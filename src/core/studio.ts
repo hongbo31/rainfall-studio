@@ -1,9 +1,12 @@
+import {fanqieCapabilities} from '../shared/fanqie';
 import {AccountIdentityService,type AccountIdentityAdapter} from './account-identity';
 import {readGenerationConfig,saveGenerationConfig} from './generation-config';
 import {prepareManualCreation,listManualCreations} from './manual-creation';
 import {unifiedPublicationService,savePublicationMetadata} from "./unified-publication-integration";
 import fs from "node:fs";
 import {DirectoryTaskController} from './directory-tasks';
+import {selectPublicationAudio} from './material-integration';
+import {MaterialWorkbenchService} from './material-workbench';
 import {ProviderTextService} from './provider-text';
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -80,6 +83,13 @@ export class Studio {
   private inbox?: InboxController;
   private directory?: DirectoryTaskController;
   private providerText?: ProviderTextService;
+  private materials?:MaterialWorkbenchService;
+  private materialsRepo?:Repository;
+  materialWorkbench(){
+    if(!this.materials||this.materialsRepo!==this.repo){
+      this.materials=new MaterialWorkbenchService({getSetting:key=>this.repo.maybe('settings',key)?.value,setSetting:(key,value)=>this.repo.save('settings',{id:key,value})},{now:()=>this.now().toISOString(),verifyAsset:version=>{try{const asset=this.get('assets',version.assetId),work=this.get('works',version.workId);if(asset.kind!=='audio'||asset.sha256!==version.sha256||work.assets?.['audio_'+version.version]!==asset.id)return false;this.locate(asset.id);return true;}catch{return false;}}});this.materialsRepo=this.repo;
+    }return this.materials;
+  }
   providerTextService(){
     if(!this.providerText||this.providerText.repo!==this.repo)this.providerText=new ProviderTextService(this.repo,{now:this.now});
     return this.providerText;
@@ -611,6 +621,29 @@ export class Studio {
       }
       case "work.save":
         return this.saveWork(v);
+      case 'work.selectAudioVersion':return selectPublicationAudio(this,v);
+      case 'materials.list':return this.materialWorkbench().list();
+      case 'materials.scan':
+      case 'materials.previewScan':return this.materialWorkbench().previewScan(v);
+      case 'materials.updatePreview':return this.materialWorkbench().updatePreview(v);
+      case 'materials.confirmImport':return this.materialWorkbench().confirmImport(v);
+      case 'materials.enqueue':{
+        this.get('artists',v.artistId);
+        const snapshot=this.materialWorkbench().enqueue(v);
+        for(const job of snapshot.jobs.filter(j=>j.requestId===v.requestId))if(!this.repo.maybe('settings','material-job-artist:'+job.id))this.save('settings',{id:'material-job-artist:'+job.id,value:this.get('artists',v.artistId)});
+        return snapshot;
+      }
+      case 'materials.pause':return this.materialWorkbench().pause();
+      case 'materials.resume':return this.materialWorkbench().resume();
+      case 'materials.retry':return this.materialWorkbench().retry(v);
+      case 'materials.reconcile':return this.materialWorkbench().reconcile(v);
+      case 'materials.selectVersion':{
+        const service=this.materialWorkbench(),material=service.list().materials.find(m=>m.id===v.materialId),version=material?.versions.find(x=>x.id===v.versionId);
+        if(!version)throw Error('MATERIAL_VERSION_NOT_FOUND');
+        const work=this.get('works',version.workId);
+        selectPublicationAudio(this,{workId:work.id,expectedRevision:work.revision,version:version.version});
+        return service.selectVersion(v);
+      }
       case "work.version": {
         const w = this.get("works", v.id);
         const r = this.save("revisions", {
@@ -756,10 +789,12 @@ export class Studio {
     return {
       mode: this.mode,
       platformConfigurations: listPlatformConfigurations(this.repo),
+      fanqieCapabilities,
       publicationRequests: listSimplePublicationRequests(this),
       publicationPipelineJobs: this.mode === "production" ? unifiedPublicationService(this).list() : [],
       publicationPendingTerms: listPublicationPendingTerms(this),
       publishSelection: publishSelection(this),
+      materialWorkbench:this.materialWorkbench().list(),
       artists: this.all("artists"),
       accounts: this.all("accounts"),
       bindings: this.all("bindings"),

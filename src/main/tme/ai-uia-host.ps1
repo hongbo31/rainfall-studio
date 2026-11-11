@@ -188,7 +188,9 @@ function Test-EditableContent($node){
 }
 function Test-GeneratedCoverBanner([string]$name){
  # Only a bounded decorative prefix is accepted, never arbitrary prose or a suffix.
- return $name.Trim() -cmatch '^[\p{So}\p{Sk}\p{Co}\p{P}\s\uFE0E\uFE0F]{0,8}已为您生成智能专辑封面$'
+ # U+2139 INFORMATION SOURCE is Unicode Ll, despite rendering as an information icon.
+ # Admit that exact observed icon, not the broad Letter category or arbitrary user prose.
+ return $name.Trim() -cmatch '^[\p{So}\p{Sk}\p{Co}\p{P}\s\u2139\uFE0E\uFE0F]{0,8}已为您生成智能专辑封面$'
 }
 function Get-CoverUiEvidence($nodes){
  $labels=@($nodes|Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::Text -and -not $_.Current.IsOffscreen -and (([string]$_.Current.Name).Trim() -cin @('调整图片','裁剪图片') -or (Test-GeneratedCoverBanner ([string]$_.Current.Name)))})

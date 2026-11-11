@@ -1,13 +1,39 @@
-import test, { before, after } from "node:test";
+import test, { before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
 import { randomUUID, createHash } from "node:crypto";
 import { createRequire } from "node:module";
+import { execFileSync } from "node:child_process";
 import { build } from "esbuild";
 import { chromium } from "playwright-core";
-const dir = path.resolve("output/publish-material-feedback");
+const publishCenterRef = process.env.FEEDBACK_PUBLISH_CENTER_REF;
+if (publishCenterRef && !/^[a-f0-9]{7,40}$/.test(publishCenterRef))
+  throw Error("INVALID_COMPARISON_REF");
+const runTag = process.env.FEEDBACK_RUN_TAG ?? "current";
+if (!/^[a-z0-9-]+$/.test(runTag)) throw Error("INVALID_COMPARISON_TAG");
+const dir = path.resolve("output/publish-material-feedback", runTag);
+const sourcePath = "src/renderer/pages/PublishCenter.tsx";
+const source = publishCenterRef
+  ? execFileSync("git", ["show", publishCenterRef + ":" + sourcePath], {
+      encoding: "utf8",
+    })
+  : fs.readFileSync(sourcePath, "utf8");
+const evidence = {
+  publishCenterRef: publishCenterRef ?? "working-tree",
+  sourceSha256: createHash("sha256").update(source).digest("hex"),
+  testSha256: createHash("sha256")
+    .update(fs.readFileSync("tests/publish-material-feedback-ui.test.mjs"))
+    .digest("hex"),
+  fixtureSha256: createHash("sha256")
+    .update(fs.readFileSync("tests/fixtures/publish-material-feedback-ui.tsx"))
+    .digest("hex"),
+  node: process.version,
+  browser: null,
+  coreSha256: null,
+  tests: [],
+};
 fs.mkdirSync(dir, { recursive: true });
 await build({
   entryPoints: ["src/core/index.ts"],
@@ -24,7 +50,25 @@ await build({
   platform: "browser",
   format: "iife",
   loader: { ".css": "css" },
+  plugins: [
+    {
+      name: "publication-comparison-source",
+      setup(builder) {
+        builder.onLoad(
+          { filter: /[\\/]src[\\/]renderer[\\/]pages[\\/]PublishCenter\.tsx$/ },
+          () => ({
+            contents: source,
+            loader: "tsx",
+            resolveDir: path.resolve("src/renderer/pages"),
+          }),
+        );
+      },
+    },
+  ],
 });
+evidence.coreSha256 = createHash("sha256")
+  .update(fs.readFileSync(path.join(dir, "core.cjs")))
+  .digest("hex");
 const { Studio } = createRequire(import.meta.url)(path.join(dir, "core.cjs"));
 let s,
   work,
@@ -185,10 +229,16 @@ before(async () => {
   origin = "http://127.0.0.1:" + server.address().port;
   browser = await chromium.launch({
     executablePath:
-      process.env.CHROME_PATH ?? ["/usr/bin/chromium", "/usr/bin/google-chrome", "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"].find(p => fs.existsSync(p)),
+      process.env.CHROME_PATH ??
+      [
+        "/usr/bin/chromium",
+        "/usr/bin/google-chrome",
+        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+      ].find((p) => fs.existsSync(p)),
     headless: true,
     args: ["--disable-gpu"],
   });
+  evidence.browser = browser.version();
   page = await browser.newPage({ viewport: { width: 1440, height: 1050 } });
   page.setDefaultTimeout(2000);
   await page.route("**/*", (route) =>
@@ -196,7 +246,31 @@ before(async () => {
   );
   page.on("pageerror", (e) => errors.push(e.message));
 });
+afterEach(async (context) => {
+  evidence.tests.push({
+    name: context.name,
+    calls,
+    externalRequests: s?.externalRequests ?? 0,
+    operations: s?.all("operations").length ?? 0,
+    requests: (s?.snapshot().publicationRequests ?? []).map((r) => ({
+      id: r.id,
+      state: r.state,
+      stale: r.stale,
+    })),
+    pipeline: (s?.snapshot().publicationPipelineJobs ?? []).map((j) => ({
+      state: j.state,
+      reason: j.reason,
+    })),
+    pipelineCards: await page.locator("[data-pipeline-id]").count(),
+    inlineResults: await page.locator(".publication-current-result").count(),
+    materialHistory: await page.locator(".panel.simple-request-list").count(),
+  });
+});
 after(async () => {
+  fs.writeFileSync(
+    path.join(dir, "boundary-evidence.json"),
+    JSON.stringify(evidence, null, 2),
+  );
   await browser?.close();
   await new Promise((r) => server?.close(r));
   s?.close();
@@ -254,6 +328,8 @@ test("click prepares real Core materials beside action and exposes the unavailab
   assert.equal(calls, 1);
   assert.equal(s.all("operations").length, 0);
   assert.equal(s.externalRequests, 0);
+  // Material checks and the durable queue must coexist; neither is an official success.
+  assert.equal(await page.locator("[data-pipeline-id]").count(), 1);
   assert.equal(await result.getAttribute("aria-busy"), "false");
   await page.screenshot({
     path: path.join(dir, "publish-materials-headless.png"),

@@ -1,0 +1,61 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { createRequire } from "node:module";
+import { build } from "esbuild";
+const dir = path.resolve("output/publication-music-tests");
+fs.mkdirSync(dir, { recursive: true });
+await build({
+  entryPoints: ["src/renderer/components/PublicationMusicList.tsx"],
+  outfile: path.join(dir, "list.cjs"),
+  bundle: true,
+  platform: "node",
+  format: "cjs",
+  packages: "external",
+  loader: { ".css": "empty" },
+});
+const { publicationState, readyVersions } = createRequire(import.meta.url)(
+  path.join(dir, "list.cjs"),
+);
+test("ready audio requires an existing real audio record, bytes and hash", () => {
+  const work = { id: "w", assets: { audio_A: "a", audio_B: "b" } };
+  assert.equal(readyVersions({ assets: [] }, work).length, 0);
+  assert.deepEqual(
+    readyVersions(
+      {
+        assets: [
+          { id: "a", kind: "audio", bytes: 44, sha256: "hash" },
+          { id: "b", kind: "audio", bytes: 0, sha256: "hash" },
+        ],
+      },
+      work,
+    ).map((v) => v.version),
+    ["A"],
+  );
+});
+test("status is per platform and local queue never counts as official publication", () => {
+  const job = { workId: "w", targets: ["qqmusic", "kugou"], state: "queued" };
+  assert.equal(
+    publicationState({ publicationPipelineJobs: [job] }, "w", "qqmusic"),
+    "unpublished",
+  );
+  job.state = "published";
+  assert.equal(
+    publicationState({ publicationPipelineJobs: [job] }, "w", "qqmusic"),
+    "unknown",
+  );
+  job.receipt = { source: "official-tencent-review-record" };
+  assert.equal(
+    publicationState({ publicationPipelineJobs: [job] }, "w", "qqmusic"),
+    "published",
+  );
+  assert.equal(
+    publicationState({ publicationPipelineJobs: [job] }, "w", "kugou"),
+    "published",
+  );
+  assert.equal(
+    publicationState({ publicationPipelineJobs: [job] }, "w", "netease"),
+    "unpublished",
+  );
+});

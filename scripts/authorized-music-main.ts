@@ -10,7 +10,7 @@ import {nodeHttpsTransport,type MusicAdapter} from '../src/core/workflow/yourmus
 import {apiProfileSchema} from '../src/shared/api-profiles';
 import {acquireWorkspaceLease} from '../src/main/session-runtime';
 const repo=path.resolve(__dirname,'..'),sessionRoot=path.join(repo,'output/new-song-convenience-20261018');
-const installedPointer=JSON.parse(fs.readFileSync('C:/Users/PUBLIC_USER/AppData/Local/RainfallStudioLauncher/verified-desktop.json','utf8'));
+const installedPointer=JSON.parse(fs.readFileSync('C:/Users/31559/AppData/Local/RainfallStudioLauncher/verified-desktop.json','utf8'));
 // Chromium's Windows encryption key is bound to this existing runtime. Reuse the
 // crypto context directly; never copy its Local State or credential ciphertext.
 app.setPath('userData',path.join(installedPointer.dataRoot,'runtime'));app.disableHardwareAcceleration();

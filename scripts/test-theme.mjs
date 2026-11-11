@@ -9,7 +9,35 @@ const report={passed:false,scope:'actual built React + actual isolated SQLite Co
 try{
  browser=await chromium.launch({executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true,args:['--no-startup-window','--disable-background-networking','--disable-sync','--no-first-run']});const page=await browser.newPage({viewport:{width:1480,height:1050},deviceScaleFactor:1});page.on('pageerror',e=>errors.push(e.message));await page.route('**/*',r=>r.request().url().startsWith(origin+'/')?r.continue():r.abort());
  await page.exposeBinding('__qaRpc',(_source,method,input)=>rpc(method,input));await page.addInitScript(()=>{window.rainfall={call:(method,input={})=>window.__qaRpc(method==='directoryTasks.chooseDirectory'?'__qa.chooseDirectory':method,input),apiCredentialStatus:async({profileId})=>({ok:true,value:{profileId,state:'absent',configured:false}}),checkApiConnection:async()=>({ok:false,error:{code:'QA_NO_NETWORK',message:'离线体验不联网'}}),writeApiCredential:async()=>({ok:false,error:{code:'QA_CREDENTIAL_WRITE_DISABLED',message:'体验环境不保存凭据'}}),clearApiCredential:async()=>({ok:false,error:{code:'QA_CREDENTIAL_WRITE_DISABLED'}}),productionFlow:async()=>({ok:true,value:{plans:[],runs:[]}}),liveText:async()=>({ok:true,value:[]}),liveMusic:async()=>({ok:true,value:null}),setMode:async()=>({ok:false,error:{code:'QA_MODE_FIXED'}})};});
- const shot=async name=>{const file=path.join(out,name+'.png');await page.screenshot({path:file,fullPage:false});screens.push(file);save();};
+ const shot=async name=>{const file=path.join(out,name+'.png');await page.screenshot({path:file,fullPage:false,animations:'disabled'});screens.push(file);save();};
+ await page.goto(origin);
+ const topTheme=page.locator('header').getByRole('group',{name:'主题切换',exact:true});
+ await expect(topTheme).toBeVisible();
+ await topTheme.getByRole('button',{name:'白色',exact:true}).click();
+ await expect(topTheme.getByRole('button',{name:'白色',exact:true})).toHaveAttribute('aria-pressed','true');
+ await page.getByRole('button',{name:'配置中心',exact:true}).click();
+ await page.getByRole('tab',{name:'外观',exact:true}).click();
+ await expect(page.getByRole('radio',{name:'白色主题',exact:true})).toBeChecked();
+ await page.getByRole('radio',{name:'原主题',exact:true}).check();
+ await expect(topTheme.getByRole('button',{name:'原主题',exact:true})).toHaveAttribute('aria-pressed','true');
+ await page.reload();
+ await expect(topTheme.getByRole('button',{name:'原主题',exact:true})).toHaveAttribute('aria-pressed','true');
+ const inactive=page.locator('aside nav button:not(.active)').first();
+ await expect(inactive).toHaveCSS('background-color','rgba(0, 0, 0, 0)');
+ await expect(inactive).toHaveCSS('border-top-color','rgba(0, 0, 0, 0)');
+ await page.getByRole('button',{name:'配置中心',exact:true}).click();
+ await expect(page.locator('.first-setup')).toHaveCSS('border-top-width','0px');
+ await expect(page.locator('.platform-configuration')).toHaveCSS('border-top-width','0px');
+ await expect(page.getByLabel('词作者',{exact:true})).toHaveCSS('border-top-width','1px');
+ await page.getByRole('tab',{name:'外观',exact:true}).click();
+ await expect(page.locator('.first-setup')).not.toBeVisible();
+ for(const width of [1024,1480,2560]) {
+  await page.setViewportSize({width,height:1050});
+  const fits=await page.locator('header').evaluate(el=>{const r=el.getBoundingClientRect();return [...el.children].every(c=>c.getBoundingClientRect().right<=r.right+1)&&document.documentElement.scrollWidth<=innerWidth});
+  assert(fits,'Header and theme switch must fit viewport '+width);
+ }
+ await page.setViewportSize({width:1480,height:1050});
+ checks.push('Visible header theme controls share settings radios and persisted preference; quiet navigation and flat configuration preserve input borders; header fits 1024–2560');
  await page.goto(origin);assert.equal(await page.locator('html').getAttribute('data-theme'),'original');await expect(page.locator('body')).toHaveCSS('background-color','rgb(16, 16, 21)');
  await page.getByRole('button',{name:'配置中心',exact:true}).click();await page.getByRole('tab',{name:'外观',exact:true}).click();await page.getByRole('radio',{name:'白色主题',exact:true}).check();await expect(page.locator('html')).toHaveAttribute('data-theme','white');await expect(page.locator('body')).toHaveCSS('background-color','rgb(244, 247, 252)');await page.reload();await expect(page.locator('html')).toHaveAttribute('data-theme','white');checks.push('Explicit white preference survives full renderer reload');
  for(const theme of ['white','original']){

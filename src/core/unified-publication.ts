@@ -50,7 +50,7 @@ export class UnifiedPublicationService{
   });
  })}
  claim(raw:unknown){const i=z.strictObject({id:z.uuid(),expectedRevision:z.number().int().positive()}).parse(raw);return this.repo.transaction(()=>{
-  const task=this.get(i.id);if(task.revision!==i.expectedRevision)throw Error('REVISION_CONFLICT');
+  const task=this.get(i.id);if(task.targets?.includes('fanqie'))throw Error('FANQIE_BROWSER_RUNTIME_UNAVAILABLE');if(task.revision!==i.expectedRevision)throw Error('REVISION_CONFLICT');
   if(task.targets?.some((t:string)=>['qqmusic','kugou'].includes(t))&&externalTmeReceipt(this.repo,task.workId,task.audioSha))throw Error('OFFICIAL_RECORD_ALREADY_EXISTS');
   if(task.reason==='AI_PREPARATION_NOT_APPLICABLE')throw Error('AI_PREPARATION_NOT_APPLICABLE');
   if(task.reason==='PROTECTED_PUBLISHED_WORK')throw Error('PROTECTED_PUBLISHED_WORK');
@@ -59,7 +59,7 @@ export class UnifiedPublicationService{
   this.options.verify(task);return this.patch(task,{state:'preparing',dispatchedAt:this.stamp(),reason:null});
  })}
  update(raw:unknown){const i=z.strictObject({id:z.uuid(),expectedRevision:z.number().int().positive(),patch:z.strictObject({state:states.optional(),reason:z.string().max(160).nullable().optional(),prepareJobId:z.uuid().optional(),submissionJobId:z.uuid().optional()})}).parse(raw);return this.repo.transaction(()=>{
-  const task=this.get(i.id);if(task.revision!==i.expectedRevision)throw Error('REVISION_CONFLICT');
+  const task=this.get(i.id);if(task.targets?.includes('fanqie'))throw Error('FANQIE_BROWSER_RUNTIME_UNAVAILABLE');if(task.revision!==i.expectedRevision)throw Error('REVISION_CONFLICT');
   if(i.patch.state&&terminal.has(i.patch.state))throw Error('OFFICIAL_RECEIPT_REQUIRED');
   if(task.state==='reconcile_required'&&i.patch.state&&i.patch.state!=='reconcile_required')throw Error('PUBLICATION_RECONCILIATION_REQUIRED');
   if(task.dispatchedAt&&i.patch.state==='queued')throw Error('PUBLICATION_RECONCILIATION_REQUIRED');
@@ -67,7 +67,7 @@ export class UnifiedPublicationService{
   return this.patch(task,i.patch);
  })}
  linkReviewed(raw:unknown){const i=z.strictObject({id:z.uuid(),expectedRevision:z.number().int().positive(),prepareJobId:z.uuid(),submissionJobId:z.uuid()}).parse(raw);return this.repo.transaction(()=>{
-  const task=this.get(i.id);if(task.revision!==i.expectedRevision)throw Error('REVISION_CONFLICT');
+  const task=this.get(i.id);if(task.targets?.includes('fanqie'))throw Error('FANQIE_BROWSER_RUNTIME_UNAVAILABLE');if(task.revision!==i.expectedRevision)throw Error('REVISION_CONFLICT');
   if(task.reason==='AI_PREPARATION_NOT_APPLICABLE')throw Error('AI_PREPARATION_NOT_APPLICABLE');
   if(task.reason==='PROTECTED_PUBLISHED_WORK')throw Error('PROTECTED_PUBLISHED_WORK');
   const prepared=this.repo.maybe('settings','tme-ai-prepare:job:'+i.prepareJobId)?.value;

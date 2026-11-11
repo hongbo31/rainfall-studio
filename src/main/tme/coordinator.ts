@@ -1,3 +1,4 @@
+import {assertPublicationUploadReceipt,readPublicationAfterRecovery} from '../../core/publication-foundation';
 import type {TmeAsset,TmeDraft,TmeIdentity,TmeRemote} from '../../shared/tme';
 export type UploadRole='audio'|'cover'|'proof';
 export type Observation={identity:TmeIdentity|null;contractVerified:boolean;blockedReason:string|null;source:'browser'|'fixture'};
@@ -33,7 +34,7 @@ export class TmeCoordinator{
   const update=async(p:Partial<TmeDraft>)=>d=await this.store.update(d.id,d.revision,p);
   const guard=async()=>{
    await this.store.assertCurrent(d);
-   const observed=await this.browser.observe(d);
+   const observed=await readPublicationAfterRecovery(()=>this.browser.observe(d));
    if(!observed.contractVerified)throw Error('PAGE_CONTRACT_UNVERIFIED');
    if(observed.blockedReason)throw Error(observed.blockedReason);
    if(!identityEqual(observed.identity,authorization.identity))throw Error('ACCOUNT_CHANGED');
@@ -73,7 +74,7 @@ export class TmeCoordinator{
     const asset=d.assets[role];if(!asset)throw Error('ASSET_MISSING');
     await update({state:'UPLOADING',pendingAction:role});await guard();
     const receipt=await this.browser.upload(role,asset);
-    if(!receipt.remoteId||receipt.sha256!==asset.sha256)throw Error('UPLOAD_NOT_VERIFIED');
+    assertPublicationUploadReceipt(receipt,asset.sha256,'UPLOAD_NOT_VERIFIED');
     await update({uploads:{...d.uploads,[role]:receipt},pendingAction:null});
    }
    await update({state:'SAVING',pendingAction:'save'});await guard();await this.browser.saveDraft();

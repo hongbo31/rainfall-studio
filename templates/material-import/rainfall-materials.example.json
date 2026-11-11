@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "materials": [
+    {
+      "sourceKey": "stable-song-001",
+      "title": "待确认歌曲标题",
+      "lyricsPath": "普通目录模板/待填写歌曲名/lyrics.txt",
+      "stylePath": "普通目录模板/待填写歌曲名/style.txt",
+      "coverPath": "普通目录模板/待填写歌曲名/cover.png"
+    }
+  ]
+}

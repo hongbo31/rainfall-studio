@@ -3,6 +3,31 @@
 @import "./desktop.css" layer(desktop);
 @import "./simple-publishing.css" layer(workflows);
 
+/* Action controls share one size; navigation and icon help retain their own roles. */
+:is(.button-row, .actions, .toolbar) > button,
+.panel > button:not(.asset-card):not(.work-card),
+.cover-studio button:not(.asset-card):not(.help-note-trigger) {
+  min-height: 40px;
+  padding: 9px 14px;
+  font-size: 14px;
+  line-height: 20px;
+  border-radius: 8px;
+}
+.button-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.help-note .help-note-trigger {
+  min-height: 32px;
+  padding: 6px 4px;
+  font-size: 12px;
+  line-height: 20px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+.help-note .help-note-trigger:hover { color: var(--text); background: var(--control-hover); border-color: transparent; }
+.configuration-center { max-width: 1240px; margin-inline: auto; }
+.configuration-guide { margin: 0 0 20px; }
+.configuration-guide > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+
 /* The plan theme has an unlayered muted rule. Keep this card's help text readable. */
 .cover-handoff .muted { color: var(--muted); }
 

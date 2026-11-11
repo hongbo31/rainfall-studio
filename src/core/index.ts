@@ -1,5 +1,10 @@
 import {recordPlanModelEvidence,invalidatePlanModelEvidence} from './plan-center-models';
 import {executeInternalPlanAlbums} from './plan-albums-integration';
+import {prepareMaterialWork,importMaterialAudio,completeMaterialJob} from './material-integration';
+export {prepareMaterialWork,importMaterialAudio,completeMaterialJob};
+export {materialDraft} from './material-integration';
+export {offlineAcceptanceEnabled} from '../shared/offline-acceptance';
+export {MaterialWorkbenchService} from './material-workbench';
 import {executeUnifiedPublication} from "./unified-publication-integration";
 import { materialEntries } from "./materials";
 export { materialEntries };
@@ -16,6 +21,7 @@ import type {MusicAdapter} from './workflow/yourmusic';
 import {ProductionFlowSchemas} from '../shared/production-flow';
 import {importProductionAudio} from './production-integration';
 import {executeTmeAiPrepare} from './tme-ai-prepare-integration';
+import {resolveFanqieWork} from './fanqie-work';
 import {executeTmeAiSubmission} from './tme-ai-submission-integration';
 import {createAccountIdentityBridge} from './account-identity-channel';
 export { Studio };
@@ -136,6 +142,18 @@ if (port) {
   );
   let chain = Promise.resolve().then(() => studio.scanInbox());
   const execute = async (method: string, input: any) => {
+    if(method.startsWith('internal.materials.')){
+      const action=method.slice('internal.materials.'.length),service=studio.materialWorkbench();
+      if(action==='prepareWork')return prepareMaterialWork(studio,input);
+      if(action==='importAudio')return importMaterialAudio(studio,input);
+      if(action==='completeJob')return completeMaterialJob(studio,input);
+      if(action==='configure')return service.configure(input);
+      if(action==='coverPath')return service.coverPath(input);
+        if(action==='previewCoverPath')return service.previewCoverPath(input);
+        if(action==='previewRebind')return service.previewScan(input);
+      if(['claimNext','getJobContext','recordSubmitted','recordProgress','recordFailure'].includes(action))return (service as any)[action](input);
+      return studio.call('materials.'+action,input);
+    }
     if(method.startsWith('internal.accountIdentity.')){if(studio.mode!=='production')throw Error('PRODUCTION_REQUIRED');return studio.accountIdentityService().execute(method.slice('internal.accountIdentity.'.length),input);}
     if(method.startsWith('internal.providerText.')){
       if(studio.mode!=='production')throw Error('PRODUCTION_REQUIRED');
@@ -208,6 +226,7 @@ if (port) {
       studio.close();
       return true;
     }
+    if (method === 'internal.fanqie.work') return resolveFanqieWork(studio,input);
     if (method === "internal.locate") return studio.locate(input.id);
     if (method === 'internal.tme.get') return studio.tmeDraftService().get(input.id);
     if (method === 'internal.tme.list') return studio.tmeDraftService().list();

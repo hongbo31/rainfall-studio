@@ -1,0 +1,41 @@
+/* Cover editing follows one path: choose a work, import, preview, export. */
+.cover-studio { max-width: 1240px; margin-inline: auto; }
+.cover-studio .page-head { margin-bottom: 24px; }
+.cover-studio .page-head .help-note { margin: 0; }
+.cover-workspace { display: grid; grid-template-columns: minmax(300px, .85fr) minmax(360px, 1.15fr); gap: 24px; align-items: start; }
+.cover-workspace > .panel { margin: 0; min-width: 0; padding: 24px; }
+.cover-studio h2 { margin: 0 0 20px; }
+.cover-studio .section-title { margin: 0 0 20px; }
+.cover-studio .section-title h2 { margin: 0; }
+.cover-story { color: var(--muted); }
+.cover-studio .pills { margin: 0 0 24px; gap: 8px; }
+.cover-studio .pills span { background: var(--bg); color: var(--muted); }
+.cover-import-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding-bottom: 24px; }
+.cover-import-row > span { font-size: 12px; color: var(--muted); }
+.cover-options, .cover-studio .cover-handoff { margin: 0; padding: 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent; }
+.cover-studio summary { cursor: pointer; padding: 16px 0; font-size: 14px; font-weight: 500; color: var(--text); }
+.cover-options-body { padding: 4px 0 8px; }
+.cover-studio .cover-handoff :is(h3, label) { color: var(--text); }
+.cover-studio .cover-handoff .help-note { display: inline-flex; margin: 8px 0 16px; }
+.cover-studio .cover-handoff > .cover-options-body > button { display: block; }
+.cover-studio .cover-handoff .handoff-receipt { flex-wrap: wrap; }
+.cover-preview-panel > .cover { width: min(100%, 360px); height: auto; aspect-ratio: 1; margin-inline: auto; }
+.cover-preview-panel > .cover img { width: 100%; height: 100%; object-fit: contain; }
+.cover-image-meta { text-align: center; color: var(--muted); font-size: 12px; margin: 12px 0 24px; }
+.cover-export { border-top: 1px solid var(--line); padding-top: 20px; margin-top: 20px; }
+.cover-export h3 { margin: 0 0 16px; font-size: 14px; }
+.cover-export .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.cover-export-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.cover-export-actions .help-note { margin: 0; }
+.cover-studio .cover-versions { margin-top: 24px; padding: 24px; }
+.cover-versions .asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 160px)); gap: 16px; }
+.cover-versions .asset-card { padding: 10px; text-align: left; }
+.cover-versions .asset-card img { width: 100%; aspect-ratio: 1; object-fit: cover; }
+.cover-versions .asset-card small { color: var(--muted); }
+@media (max-width: 960px) {
+  .cover-workspace { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .cover-workspace > .panel, .cover-studio .cover-versions { padding: 20px; }
+}
+@media (max-width: 480px) {
+  .cover-export .form-grid { grid-template-columns: minmax(0, 1fr); }
+}

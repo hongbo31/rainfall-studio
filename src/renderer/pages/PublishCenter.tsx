@@ -1,3 +1,4 @@
+import PublicationMusicList from "../components/PublicationMusicList";
 import React, { useEffect, useRef, useState } from "react";
 import { useStudio, PageHead, Badge, names, label } from "../context";
 import HelpHint from "../components/HelpHint";
@@ -40,12 +41,19 @@ export default function PublishCenter() {
   );
   const selection = publishSelection ?? fallback;
   const [query, setQuery] = useState(""),
-    [queueTaskId,setQueueTaskId]=useState(''),
-    [queueAccountId,setQueueAccountId]=useState(''),
+    [queueTaskId, setQueueTaskId] = useState(""),
+    [queueAccountId, setQueueAccountId] = useState(""),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [message, setMessage] = useState("");
   const inFlight = useRef(false);
+  const [fanqieState,setFanqieState]=useState<any>(null),[fanqieConfigured,setFanqieConfigured]=useState(false);
+  const [channelResults,setChannelResults]=useState<string[]>([]);
+  useEffect(()=>{let active=true;setFanqieState(null);setFanqieConfigured(false);if(data.mode==='production'&&window.rainfall?.fanqieUpload){
+    void window.rainfall.fanqieUpload('status').then(r=>{if(active&&r.ok)setFanqieState(r.value)}).catch(()=>{});
+    void window.rainfall.fanqieUpload('configuration').then(r=>{if(active&&r.ok)setFanqieConfigured(!!r.value.configuration)}).catch(()=>{});
+  }return()=>{active=false};},[data.mode]);
+  useEffect(()=>{if(!busy||!selection.targets.includes('fanqie'))return;let active=true;const timer=setInterval(()=>{void window.rainfall.fanqieCatalog('status').then(r=>{if(active&&r.ok&&r.value.progress)setMessage('番茄音乐：'+r.value.progress)}).catch(()=>{});},1200);return()=>{active=false;clearInterval(timer)};},[busy,data.mode]);
   const [currentResult, setCurrentResult] = useState<{
     requests: SimplePublicationRequest[];
     reused: boolean;
@@ -62,8 +70,8 @@ export default function PublishCenter() {
     }
   }, [currentResult]);
   useEffect(() => {
-    setQueueTaskId('');
-    setQueueAccountId('');
+    setQueueTaskId("");
+    setQueueAccountId("");
     setCurrentResult(null);
     setError("");
     setMessage("");
@@ -96,10 +104,30 @@ export default function PublishCenter() {
     setError("");
     setMessage("");
     setCurrentResult(null);
+    setChannelResults([]);
     const submittedScope = currentScope;
     try {
       await save(selection);
-      const result = await call("publish.simple", selection);
+      if(selection.targets.includes('fanqie')){
+        if(data.mode!=='production')throw Error('番茄音乐暂不提供模拟发布');
+        const config=await window.rainfall.fanqieUpload('configuration');
+        if(!config.ok)throw Error(config.error.message);
+        if(!config.value.configuration)throw Error('请先在配置中心保存番茄音乐设置');
+        for(const workId of selection.workIds){
+          if(scopeRef.current!==submittedScope)return;
+          const work=data.works.find((w:any)=>w.id===workId);if(!work)throw Error('作品已变化，请重新选择');
+          setMessage('番茄音乐：正在处理《'+work.title+'》');
+          const uploaded=await window.rainfall.fanqieUpload('publishConfigured',{workId,variant:work.selectedAudioVariant==='B'?'B':'A'});
+          if(!uploaded.ok){const status=await window.rainfall.fanqieUpload('status');if(status.ok)setFanqieState(status.value);throw Error(uploaded.error.message);}
+          setFanqieState(uploaded.value);
+          const outcome=uploaded.value.result;
+          if(!outcome?.uploaded&&!outcome?.matches?.length)throw Error('番茄结果待核对，后续作品已暂停');
+          setChannelResults(rows=>[...rows,`${work.title} · 番茄音乐 · ${outcome.uploaded?outcome.officialRecord.officialStatus:'官网已有同名作品，已跳过上传'}`]);
+        }
+      }
+      const otherTargets=selection.targets.filter(t=>t!=='fanqie');
+      if(!otherTargets.length){setMessage('番茄处理完成，请查看发布记录');return;}
+      const result = await call("publish.simple", {...selection,targets:otherTargets});
       if (scopeRef.current !== submittedScope) return;
       setCurrentResult({
         requests: result.requests ?? [],
@@ -116,7 +144,7 @@ export default function PublishCenter() {
     } catch (e: any) {
       if (scopeRef.current === submittedScope)
         setError(
-          "材料准备失败：" + (e instanceof Error ? e.message : "请重试"),
+          "发布未完成：" + (e instanceof Error ? e.message : "请重试"),
         );
     } finally {
       inFlight.current = false;
@@ -169,8 +197,12 @@ export default function PublishCenter() {
     pipelineJobs.set(job.id, job);
   for (const job of data.publicationPipelineJobs ?? [])
     pipelineJobs.set(job.id, job);
-  const queuedJobs=[...pipelineJobs.values()];
-  const pipeline = queuedJobs.filter((job:any)=>(!queueTaskId||job.id===queueTaskId)&&(!queueAccountId||job.accountId===queueAccountId));
+  const queuedJobs = [...pipelineJobs.values()];
+  const pipeline = queuedJobs.filter(
+    (job: any) =>
+      (!queueTaskId || job.id === queueTaskId) &&
+      (!queueAccountId || job.accountId === queueAccountId),
+  );
   const activePipeline = queuedJobs.some((job: any) =>
     ["queued", "preparing", "awaiting_authorization"].includes(job.state),
   );
@@ -217,51 +249,13 @@ export default function PublishCenter() {
                 onChange={(e) => setQuery(e.target.value)}
               />
             </label>
-            <div className="simple-song-list">
-              {data.works
-                .filter((work: any) =>
-                  work.title
-                    .toLocaleLowerCase()
-                    .includes(query.toLocaleLowerCase()),
-                )
-                .map((work: any) => (
-                  <label
-                    className={
-                      "simple-song" +
-                      (selection.workIds.includes(work.id)
-                        ? " is-selected"
-                        : "")
-                    }
-                    key={work.id}
-                  >
-                    <input
-                      type="checkbox"
-                      aria-label={"选择歌曲：" + work.title}
-                      checked={selection.workIds.includes(work.id)}
-                      onChange={() =>
-                        change({
-                          ...selection,
-                          workIds: selection.workIds.includes(work.id)
-                            ? selection.workIds.filter((id) => id !== work.id)
-                            : [...selection.workIds, work.id],
-                        })
-                      }
-                    />
-                    <span>
-                      <b>{work.title}</b>
-                      <small>
-                        {data.artists.find(
-                          (artist: any) => artist.id === work.artistId,
-                        )?.name ?? "未设艺人"}{" "}
-                        · {work.assets?.audio_A ? "音频 A" : "缺少音频 A"}
-                      </small>
-                    </span>
-                  </label>
-                ))}
-            </div>
-            {!data.works.length && (
-              <button onClick={() => go("create")}>去创作</button>
-            )}
+            <PublicationMusicList
+              selection={selection}
+              onChange={change}
+              query={query}
+              busy={busy}
+              onVersionBusy={setBusy}
+            />
           </div>
           <div className="target-choice">
             <h2>2 · 选择平台</h2>
@@ -290,6 +284,10 @@ export default function PublishCenter() {
                           type="checkbox"
                           aria-label={"发布到 " + names[target]}
                           checked={chosen}
+                          disabled={
+                            target==='fanqie'?data.mode!=='production':data.mode !== "simulation" &&
+                            !["qqmusic", "kugou"].includes(target)
+                          }
                           onChange={() =>
                             change({
                               ...selection,
@@ -306,13 +304,13 @@ export default function PublishCenter() {
                       <HelpHint label="平台说明">
                         {target === "douyin"
                           ? "使用作品已有视频。"
-                          : "使用原音频 A、已选封面和已有歌词。"}
-                        正式提交前需逐首确认当前条款。
+                          : "使用所选音频版本、已选封面和已有歌词。"}
+                        {target==='fanqie'?'自动上传至待授权，合同在官网处理。':'正式提交前需逐首确认当前条款。'}
                       </HelpHint>
                     </div>
                     <div className="simple-target-meta">
                       <span>
-                        {data.mode === "simulation"
+                        {target==='fanqie'?(fanqieConfigured?'已配置 · 自动上传':'待配置'):data.mode === "simulation"
                           ? "模拟"
                           : ["qqmusic", "kugou"].includes(target)
                             ? "腾讯 AI 投稿"
@@ -325,7 +323,7 @@ export default function PublishCenter() {
                         {"配置 " + names[target]}
                       </button>
                     </div>
-                    {chosen &&
+                    {chosen && target!=='fanqie' &&
                       (accounts.length ? (
                         <label className="target-account">
                           发布账号
@@ -367,14 +365,20 @@ export default function PublishCenter() {
           <button
             className="primary"
             disabled={
-              busy || !selection.workIds.length || !selection.targets.length
+              busy ||
+              !selection.workIds.length ||
+              !selection.targets.length ||
+              (data.mode !== "simulation" &&
+                selection.targets.some(
+                  (target) => !["fanqie", "qqmusic", "kugou"].includes(target),
+                ))
             }
             onClick={() => void publish()}
           >
             {busy
-              ? "正在准备材料…"
+              ? "正在发布…"
               : error
-                ? "重试准备"
+                ? "重新发布"
                 : data.mode === "simulation"
                   ? "发布（模拟）"
                   : "发布"}
@@ -393,7 +397,9 @@ export default function PublishCenter() {
             </span>
           )}
         </div>
-        {currentResult && !queuedJobs.length && (
+        {channelResults.map((text,index)=><p role="status" key={index}>{text}</p>)}
+        {!!fanqieState?.jobs?.length&&<section className="publication-current-result" aria-label="番茄发布记录"><h3>发布记录</h3>{fanqieState.jobs.map((job:any)=><div className="publication-channel-result" key={job.id}><span><b>{job.title}</b> · 番茄音乐 · {job.officialRecord?.officialStatus??(job.phase==='unknown'?'待核对':'处理中')}{job.officialRecord&&` · ${job.officialRecord.id}`}</span><button disabled={busy} onClick={async()=>{if(inFlight.current)return;inFlight.current=true;setBusy(true);try{const r=await window.rainfall.fanqieUpload('reconcile',{id:job.id});if(!r.ok)throw Error(r.error.message);setFanqieState(r.value);}catch(e:any){setError(e.message)}finally{inFlight.current=false;setBusy(false)}}}>更新状态</button></div>)}</section>}
+        {currentResult && (
           <section
             className="publication-current-result"
             ref={resultRef}
@@ -429,86 +435,130 @@ export default function PublishCenter() {
           </section>
         )}
       </section>
-      {!!queuedJobs.length&&<section className="publication-queue-filters" aria-label="发布队列筛选">
-        <label>发布任务<select data-testid="publication-task-filter" value={queueTaskId} onChange={event=>setQueueTaskId(event.target.value)}><option value="">全部任务</option>{queuedJobs.map((job:any)=><option key={job.id} value={job.id}>{job.title} · {(data.accounts??[]).find((account:any)=>account.id===job.accountId)?.name??'未指定账号'}</option>)}</select></label>
-        <label>发布账号<select data-testid="publication-account-filter" value={queueAccountId} onChange={event=>setQueueAccountId(event.target.value)}><option value="">全部账号</option>{[...new Set<string>(queuedJobs.map((job:any)=>job.accountId).filter(Boolean))].map(id=><option key={id} value={id}>{(data.accounts??[]).find((account:any)=>account.id===id)?.name??'账号待核对'}</option>)}</select></label>
-      </section>}
+      {!!queuedJobs.length && (
+        <section
+          className="publication-queue-filters"
+          aria-label="发布队列筛选"
+        >
+          <label>
+            发布任务
+            <select
+              data-testid="publication-task-filter"
+              value={queueTaskId}
+              onChange={(event) => setQueueTaskId(event.target.value)}
+            >
+              <option value="">全部任务</option>
+              {queuedJobs.map((job: any) => (
+                <option key={job.id} value={job.id}>
+                  {job.title} ·{" "}
+                  {(data.accounts ?? []).find(
+                    (account: any) => account.id === job.accountId,
+                  )?.name ?? "未指定账号"}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            发布账号
+            <select
+              data-testid="publication-account-filter"
+              value={queueAccountId}
+              onChange={(event) => setQueueAccountId(event.target.value)}
+            >
+              <option value="">全部账号</option>
+              {[
+                ...new Set<string>(
+                  queuedJobs.map((job: any) => job.accountId).filter(Boolean),
+                ),
+              ].map((id) => (
+                <option key={id} value={id}>
+                  {(data.accounts ?? []).find(
+                    (account: any) => account.id === id,
+                  )?.name ?? "账号待核对"}
+                </option>
+              ))}
+            </select>
+          </label>
+        </section>
+      )}
       {!!pipeline.length && (
         <PublicationPipelineProgress
           jobs={pipeline}
           data={data}
           onRefresh={refresh}
-          onReconcile={(id) => call("publish.reconcile", {id})}
+          onReconcile={(id) => call("publish.reconcile", { id })}
           onTrack={(id) => go("track", id)}
           onConfigure={(target) => void configure(target)}
         />
       )}
-      {!!queuedJobs.length&&!pipeline.length&&<p role="status">没有符合筛选的发布任务。</p>}
-      {!queuedJobs.length && (requests.length > 0 || pendingTerms.length > 0) && (
-        <section className="panel simple-request-list" aria-label="发布任务">
-          <h2>发布任务</h2>
-          {pendingTerms.map((term) => (
-            <article className="simple-request" key={"terms-" + term.id}>
-              <div className="simple-request-heading">
-                <b>
-                  {term.title} · {term.platformLabel}
-                </b>
-                <Badge>待条款确认 · 未接受条款</Badge>
-              </div>
-              <details>
-                <summary>查看条款</summary>
-                <pre>{term.termsText}</pre>
-              </details>
-            </article>
-          ))}
-          {requests.map((request) => (
-            <article
-              className="simple-request"
-              key={request.id}
-              data-request-id={request.id}
-            >
-              <div className="simple-request-heading">
-                <b>
-                  {request.title} · {names[request.target]}
-                </b>
-                <Badge>
-                  {request.stale
-                    ? "资料已变化 · 请重新检查"
-                    : request.state === "ready" &&
-                        request.source !== "simulation"
-                      ? "未接通"
-                      : (states[request.state] ?? request.summary)}
-                </Badge>
-              </div>
-              <div className="simple-request-meta">
-                <small>
-                  {request.source === "simulation" ? "模拟" : "本地检查"} ·{" "}
-                  {request.summary}
-                </small>
-                <button
-                  className="text-button"
-                  onClick={() => void configure(request.configurationTarget)}
-                >
-                  {"配置 " + names[request.configurationTarget]}
-                </button>
-              </div>
-              {!!request.issues.length && (
-                <details>
-                  <summary>查看问题</summary>
-                  <ul>
-                    {request.issues.map((issue, index) => (
-                      <li key={index}>{issue}</li>
-                    ))}
-                  </ul>
-                  <button onClick={() => go("track", request.workId)}>
-                    查看素材
-                  </button>
-                </details>
-              )}
-            </article>
-          ))}
-        </section>
+      {!!queuedJobs.length && !pipeline.length && (
+        <p role="status">没有符合筛选的发布任务。</p>
       )}
+      {(requests.length > 0 || pendingTerms.length > 0) && (
+          <section className="panel simple-request-list" aria-label="发布任务">
+            <h2>发布任务</h2>
+            {pendingTerms.map((term) => (
+              <article className="simple-request" key={"terms-" + term.id}>
+                <div className="simple-request-heading">
+                  <b>
+                    {term.title} · {term.platformLabel}
+                  </b>
+                  <Badge>待条款确认 · 未接受条款</Badge>
+                </div>
+                <details>
+                  <summary>查看条款</summary>
+                  <pre>{term.termsText}</pre>
+                </details>
+              </article>
+            ))}
+            {requests.map((request) => (
+              <article
+                className="simple-request"
+                key={request.id}
+                data-request-id={request.id}
+              >
+                <div className="simple-request-heading">
+                  <b>
+                    {request.title} · {names[request.target]}
+                  </b>
+                  <Badge>
+                    {request.stale
+                      ? "资料已变化 · 请重新检查"
+                      : request.state === "ready" &&
+                          request.source !== "simulation"
+                        ? "未接通"
+                        : (states[request.state] ?? request.summary)}
+                  </Badge>
+                </div>
+                <div className="simple-request-meta">
+                  <small>
+                    {request.source === "simulation" ? "模拟" : "本地检查"} ·{" "}
+                    {request.summary}
+                  </small>
+                  <button
+                    className="text-button"
+                    onClick={() => void configure(request.configurationTarget)}
+                  >
+                    {"配置 " + names[request.configurationTarget]}
+                  </button>
+                </div>
+                {!!request.issues.length && (
+                  <details>
+                    <summary>查看问题</summary>
+                    <ul>
+                      {request.issues.map((issue, index) => (
+                        <li key={index}>{issue}</li>
+                      ))}
+                    </ul>
+                    <button onClick={() => go("track", request.workId)}>
+                      查看素材
+                    </button>
+                  </details>
+                )}
+              </article>
+            ))}
+          </section>
+        )}
     </div>
   );
 }

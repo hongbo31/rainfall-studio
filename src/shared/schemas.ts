@@ -1,4 +1,5 @@
 import {AccountIdentityPublicActions} from './account-identity';
+import {MaterialMethods} from './material-methods';
 import {GenerationConfigSchemas} from './generation-config';
 import { z } from "zod";
 import {DirectoryTaskSchemas} from './directory-tasks';
@@ -33,6 +34,8 @@ export const defaultsSchema = z
 const obj = z.record(z.string(), z.unknown());
 const recordingSelections = z.array(z.strictObject({workId:id,slot:z.enum(['audio_A','audio_B'])})).max(200);
 export const methodSchemas: Record<string, z.ZodType> = {
+  ...MaterialMethods,
+  'work.selectAudioVersion':z.strictObject({workId:z.uuid(),expectedRevision:z.number().int().positive(),version:z.enum(['A','B'])}),
   ...GenerationConfigSchemas,
   ...Object.fromEntries(Object.entries(AccountIdentityPublicActions).map(([action,schema])=>['accountIdentity.'+action,schema])),
   ...DirectoryTaskSchemas,

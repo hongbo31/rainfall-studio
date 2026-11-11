@@ -1,3 +1,4 @@
+import {publicationRecordingKey,nextPublicationCheckpoint,interruptedPublicationState,tmePreparationPhases,publicationPhase,auditPublicationTransition} from './publication-foundation';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {hash,type Repository,type Row} from './database';
@@ -16,7 +17,7 @@ export class TmeAiPrepareService {
  constructor(readonly repo:Repository,readonly options:Options={}){
   repo.transaction(()=>{
    for(const op of repo.all('operations').filter(o=>o.kind==='tme_ai_prepare'&&o.state==='dispatching')){
-    repo.save('operations',{...op,state:'unknown',reason:'INTERRUPTED_NATIVE_ACTION'});
+    repo.save('operations',{...op,state:interruptedPublicationState(op.state,tmePreparationPhases,'unknown'),reason:'INTERRUPTED_NATIVE_ACTION'});
     const job=this.maybe('job',op.jobId);
     if(job&&job.operationId===op.id)this.patch(job,{state:'reconcile_required',reason:'INTERRUPTED_NATIVE_ACTION'});
    }
@@ -28,7 +29,7 @@ export class TmeAiPrepareService {
  private get(kind:string,id:string):Row{const value=this.maybe(kind,id);if(!value)throw Error('NOT_FOUND');return value}
  private put(kind:string,value:Row){this.repo.save('settings',{id:prefix+kind+':'+value.id,value});return value}
  private rows(kind:string){return this.repo.all('settings').filter(r=>r.id.startsWith(prefix+kind+':')).map(r=>r.value)}
- private patch(job:Row,change:Row){return this.put('job',{...job,...change,revision:job.revision+1,updatedAt:this.stamp()})}
+ private patch(job:Row,change:Row){const value=nextPublicationCheckpoint(job as Row & {revision:number},{...change,updatedAt:this.stamp()});this.put('job',value);auditPublicationTransition(this.repo,{platform:'tme',id:value.id,state:value.state,revision:value.revision,reason:value.reason});return value}
  private fresh(stamp:string){const age=this.now().getTime()-new Date(stamp).getTime();if(!Number.isFinite(age)||age< -5000||age>5*60*1000)throw Error('IDENTITY_OR_SNAPSHOT_STALE')}
  private identity(identity:unknown,expected?:Row){
   const i=TmeAiPrepareIdentitySchema.parse(identity);this.fresh(i.observedAt);
@@ -57,7 +58,7 @@ export class TmeAiPrepareService {
    if(input.metadata.artistName!==input.identity.artistName)throw Error('ARTIST_IDENTITY_SCOPE');
    const inputHash=hash(input),old=this.maybe('grant',input.id);
    if(old){if(old.inputHash!==inputHash)throw Error('GRANT_CONFLICT');return old}
-   const familyKey=hash([input.identity.subjectHash,input.sourceAudio.sha256]);
+   const familyKey=publicationRecordingKey('tme',input.identity.subjectHash,input.sourceAudio.sha256);
    if(this.rows('grant').some(g=>g.familyKey===familyKey))throw Error('FAMILY_ALREADY_REGISTERED');
    if(this.rows('grant').some(g=>g.input.workId===input.workId&&g.input.identity.subjectHash===input.identity.subjectHash))throw Error('WORK_ALREADY_REGISTERED');
    const grant={id:input.id,revision:1,input,inputHash,familyKey,createdAt:this.stamp()};
@@ -85,7 +86,7 @@ export class TmeAiPrepareService {
    const job=this.get('job',i.id),grant=this.get('grant',job.grantId);
    if(grant.suspended||job.reason==='RESTORED_REQUIRES_REVIEW')throw Error('RESTORED_REQUIRES_REVIEW');
    if(job.revision!==i.expectedRevision)throw Error('REVISION_CONFLICT');
-   if(job.state==='reconcile_required')throw Error('RECONCILIATION_REQUIRED');
+   if(publicationPhase(job.state,tmePreparationPhases)==='unknown')throw Error('RECONCILIATION_REQUIRED');
    if(job.state!=='ready'||job.step!==i.step)throw Error('PREPARE_STEP_SCOPE');
    if(i.step==='advance_to_terms'&&!job.localAlbumSnapshot?.localVerified)throw Error('LOCAL_ALBUM_SNAPSHOT_REQUIRED');
    this.snapshot(i.before,grant);this.write(grant,i.step,job.id);this.assets(grant);

@@ -1,6 +1,6 @@
 {
   "name": "rainfall-studio",
-  "version": "0.12.0-preview.4",
+  "version": "0.12.0-preview.5",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,6 +12,8 @@
     "desktop:package": "npm run desktop:build && electron-forge package",
     "desktop:make": "npm run desktop:build && electron-forge make",
     "typecheck": "tsc --noEmit",
+    "test:fanqie": "node scripts/test-fanqie.mjs",
+    "test:credential-ui": "node scripts/test-credential-ui.mjs",
     "test:unit": "node scripts/run-tests.mjs",
     "test:integration": "node scripts/run-tests.mjs",
     "test:contract": "node scripts/run-tests.mjs",

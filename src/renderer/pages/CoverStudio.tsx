@@ -1,4 +1,5 @@
 import HelpNote from "../components/HelpNote";
+import "../cover-studio.css";
 import React, { useState, useEffect, useRef } from "react";
 import { useStudio, PageHead, Cover, Badge } from "../context";
 export default function CoverStudio({ initialId }: { initialId?: string }) {
@@ -46,21 +47,19 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
   );
   const planLocked=!!handoff.planRecovery?.locked;
   return (
-    <>
-      <PageHead title="封面工作室" />
-      <p className="notice">图片接口未配置 · 导入真实图片</p>
-      <HelpNote label="封面交接说明">
+    <div className="cover-studio">
+      <PageHead title="封面工作室" action={<HelpNote label="使用说明">
         图片接口未配置。dot 文件交接：导出请求 → 在支持出图的会话生成 →
         接收真实图片。本应用不会直接调用当前 dot 聊天，也没有内置免费 Codex 图像
         API。
-      </HelpNote>
+      </HelpNote>} />
       {!work ? (
         <div className="panel empty"><p>先创建一首作品，再来制作封面。</p><button className="primary" onClick={() => go("create")}>先创建作品</button></div>
       ) : (
         <>
-          <div className="split">
-            <section className="panel">
-              <h2>作品与画面</h2>
+          <div className="cover-workspace">
+            <section className="panel cover-editor">
+              <h2>制作封面</h2>
               <label>
                 当前作品
                 <select
@@ -83,11 +82,20 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
                   ))}
                 </select>
               </label>
-              <p>{work.story}</p>
+              <p className="cover-story">{work.story}</p>
               <div className="pills">
                 <span>{work.config.genre}</span>
                 <span>{work.config.mood}</span>
               </div>
+              <div className="cover-import-row">
+                <button disabled={!!handoff.planRecovery} title={handoff.planRecovery?'请通过当前封面交接请求接收真实图片':undefined} onClick={() => importAsset("cover", id)}>
+                  导入本地封面
+                </button>
+                <span>PNG / JPG / WebP</span>
+              </div>
+              <details className="cover-options">
+                <summary>提示词与外部出图</summary>
+                <div className="cover-options-body">
               <label>
                 画面与风格
                 <textarea
@@ -98,7 +106,6 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
               </label>
               <div className="button-row">
                 <button
-                  className="primary"
                   onClick={async () => {
                     const result = await call("cover.task", {
                       workId: id,
@@ -107,7 +114,7 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
                     if (currentWorkId.current === id) setTask(result.text);
                   }}
                 >
-                  生成封面提示词 · 本地
+                  生成提示词
                 </button>
                 <button
                   onClick={() =>
@@ -118,7 +125,7 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
                     })
                   }
                 >
-                  导出 Codex 任务 ↗
+                  导出任务
                 </button>
               </div>
               {task && (
@@ -132,17 +139,17 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
                   />
                 </label>
               )}
-              <div className="cover-handoff" data-testid="cover-handoff">
+              <details className="cover-handoff" data-testid="cover-handoff" open={handoff.planRecovery ? true : undefined}>
+                <summary>外部出图请求与接收</summary>
+                <div className="cover-options-body">
                 {planLocked&&<p role="status">{handoff.planRecovery.reason==='STOP_REQUESTED'?'本次计划已停止，封面更新已锁定。':'计划最终材料已变化或执行已结束，封面更新已锁定。'}</p>}
                 {!!handoff.planRecovery&&!planLocked&&<p className="muted">按当前最终歌词接收并选择封面后，返回计划重试封面阶段。</p>}
-                <h3>导入图片</h3>
                 <p>
                   {handoff.receipts.length
                     ? "已接收图片"
                     : "等待真实图片。"}
                 </p>
                 <button
-                  className="primary"
                   disabled={busy||planLocked}
                   onClick={async () => {
                     setBusy(true);
@@ -160,9 +167,10 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
                     }
                   }}
                 >
-                  保存封面交接请求（不出图）
+                  保存请求
                 </button>
                 <HelpNote label="交接步骤">
+                  保存封面交接请求（不出图）。
                   下一步：把提示词或请求文件交给支持出图的会话，拿到图片后在这里导入。
                   保存请求只记录作品和画面要求，不会启动 dot
                   或任何图像生成服务。
@@ -255,15 +263,12 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
                       </button>
                     </div>
                   ))}
-              </div>
-              <button disabled={!!handoff.planRecovery} title={handoff.planRecovery?'请通过当前封面交接请求接收真实图片':undefined} onClick={() => importAsset("cover", id)}>
-                ＋ 导入本地封面
-              </button>
-              <HelpNote label="本地导入格式">
-                PNG / JPG / WebP；最多50 MiB / 100MP。原件保留，排版另存新版本。
-              </HelpNote>
+                </div>
+              </details>
+                </div>
+              </details>
             </section>
-            <section className="panel">
+            <section className="panel cover-preview-panel">
               <div className="section-title">
                 <h2>封面预览</h2>
                 <Badge>
@@ -281,7 +286,7 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
                 <Cover work={work} large />
               )}
               {selectedCover && (
-                <p>
+                <p className="cover-image-meta">
                   {selectedCover.metadata.width} ×{" "}
                   {selectedCover.metadata.height} ·{" "}
                   {selectedCover.parentId
@@ -289,7 +294,8 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
                     : "导入原图"}
                 </p>
               )}
-              <h3>排版与尺寸</h3>
+              <div className="cover-export">
+              <h3>导出设置</h3>
               <div className="form-grid">
                 <label>
                   工作预设
@@ -312,6 +318,7 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
                   </select>
                 </label>
               </div>
+              <div className="cover-export-actions">
               <button
                 className="primary"
                 disabled={!work.assets.cover}
@@ -319,14 +326,16 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
                   exportArtifact("cover", { workId: id, size, noText })
                 }
               >
-                导出 PNG 并保存派生版本
+                导出封面
               </button>
               <HelpNote label="尺寸与排版说明">
-                本地工作预设，各平台当前规格待核实。文字排版以导出文件为准。
+                导出 PNG 并保存派生版本，原件保留。本地工作预设，各平台当前规格待核实。文字排版以导出文件为准。
               </HelpNote>
+              </div>
+              </div>
             </section>
           </div>
-          <section className="panel">
+          <section className="panel cover-versions">
             <h2>封面版本</h2>
             <div className="asset-grid">
               {data.assets
@@ -361,6 +370,6 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
           </section>
         </>
       )}
-    </>
+    </div>
   );
 }

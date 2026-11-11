@@ -167,6 +167,55 @@ async function setup() {
   };
 }
 
+test('synthetic new Key saves, immediately authenticates and authenticates after a vault/service restart',async()=>{
+ const x=await setup(),secret='SYNTHETIC_RESTART_ONLY_'+randomUUID(),identity={profileId:x.p.id,expectedRevision:1};let gets=0;
+ try{
+  const request=async input=>{gets++;assert.equal(input.method,'GET');assert.equal(input.headers.Authorization,'Bearer '+secret);return {status:200,body:{data:[],total:0,page:1,size:1,total_pages:0}}};
+  const service=new (api().ApiCredentials)({...x.options,connectionRequest:request});
+  const saved=await service.writeApiCredential({...identity,secret});assert.equal(saved.configured,true);
+  assert.equal((await service.checkApiConnection(identity)).state,'connected');
+  const restarted=new (api().ApiCredentials)({...x.options,vault:new CredentialVault(x.vaultRoot,x.storage),connectionRequest:request});
+  const result=await restarted.checkApiConnection(identity);assert.equal(result.state,'connected');assert.equal(result.paidGenerationRequested,false);assert.equal(gets,2);
+  assert.ok(!JSON.stringify([saved,result,x.s.snapshot()]).includes(secret));assert.ok(!fs.readFileSync(path.join(x.vaultRoot,x.p.id+'.bin')).includes(Buffer.from(secret)));
+ }finally{x.s.close()}
+});
+
+test('new Key readback/decrypt failures have safe phase-specific codes and never send HTTP',async()=>{
+ const x=await setup(),secret='SYNTHETIC_DO_NOT_LEAK_'+randomUUID(),identity={profileId:x.p.id,expectedRevision:1};let requests=0;
+ try{
+  const service=new (api().ApiCredentials)({...x.options,connectionRequest:async()=>{requests++;return{status:401,body:{}}}});
+  await service.writeApiCredential({...identity,secret});x.storage.decryptString=()=>{throw Error(secret)};
+  const status=await service.apiCredentialStatus({profileId:x.p.id});assert.equal(status.failureCode,'CREDENTIAL_DECRYPT_FAILED');assert.equal(status.configured,false);
+  await assert.rejects(service.checkApiConnection(identity),/CREDENTIAL_DECRYPT_FAILED/);
+  await assert.rejects(service.writeApiCredential({...identity,secret}),/CREDENTIAL_DECRYPT_FAILED/);
+  const handlers=new Map();api().registerApiCredentialHandlers((n,f)=>handlers.set(n,f),()=>{},service);
+  const result=await handlers.get('rainfall:api-credential:check')({},identity);assert.equal(result.error.code,'CREDENTIAL_DECRYPT_FAILED');assert.equal(requests,0);
+  assert.ok(!JSON.stringify([status,result,x.s.snapshot()]).includes(secret));
+ }finally{x.s.close()}
+});
+
+test('synthetic encryption, filesystem and malformed-data failures remain distinct without plaintext errors',async()=>{
+ const x=await setup(),binding={accountId:x.p.id,providerId:'yourmusic',remoteSubject:'local-profile:'+x.p.id};
+ try{
+  const failing=new CredentialVault(x.vaultRoot,{...x.storage,encryptString:()=>{throw Error('SYNTHETIC_PRIVATE_ERROR')}});
+  assert.throws(()=>failing.put(binding,'SYNTHETIC_INPUT'),/CREDENTIAL_ENCRYPT_FAILED/);
+  const notDirectory=path.join(x.root,'not-directory');fs.writeFileSync(notDirectory,'fixture');
+  assert.throws(()=>new CredentialVault(notDirectory,x.storage).put(binding,'SYNTHETIC_INPUT'),/CREDENTIAL_SAVE_FAILED/);
+  x.vault.put(binding,'SYNTHETIC_INPUT');const invalid=new CredentialVault(x.vaultRoot,{...x.storage,decryptString:()=>'{broken'});
+  assert.throws(()=>invalid.get(binding),/CREDENTIAL_DATA_INVALID/);
+ }finally{x.s.close()}
+});
+
+test('a synthetic replacement failing encrypted readback preserves the previous ciphertext',async()=>{
+ const x=await setup(),identity={profileId:x.p.id,expectedRevision:1};
+ try{
+  await x.service.writeApiCredential({...identity,secret:'SYNTHETIC_OLD'});const file=path.join(x.vaultRoot,x.p.id+'.bin'),before=fs.readFileSync(file);
+  x.storage.decryptString=()=> 'SYNTHETIC_WRONG_READBACK';
+  await assert.rejects(x.service.writeApiCredential({...identity,secret:'SYNTHETIC_NEW'}),/CREDENTIAL_READBACK_FAILED/);
+  assert.deepEqual(fs.readFileSync(file),before);
+ }finally{x.s.close()}
+});
+
 test("Main credentials encrypt, survive restart, replace and clear without returning plaintext", async () => {
   const x = await setup();
   const identity = { profileId: x.p.id, expectedRevision: 1 };

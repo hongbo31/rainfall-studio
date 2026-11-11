@@ -1,0 +1,52 @@
+import type { MaterialFileCheck } from "./material-workbench";
+export type MaterialImportRole = "lyrics" | "style" | "cover";
+export type MaterialImportRow = {
+  id: string;
+  sourceKey: string;
+  number: string;
+  title: string;
+  suggestedTitle: string;
+  lyricsPath: string;
+  stylePath: string;
+  coverPath: string;
+  existingMaterialId?: string;
+  lyrics: string;
+  style: string;
+  styleNotes?: string;
+  checks: Record<MaterialImportRole, MaterialFileCheck>;
+  cover: { width: number; height: number; previewUrl: string };
+  candidates: Record<MaterialImportRole, string[]>;
+  errors: string[];
+  warnings: string[];
+  duplicateMaterialIds: string[];
+  duplicateRowIds?: string[];
+  ready: boolean;
+};
+export type MaterialImportPreview = {
+  id: string;
+  sourceId: string;
+  root: string;
+  baseSourceRevision: number;
+  rebind: boolean;
+  format: "folders" | "manifest" | "legacy";
+  rows: MaterialImportRow[];
+  errors: string[];
+  warnings: string[];
+  createdAt: string;
+};
+export type MaterialImportPreviewInput = { sourceId: string; root?: string };
+export type MaterialImportUpdateInput = {
+  previewId: string;
+  rowId: string;
+  title: string;
+  lyricsPath: string;
+  stylePath: string;
+  coverPath: string;
+  existingMaterialId?: string;
+};
+export type MaterialImportConfirmInput = {
+  previewId: string;
+  rowIds: string[];
+  confirmTitles: true;
+  acceptDuplicates?: boolean;
+};
