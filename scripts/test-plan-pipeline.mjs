@@ -5,6 +5,8 @@ const outfile = path.resolve("output/provider-wiring/plan-pipeline.cjs");
 await build({
   stdin: {
     contents: [
+      'export {planFanqieAction,planFanqieJobs} from "./src/core/plan-fanqie";',
+      'export {createPlanFanqiePublisher} from "./src/main/fanqie/plan-publisher";',
       'export {Studio} from "./src/core/studio";',
       'export {tickPlanCenter,executePlanCenter} from "./src/core/plan-center-integration";',
       'export {planDotStatus} from "./src/core/plan-center-dot";',

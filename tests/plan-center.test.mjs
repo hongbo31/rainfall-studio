@@ -244,3 +244,11 @@ test('an older failed attempt cannot bypass reconciliation of its newer unknown 
   const second=x.service.retry({attemptId:first.id});x.service.record({attemptId:second.id,status:'unknown',reason:'timeout'});
   assert.throws(()=>x.service.retry({attemptId:first.id}),/RECONCILE_REQUIRED/);assert.equal(x.service.list().stageAttempts.length,2);
 });
+
+test('09:00 schedule creates ten independent items once per Beijing occurrence',t=>{
+ const x=setup(t);x.save({count:10});x.now('2026-10-18T01:00:01Z');x.service.tick();x.service.tick();const rows=x.service.list();assert.equal(rows.runs.length,1);assert.equal(rows.items.length,10);assert.equal(new Set(rows.items.map(i=>i.expectedExternalItemId)).size,10);assert.equal(rows.occurrences[0].intendedAt,'2026-10-18T01:00:00.000Z');
+});
+test('undefined creative theme can be saved as a draft but cannot schedule or dispatch',t=>{
+ const x=setup(t),p=x.save({enabled:false,theme:'',material:{source:'provider',channel:'',identity:''}});
+ assert.throws(()=>x.service.toggle({id:p.id,expectedRevision:p.revision,enabled:true}),/THEME_REQUIRED/);assert.throws(()=>trigger(x,p),/THEME_REQUIRED/);assert.equal(x.service.list().runs.length,0);
+});

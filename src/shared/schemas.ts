@@ -47,6 +47,9 @@ export const methodSchemas: Record<string, z.ZodType> = {
   'publication.payload': z.strictObject({workId:z.uuid()}),
   'cover.request': CoverRequestSchema,
   'cover.list': z.strictObject({workId:z.uuid().optional()}),
+  'cover.watch': z.strictObject({requestId:z.uuid()}),
+  'planCenter.fanqieStatus':z.strictObject({}),
+  'cover.inboxStatus': z.strictObject({workId:z.uuid().optional()}),
   'tme.preview': TmeInputSchema,
   'tme.prepare': TmeInputSchema,
   'tme.list': z.strictObject({}),
@@ -89,6 +92,8 @@ export const methodSchemas: Record<string, z.ZodType> = {
   "apiProfile.save": saveApiProfileSchema,
   runtime: z.object({}),
   snapshot: z.object({}),
+  'runtime.settings':z.strictObject({}),
+  'runtime.configure':z.strictObject({backgroundEnabled:z.boolean(),loginAtStartup:z.boolean()}),
   "artist.save": z.object({
     id: id.optional(),
     name: z.string().trim().min(1).max(100),

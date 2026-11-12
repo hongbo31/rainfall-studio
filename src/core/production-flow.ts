@@ -796,18 +796,18 @@ export class ProductionFlowService {
       throw Error("PROFILE_REVISION_CHANGED");
     return p;
   }
-  private risk(profileId: string) {
+  private risk(profileId: string,allowUnsettledMusic=false) {
     return this.repo
       .all("operations")
       .some(
         (o) =>
           (o.accountRef === profileId || o.profileId === profileId) &&
-          (o.state === "unknown" || o.costState === "unknown"),
+          (o.state === "unknown" || (o.costState === "unknown"&&!(allowUnsettledMusic&&((o.unit==='provider_credit'&&o.state==='complete')||(o.kind==='music'&&o.state==='assets_verified'&&o.songIds?.length===2))))),
       );
   }
   private musicAuthorized(run: Row) {
     return run.managedMusic
-      ? run.plan.music.creditPolicy?.mode === "existing_credits" ||
+      ? ['existing_credits','uncapped_existing_credits'].includes(run.plan.music.creditPolicy?.mode) ||
           this.options.verifyManagedMusicQuote?.(run.plan.music, this.now()) ===
             true
       : this.options.verifyMusicPricing?.(run.plan.music) === true;
@@ -1451,14 +1451,14 @@ export class ProductionFlowService {
             );
           if (
             shared.some(
-              (o) => o.state === "unknown" || o.costState === "unknown",
+              (o) => o.state === "unknown" || (o.costState === "unknown"&&!(run.plan.music.creditPolicy?.mode==='uncapped_existing_credits'&&o.state==='complete')),
             )
           )
             throw Error("PROVIDER_RISK_FROZEN");
           if (shared.some((o) => o.state === "dispatching"))
             throw Error("FLOW_PROVIDER_BUSY");
         }
-        if (this.risk(actual.profileId)) throw Error("PROVIDER_RISK_FROZEN");
+        if (this.risk(actual.profileId,run.managedMusic&&actual.type==='music_submit'&&run.plan.music.creditPolicy?.mode==='uncapped_existing_credits')) throw Error("PROVIDER_RISK_FROZEN");
         if (
           this.repo
             .all("operations")
@@ -1495,15 +1495,17 @@ export class ProductionFlowService {
           unit = "provider_credit";
           if (!this.musicAuthorized(run))
             throw Error("MUSIC_PRICING_UNVERIFIED");
-          reserved = run.plan.music.maxCostPerRequestCredits;
+          const uncapped=run.managedMusic&&run.plan.music.creditPolicy?.mode==='uncapped_existing_credits';
+          reserved = uncapped?0:run.plan.music.maxCostPerRequestCredits;
           if (
+            !uncapped&&(
             reserved >
               run.plan.music.budgetCredits -
                 run.musicSpentCredits -
                 run.musicReservedCredits ||
             reserved >
               run.plan.music.budgetCredits -
-                this.budgetUsed(budgetScope, budgetDate, unit)
+                this.budgetUsed(budgetScope, budgetDate, unit))
           )
             throw Error("MUSIC_BUDGET_INSUFFICIENT");
         }
@@ -1900,6 +1902,7 @@ export class ProductionFlowService {
         ((op.unit === "usd_micro_estimate" &&
           run.textSpentMicros > run.plan.text.budgetMicros) ||
           (op.unit === "provider_credit" &&
+            !(run.managedMusic&&run.plan.music.creditPolicy?.mode==='uncapped_existing_credits')&&
             run.musicSpentCredits > run.plan.music.budgetCredits))
       ) {
         state = "blocked";

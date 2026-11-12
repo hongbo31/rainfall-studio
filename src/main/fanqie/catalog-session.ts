@@ -12,12 +12,14 @@ type Options = {
   launch?: (profile: string) => Promise<BrowserContext>;
   account?: (page: Page) => Promise<{accountId: string}>;
   catalog?: (page: Page) => Promise<FanqieCatalog>;
+  artists?: (page: Page) => Promise<{artists:{artistId:string;name:string}[]}>;
 };
 // Only the public locator/evaluate surface is exposed to the read-only adapters.
 function readPage(page: Page) {
   return {url: async () => page.url(), playwright: page};
 }
-const actions = z.enum(['open', 'read', 'status']);
+const actions = z.enum(['open', 'read', 'status', 'syncProfile']);
+const ProfileSchema=z.strictObject({accountKey:z.string().regex(/^[a-f0-9]{64}$/),maskedAccount:z.string(),observedAt:z.string(),artists:z.array(z.strictObject({artistId:z.string().regex(/^[1-9]\d{4,24}$/),name:z.string().min(1)}))});
 const empty = z.strictObject({});
 /** Dedicated application-owned Chrome session. Never imports another browser's cookies or profile. */
 export class FanqieCatalogSession {
@@ -37,7 +39,10 @@ export class FanqieCatalogSession {
     // No page text, URLs, account IDs, file paths or credentials in diagnostics.
     fs.writeFileSync(path.join(folder, 'fanqie-operation.json'), JSON.stringify({at: new Date().toISOString(), step, error}));
   }
-  status() {return {connected: !!this.context, busy: this.busy, report: this.report ?? null, progress: this.progress, lastError: this.lastError, uploadAvailable: false as const};}
+  private profile(){
+    try{return ProfileSchema.parse(JSON.parse(fs.readFileSync(path.join(this.options.root,'production','fanqie','profile.json'),'utf8')));}catch{return null;}
+  }
+  status() {return {connected: !!this.context, busy: this.busy, report: this.report ?? null, profile:this.profile(), progress: this.progress, lastError: this.lastError, uploadAvailable: false as const};}
   async run<T>(action: (context: BrowserContext, guard: () => void) => Promise<T>): Promise<T> {
     const generation = this.options.generation(); this.assertCurrent(generation);
     if (this.busy) throw Error('FANQIE_BROWSER_BUSY');
@@ -61,7 +66,7 @@ export class FanqieCatalogSession {
       let artists: {artistId: string; name: string}[] = [];
       if (withArtists) {
         this.mark('正在核对署名'); await go('https://www.novelfm.com/creator/music/account/artist');
-        artists = (await readFanqieArtists(readPage(page))).artists; guard();
+        artists = (await (this.options.artists??(p=>readFanqieArtists(readPage(p))))(page)).artists; guard();
       }
       await go('https://www.novelfm.com/creator/music/account/profile');
       const after = await (this.options.account ?? (p => readFanqieAccountUid(readPage(p))))(page); guard();
@@ -72,6 +77,12 @@ export class FanqieCatalogSession {
       const folder = path.join(this.options.root, 'production', 'fanqie'); fs.mkdirSync(folder, {recursive: true});
       const temp = path.join(folder, 'catalog.json.tmp'), target = path.join(folder, 'catalog.json');
       fs.writeFileSync(temp, JSON.stringify(report, null, 2)); fs.renameSync(temp, target);
+      if(withArtists){
+        const profile=ProfileSchema.parse({accountKey:report.accountKey,maskedAccount:report.maskedAccount,observedAt:report.observedAt,artists});
+        const file=path.join(folder,'profile.json');fs.writeFileSync(file+'.tmp',JSON.stringify(profile,null,2));fs.renameSync(file+'.tmp',file);
+      }else{
+        const old=this.profile();if(old&&old.accountKey!==report.accountKey)fs.unlinkSync(path.join(folder,'profile.json'));
+      }
       this.report = report; this.mark('作品读取完成'); return {accountId: account.accountId, catalog, report, artists};
     } finally {await page.close().catch(() => {});}
   }
@@ -79,6 +90,10 @@ export class FanqieCatalogSession {
     const name = actions.parse(action); empty.parse(input);
     const generation = this.options.generation(); this.assertCurrent(generation);
     if (name === 'status') return this.status();
+    if(name==='syncProfile'){
+      if(!this.context)await this.ui('open');
+      return this.run(async(context,guard)=>{await this.inspect(context,guard,true);return {...this.status(),busy:false};});
+    }
     if (name === 'read') return this.run(async (context, guard) => {await this.inspect(context, guard); return {...this.status(), busy: false};});
     if (this.busy) throw Error('FANQIE_BROWSER_BUSY');
     this.busy = true;

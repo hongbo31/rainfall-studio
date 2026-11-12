@@ -37,6 +37,7 @@ export const FlowMusicGrantSchema = z.strictObject({
 // A new plan grant cannot inherit the old one-song authorization or user-entered
 // pricingEvidence. A quote is usable only when Core's trusted verifier resolves it.
 export const FlowMusicCreditPolicySchema = z.discriminatedUnion("mode", [
+  z.strictObject({mode:z.literal('uncapped_existing_credits'),noRecharge:z.literal(true),actualCostUnknown:z.literal(true),consent:z.literal(true)}),
   z.strictObject({
     mode: z.literal("existing_credits"),
     noRecharge: z.literal(true),

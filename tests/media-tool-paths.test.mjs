@@ -22,3 +22,12 @@ test('fixed media path mapping preserves Windows and rejects unsupported platfor
   }
   assert.throws(() => assets.mediaToolPath('../sh', 'linux'), /MEDIA_TOOL_UNSUPPORTED/);
 });
+
+test('portable package tools take precedence without a developer installation or PATH search', () => {
+  const folder=path.resolve('output/new-device/tools/media');
+  for(const tool of ['ffmpeg','ffprobe']){
+    const file=path.join(folder,tool+'.exe');
+    assert.equal(assets.mediaToolPath(tool,'win32',folder,p=>p===file),file);
+    assert.equal(assets.mediaToolPath(tool,'win32',folder,()=>false),`C:\\ffmpeg\\ffmpeg-8.1-essentials_build\\bin\\${tool}.exe`);
+  }
+});

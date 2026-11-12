@@ -270,3 +270,23 @@ test('credit selection requires the matching details dialog and skips an already
  correctDetails=true;writes.length=0;await selectFanqieCredit(page,'lyricist','测试署名',async()=>{},async()=>{});assert.deepEqual(writes,['search:测试署名','preview','confirm']);
  writes.length=0;await selectFanqieCredit(page,'lyricist','测试署名',async()=>{},async()=>{});assert.deepEqual(writes,[]);
 });
+
+test('configuration sync saves official artists across restart and clears mismatched account cache',async()=>{
+ const f=catalogSessionFixture();f.options.artists=async()=>({artists:[{artistId:'12345678',name:'测试艺人'}]});
+ const session=new FanqieCatalogSession(f.options);const result=await session.ui('syncProfile');
+ assert.equal(result.profile.artists[0].name,'测试艺人');
+ assert.deepEqual(new FanqieCatalogSession(f.options).status().profile,result.profile);
+ f.setUid('987654321000001');await session.ui('read');assert.equal(session.status().profile,null);
+});
+test('artist sync refuses switched identity and preserves last verified snapshot',async()=>{
+ const f=catalogSessionFixture();f.options.artists=async()=>({artists:[{artistId:'12345678',name:'原艺人'}]});
+ const session=new FanqieCatalogSession(f.options);await session.ui('syncProfile');const original=session.status().profile;
+ f.options.artists=async()=>{f.setUid('987654321000001');return{artists:[{artistId:'99999999',name:'其他艺人'}]}};
+ await assert.rejects(session.ui('syncProfile'),/SCOPE_CHANGED/);assert.deepEqual(session.status().profile,original);
+});
+
+test('catalog reader waits for row text to finish rendering without accepting incomplete IDs',async()=>{
+ const raw=catalogRaw();let reads=0;
+ const page={url:async()=>catalogUrl,playwright:{getByRole:()=>({evaluate:async()=>({selectedTabs:[raw.selectedTab],queries:[''],headers:raw.headers,rows:++reads===1?raw.rows.map(r=>['',...r.slice(1)]):raw.rows})})}};
+ const result=await readFanqieCatalog(page);assert.equal(reads,2);assert.equal(result.complete,true);assert.equal(result.rows[0].id,parseFanqieCatalog(raw).rows[0].id);
+});

@@ -36,6 +36,7 @@ type Effects = {
 export class SessionRuntime {
   private settings = { backgroundEnabled: false, loginAtStartup: false };
   constructor(private effects: Effects) {}
+  status(){return {...this.settings};}
   configure(
     next: { backgroundEnabled: boolean; loginAtStartup: boolean },
     confirmed: boolean,

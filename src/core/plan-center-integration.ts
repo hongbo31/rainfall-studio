@@ -8,6 +8,8 @@ import {syncPlanPublications,planPublicationStatus,planPublicationCapabilities} 
 import {bindPlanWork,selectPlanVersion,confirmPlanMaterials,planAssetsCatalog,planMaterialPreview,syncPlanMaterials,adoptPlanIncomingCover} from './plan-center-assets';
 import {syncPlanMusic,stopPlanMusic,planMusicExternalOutcome} from './plan-center-music';
 import {tickPlanMusic} from './plan-center-music-stages';
+import {syncPlanFanqie,planFanqieJobs} from './plan-fanqie';
+import {preparePlanCoverInbox} from './cover-inbox';
 import {tickProviderPlanText,stopProviderPlanText,providerTextService,materializeProviderTextFinal} from './provider-plan-text';
 import {PlanCenterSaveSchema,PlanCenterToggleSchema,PlanCenterIdSchema,PlanCenterRunSchema,PlanCenterStopSchema,PlanCenterRetrySchema} from '../shared/plan-center';
 import type {PlanCenterStageAttempt} from '../shared/plan-center';
@@ -52,6 +54,7 @@ export function executePlanCenter(s:Studio,method:string,raw:unknown){
    empty.parse(raw);const rows=service.list();
    return{providerText:providerTextService(s).list().map(({id,runId,itemId,phase,state,reason,currency,spentMicros,reservedMicros})=>({id,runId,itemId,phase,state,reason,currency,spentMicros,reservedMicros})),dot:planDotStatus(s),publication:planPublicationStatus(s),music:rows.items.flatMap<Record<string,unknown>>(item=>{try{const run=rows.runs.find(r=>r.id===item.runId)!;const state=syncPlanMusic(s,run,item);return state?[{itemId:item.id,...state}]:[];}catch(e){return[{itemId:item.id,reason:e instanceof Error?e.message:'MUSIC_SCOPE_INVALID'}];}}),materials:rows.items.flatMap<Record<string,unknown>>(item=>{if(!item.workId)return[];try{return[{itemId:item.id,...planMaterialPreview(s,item.id)}]}catch(e){return[{itemId:item.id,reason:e instanceof Error?e.message:'MATERIALS_INVALID'}]}})};
   }
+  case 'planCenter.fanqieStatus':empty.parse(raw);return planFanqieJobs(s);
   case 'planCenter.dotStatus':empty.parse(raw);return planDotStatus(s);
   case 'planCenter.exportDotRequests':empty.parse(raw);return exportPlanDotRequests(s);
   case 'planCenter.publicationStatus':empty.parse(raw);return planPublicationStatus(s);
@@ -159,6 +162,7 @@ export function tickPlanCenter(s:Studio){
     const latestItem=service.list().items.find(i=>i.id===item.id)!;
     const boundWork=latestItem.workId?s.repo.maybe('works',latestItem.workId):null;
     const boundCover=boundWork?.assets?.cover?s.repo.maybe('assets',boundWork.assets.cover):null;
+    if(boundWork&&!boundCover)preparePlanCoverInbox(s,latestItem.id,boundWork.id);
     if(latestItem.workId&&s.repo.maybe('settings','plan-cover-work:'+latestItem.id)){
      const binding=assertPlanCoverWork(s,latestItem.workId)!;
      let proof;
@@ -210,4 +214,5 @@ export function tickPlanCenter(s:Studio){
   }
  }
  syncPlanPublications(s);
+ syncPlanFanqie(s);
 }

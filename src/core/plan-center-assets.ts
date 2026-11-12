@@ -5,6 +5,7 @@ import {PlanCenterBindWorkSchema,PlanCenterSelectVersionSchema,PlanCenterConfirm
 import {cleanLyricText} from '../shared/tme-lyrics';
 import {hash} from './database';
 import {publicationPayload} from './publication-payload';
+import {resolveFanqieWork} from './fanqie-work';
 
 const normalized=(value:string)=>cleanLyricText(value).cleaned.normalize('NFKC').replace(/\s+/g,' ').trim();
 const bindingKey=(id:string)=>'plan-assets:binding:'+id;
@@ -101,6 +102,14 @@ export function syncPlanMaterials(s:Studio,run:PlanCenterRun,item:PlanCenterItem
  if(!list.some(v=>v.version===version))return{ready:false,reasons:['AUDIO_REQUIRED']};
  if((work.selectedAudioVariant??'A')!==version)return{ready:false,reasons:['AUDIO_SELECTION_MISMATCH']};
  const payload=publicationPayload(s,work),consent=s.repo.maybe('settings',consentKey(item.id))?.value;
+ if(run.snapshot.fanqie?.materialsConsent&&run.snapshot.authorization.publish&&!run.snapshot.publishTargets.some(t=>t.enabled)){
+  const source=resolveFanqieWork(s,{workId:work.id,variant:version});
+  if(!['generated','assisted','none'].includes(source.ai))return{ready:false,reasons:['FANQIE_AI_DISCLOSURE_REQUIRED']};
+  const evidenceId='plan-fanqie-materials:'+item.id;
+  s.save('settings',{id:evidenceId,value:{workId:work.id,fingerprint:source.fingerprint,source:'plan-standing-consent',lyricsTextMatched:true,audioAuditionVerified:false}});
+  const materials={itemId:item.id,title:work.title,lyrics:payload.lyrics.raw,coverAssetId:work.assets.cover,audioAssetId:work.assets['audio_'+version],rightsEvidenceId:evidenceId,consistencyEvidenceId:evidenceId,selectedVersion:version};
+  s.planCenterService().setMaterials(materials);return{ready:true,reasons:[],workId:work.id,materials,payload};
+ }
  reasons.push(...payload.warnings);
  if(!consent||consent.invalidated||consent.workId!==work.id||consent.audioHash!==payload.audio?.sha256||consent.coverHash!==payload.cover?.sha256||consent.lyricsHash!==payload.lyrics.plainHash)reasons.push('RIGHTS_ATTESTATION_REQUIRED');
  if(reasons.length||!payload.audio||!payload.cover)return{ready:false,reasons:[...new Set(reasons)],payload};

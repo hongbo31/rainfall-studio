@@ -22,6 +22,7 @@ import {ProductionFlowSchemas} from '../shared/production-flow';
 import {importProductionAudio} from './production-integration';
 import {executeTmeAiPrepare} from './tme-ai-prepare-integration';
 import {resolveFanqieWork} from './fanqie-work';
+import {planFanqieAction,recoverPlanFanqie} from './plan-fanqie';
 import {executeTmeAiSubmission} from './tme-ai-submission-integration';
 import {createAccountIdentityBridge} from './account-identity-channel';
 export { Studio };
@@ -141,7 +142,9 @@ if (port) {
     {musicAdapter:liveAdapter,accountIdentityAdapter:identityBridge.adapter},
   );
   let chain = Promise.resolve().then(() => studio.scanInbox());
+  recoverPlanFanqie(studio);
   const execute = async (method: string, input: any) => {
+    if(method.startsWith('internal.planFanqie.'))return planFanqieAction(studio,method.slice('internal.planFanqie.'.length),input);
     if(method.startsWith('internal.materials.')){
       const action=method.slice('internal.materials.'.length),service=studio.materialWorkbench();
       if(action==='prepareWork')return prepareMaterialWork(studio,input);

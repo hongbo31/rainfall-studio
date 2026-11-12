@@ -115,7 +115,7 @@ function wav(seed) {
     b.writeInt16LE(Math.round(Math.sin(i * seed) * 400), 44 + i * 2);
   return b;
 }
-async function setup(t, { stopOnSubmit = false, musicUnknown = false } = {}) {
+async function setup(t, { stopOnSubmit = false, musicUnknown = false, fanqie = false } = {}) {
   const root = path.resolve("output/test-runs/plan-pipeline-" + randomUUID()),
     s = new api.Studio(root, "production", { now: () => new Date(at) });
   t.after(() => s.close());
@@ -206,10 +206,11 @@ async function setup(t, { stopOnSubmit = false, musicUnknown = false } = {}) {
             consent: true,
           },
           consent: true,
-          versionPolicy: "manual",
+          versionPolicy: fanqie ? "first" : "manual",
         },
         authorization: { text: true, music: true, publish: true },
-        publishTargets: [
+        ...(fanqie?{fanqie:{accountKey:"a".repeat(64),configurationHash:"b".repeat(64),materialsConsent:true}}:{}),
+        publishTargets: fanqie?[]:[
           {
             platform: "qqmusic",
             accountId,
@@ -965,4 +966,24 @@ test("stopping an undispatched child with changed work finishes stopping without
   assert.equal(snapshot.managedStopped, true);
   assert.equal(snapshot.operations, 0);
   assert.equal(snapshot.posts, 0);
+});
+
+test('Fanqie plan automatically binds A and materials then waits for durable official receipt',async(t)=>{
+ const x=await setup(t,{fanqie:true});
+ for(let i=0;i<12;i++)await x.step();
+ const item=x.center.list().items[0];
+ assert.equal(item.selectedVersion,'A');assert.equal(item.materials.selectedVersion,'A');
+ assert.equal(stage(x,'materials').state,'succeeded');
+ const jobs=api.planFanqieJobs(x.s);assert.equal(jobs.length,1);assert.equal(jobs[0].state,'ready');
+ assert.notEqual(x.center.list().runs[0].state,'completed');
+ let uploads=0;
+ const publisher=api.createPlanFanqiePublisher({available:()=>true,generation:()=>1,
+ rpc:async(method,input)=>({ok:true,value:api.planFanqieAction(x.s,method.split('.').at(-1),input)}),
+ upload:{status:()=>({busy:false}),publishScheduled:async(input,check)=>{await check();assert.equal(input.variant,'A');uploads++;return{result:{uploaded:true,officialRecord:{id:'999888777666555',stage:'contract_pending'}}};}}
+ });
+ await publisher.pump();await publisher.pump();
+ assert.equal(uploads,1);assert.equal(api.planFanqieJobs(x.s)[0].state,'uploaded');
+ assert.equal(x.center.list().runs[0].state,'completed');
+ assert.equal(x.events.filter(e=>e.kind==='music-submit').length,1);
+ assert.equal(x.s.get('works',item.workId).lyricsConfirmation??null,null,'automatic checks must not fabricate a human audition');
 });

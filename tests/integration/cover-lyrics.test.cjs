@@ -640,3 +640,29 @@ test("unified publication freezes selected cover, original/plain lyrics and miss
     x.close();
   }
 });
+
+test('cover inbox matches by immutable request, rejects multiple images and never guesses by title', async () => {
+  const x=setup();
+  try {
+    const request=await x.s.call('cover.request',{workId:x.work.id,requestId:randomUUID(),brief:'自动收图测试'});
+    const inbox=await x.s.call('cover.watch',{requestId:request.id});
+    assert.ok(fs.existsSync(path.join(inbox.directory,'保存图片说明.txt')));
+    const original=await image(x);
+    const target=path.join(inbox.directory,'cover.png');
+    fs.copyFileSync(original,target);fs.copyFileSync(original,path.join(inbox.directory,'cover.jpg'));
+    await x.s.tick();
+    let state=(await x.s.call('cover.inboxStatus',{workId:x.work.id}))[0];
+    assert.equal(state.reason,'COVER_INBOX_MULTIPLE_IMAGES');
+    assert.equal(x.s.get('works',x.work.id).assets.cover,undefined);
+    fs.unlinkSync(path.join(inbox.directory,'cover.jpg'));
+    fs.utimesSync(target,new Date(0),new Date(0));
+    x.s.inboxTickAt=0;await x.s.tick();
+    state=(await x.s.call('cover.inboxStatus',{workId:x.work.id}))[0];
+    assert.equal(state.state,'received');
+    assert.equal(x.s.get('works',x.work.id).assets.cover,state.assetId);
+    assert.equal(x.s.get('works',x.other.id).assets.cover,undefined);
+    assert.ok(fs.existsSync(target));
+    const count=x.s.all('assets').length;x.s.inboxTickAt=0;await x.s.tick();
+    assert.equal(x.s.all('assets').length,count);
+  } finally { x.close(); }
+});

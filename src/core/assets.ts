@@ -5,8 +5,11 @@ import { execFileSync } from "node:child_process";
 import sharp from "sharp";
 import type { Studio } from "./studio";
 // Fixed, trusted installation locations only: never search PATH or download tools.
-export function mediaToolPath(tool: "ffmpeg" | "ffprobe", platform = process.platform) {
+export function mediaToolPath(tool: "ffmpeg" | "ffprobe", platform = process.platform,
+  bundledRoot = path.resolve(__dirname, '..', 'tools', 'media'), exists = fs.existsSync) {
   if (tool !== "ffmpeg" && tool !== "ffprobe") throw Error("MEDIA_TOOL_UNSUPPORTED");
+  const bundled = path.join(bundledRoot, platform === 'win32' ? `${tool}.exe` : tool);
+  if (exists(bundled)) return bundled;
   if (platform === "linux") return `/usr/bin/${tool}`;
   if (platform === "win32")
     return `C:\\ffmpeg\\ffmpeg-8.1-essentials_build\\bin\\${tool}.exe`;

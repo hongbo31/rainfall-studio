@@ -187,3 +187,16 @@ test('packaged Chrome lookup finds system installation before a missing per-user
  assert.throws(()=>fanqieChromeLaunchOptions('win32',{},()=>false),/CHROME_NOT_FOUND/);
  assert.deepEqual(fanqieChromeLaunchOptions('linux',{},()=>false),{channel:'chrome'});
 });
+
+test('scheduled upload refuses changed configuration, account or work before any upload',async()=>{
+ for(const kind of ['configuration','account','work','stopped']){
+  const f=uploadFixture(),workId='00000000-0000-4000-8000-000000000001';
+  f.options.session.status=()=>({connected:true,report:f.current.report});
+  f.options.work=async()=>({workId,variant:'A',title:'计划测试作品',ai:'generated',fingerprint:h('source')});
+  const broker=new FanqieUploadBroker(f.options);
+  await broker.ui('saveConfiguration',{version:1,authors:f.raw.authors,useWorkMaterials:true,publicationConsent:true});
+  const config=await broker.ui('configuration');
+  const input={workId,variant:'A',accountKey:kind==='account'?h('other'):f.current.report.accountKey,configurationHash:kind==='configuration'?h('other'):config.configurationHash,fingerprint:kind==='work'?h('other'):h('source')};
+  await assert.rejects(broker.publishScheduled(input,async()=>{if(kind==='stopped')throw Error('STOP_REQUESTED')}));assert.equal(f.calls(),0);assert.equal(broker.status().busy,false);
+ }
+});

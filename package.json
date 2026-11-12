@@ -1,6 +1,6 @@
 {
   "name": "rainfall-studio",
-  "version": "0.12.0-preview.6",
+  "version": "0.12.0-preview.7",
   "private": true,
   "type": "module",
   "scripts": {
@@ -24,7 +24,9 @@
     "test:tme": "npm run desktop:build && node scripts/test-tme.mjs",
     "test:cover-lyrics": "npm run desktop:build && node scripts/test-cover-lyrics.mjs",
     "test:publish-materials": "node scripts/test-publish-material-feedback.mjs && node --test tests/publish-material-feedback-ui.test.mjs",
-    "test:qq-preparation": "node scripts/test-tme-ai-broker.mjs && node --test tests/tme-ai-upload-control.test.mjs tests/tme-ai-native-contract.test.mjs"
+    "test:qq-preparation": "node scripts/test-tme-ai-broker.mjs && node --test tests/tme-ai-upload-control.test.mjs tests/tme-ai-native-contract.test.mjs",
+    "desktop:portable": "node scripts/package-portable.mjs",
+    "test:plan-fanqie": "node scripts/test-plan-fanqie.mjs"
   },
   "dependencies": {
     "archiver": "8.0.0",

@@ -61,6 +61,17 @@ export class FanqieUploadBroker {
     for (const job of this.jobs()) if (job.phase === 'uploading') this.save({...job,phase:'unknown',reason:'FANQIE_INTERRUPTED'});
   }
   private folder() {return path.join(this.options.root,'production','fanqie','uploads');}
+  private scheduledScope?:{accountKey:string;fingerprint:string};
+  private scheduledCheck?:()=>Promise<void>;
+  async publishScheduled(raw:unknown,check?:()=>Promise<void>){
+    const input=FanqieWorkSelection.extend({accountKey:z.string().regex(/^[a-f0-9]{64}$/),configurationHash:z.string().regex(/^[a-f0-9]{64}$/),fingerprint:z.string().regex(/^[a-f0-9]{64}$/)}).parse(raw);
+    if(this.batchBusy||this.localBusy||this.pipelineBusy)throw Error('FANQIE_BROWSER_BUSY');
+    const configuration=this.configuration();
+    if(!configuration||createHash('sha256').update(JSON.stringify(configuration)).digest('hex')!==input.configurationHash)throw Error('FANQIE_CONFIGURATION_CHANGED');
+    this.batchBusy=true;this.scheduledScope=input;this.scheduledCheck=check;
+    try{return await this.publishConfigured({workId:input.workId,variant:input.variant});}
+    finally{this.batchBusy=false;this.scheduledScope=undefined;this.scheduledCheck=undefined;}
+  }
   private jobs(): Job[] {
     if (!fs.existsSync(this.folder())) return [];
     return fs.readdirSync(this.folder()).filter(f=>/^[a-f0-9]{64}\.json$/.test(f)).map(f=>JSON.parse(fs.readFileSync(path.join(this.folder(),f),'utf8')));
@@ -72,9 +83,13 @@ export class FanqieUploadBroker {
   private guard(generation: number) {
     if (!this.options.available()) throw Error('PRODUCTION_REQUIRED');
     if (generation !== this.options.generation()) throw Error('WORKSPACE_CHANGED');
+    const report=this.scheduledScope?this.options.session.status().report:null;
+    if(this.scheduledScope&&report&&report.accountKey!==this.scheduledScope.accountKey)throw Error('FANQIE_CATALOG_SCOPE_CHANGED');
   }
   private async verifyWork(source?:WorkBinding) {
+    await this.scheduledCheck?.();
     if(!source)return;
+    if(this.scheduledScope&&source.fingerprint!==this.scheduledScope.fingerprint)throw Error('FANQIE_WORK_CHANGED');
     if(!this.options.work)throw Error('FANQIE_WORK_MATERIALS_REQUIRED');
     const current=await this.options.work({workId:source.workId,variant:source.variant});
     if(current.fingerprint!==source.fingerprint)throw Error('FANQIE_WORK_CHANGED');
@@ -119,7 +134,7 @@ export class FanqieUploadBroker {
       try{const authorization=await authorizeFanqieRecords(this.options.root,this.options.session,request.accountKey,request.ids,config.authorizationPreference,()=>this.guard(generation));return {...this.status(),authorization};}
       finally{this.batchBusy=false;}
     }
-    if(action==='configuration'){empty.parse(input);this.guard(this.options.generation());return {configuration:this.configuration(),suggestedAuthors:this.defaults()};}
+    if(action==='configuration'){empty.parse(input);this.guard(this.options.generation());const configuration=this.configuration();return {configuration,configurationHash:configuration?createHash('sha256').update(JSON.stringify(configuration)).digest('hex'):null,suggestedAuthors:this.defaults()};}
     if(action==='saveConfiguration'){
       this.guard(this.options.generation());if(this.pipelineBusy||this.localBusy)throw Error('FANQIE_BROWSER_BUSY');
       const config=ConfigurationSchema.parse(input),file=path.join(this.options.root,'production','fanqie','configuration.json');

@@ -76,7 +76,7 @@ test('actual adapter history recovery requires exact explicit model and never pr
 });
 
 test('plan music helper binds the scored item to the same original child work and asset versions',async t=>{
-  const x=setup(t),run={id:'plan-run-fixture',planId:'plan-fixture',stopRequested:false,snapshot:{artistId:x.input.artistId,authorization:{music:true},music:{...x.input.music,route:'yourmusic'}}};
+  const x=setup(t),run={id:'plan-run-fixture',planId:'plan-fixture',stopRequested:false,snapshot:{material:{source:'dot'},artistId:x.input.artistId,authorization:{music:true},music:{...x.input.music,route:'yourmusic'}}};
   const item={id:'plan-item-fixture',runId:run.id,material:{candidateId:x.candidateId}},attempt={id:'plan-music-attempt-fixture',runId:run.id,itemId:item.id,stage:'music_submit'};
   x.s.planCenterService=()=>({list:()=>({stageAttempts:[{runId:run.id,itemId:item.id,stage:'text_score',state:'succeeded',result:{evaluationRunId:x.evaluationId}}]})});
   const first=w.startPlanMusic(x.s,run,item,attempt),again=w.startPlanMusic(x.s,run,item,attempt);
@@ -107,7 +107,7 @@ test('adapter timeout remains unknown under repeated original broker pumps and r
 });
 
 function planChild(x){
-  const run={id:'stop-run',planId:'stop-plan',stopRequested:false,snapshot:{artistId:x.input.artistId,authorization:{music:true},music:{...x.input.music,route:'yourmusic'}}};
+  const run={id:'stop-run',planId:'stop-plan',stopRequested:false,snapshot:{material:{source:'dot'},artistId:x.input.artistId,authorization:{music:true},music:{...x.input.music,route:'yourmusic'}}};
   const item={id:'stop-item',runId:run.id,material:{candidateId:x.candidateId}},attempt={id:'stop-attempt',runId:run.id,itemId:item.id,stage:'music_submit'};
   x.s.planCenterService=()=>({list:()=>({stageAttempts:[{runId:run.id,itemId:item.id,stage:'text_score',state:'succeeded',result:{evaluationRunId:x.evaluationId}}]})});
   return{run,item,child:w.startPlanMusic(x.s,run,item,attempt)};
@@ -167,4 +167,16 @@ for(const edit of ['artist','lyrics','candidate-hash'])test('payable claim reche
   const after=x.service.context(child.childRunId).run;
   assert.equal(posts,0);assert.equal(after.state,'blocked');assert.deepEqual(after.reasons,['MANAGED_MUSIC_WORK_SCOPE']);
   assert.equal(x.s.all('operations').filter(o=>o.runId===after.id).length,0);
+});
+
+test('uncapped music allows verified requests with unknown cost but still blocks unknown outcomes', t=>{
+ const x=setup(t);x.input.music.creditPolicy={mode:'uncapped_existing_credits',noRecharge:true,actualCostUnknown:true,consent:true};
+ const first=x.service.startManagedMusic(x.input),n=x.service.next({id:first.id}),claimed=x.service.claim({id:first.id,expectedRevision:n.run.revision});
+ assert.equal(claimed.operation.reservedAmount,0);
+ x.service.record({id:first.id,operationId:claimed.operation.id,result:{type:'music_submit',status:'accepted',songIds:['first-A','first-B'],actualCostCredits:null,evidenceId:null}});
+ const second=x.service.startManagedMusic({...x.input,ownerKey:'music:'+randomUUID()}),next=x.service.next({id:second.id});
+ const accepted=x.service.claim({id:second.id,expectedRevision:next.run.revision});assert.equal(accepted.task.type,'music_submit');
+ x.s.repo.save('operations',{...accepted.operation,state:'unknown',costState:'unknown'});
+ const third=x.service.startManagedMusic({...x.input,ownerKey:'music:'+randomUUID()}),thirdNext=x.service.next({id:third.id});
+ assert.throws(()=>x.service.claim({id:third.id,expectedRevision:thirdNext.run.revision}),/PROVIDER_RISK_FROZEN/);
 });

@@ -1,4 +1,5 @@
 import HelpNote from "../components/HelpNote";
+import CoverInbox from '../components/CoverInbox';
 import "../cover-studio.css";
 import React, { useState, useEffect, useRef } from "react";
 import { useStudio, PageHead, Cover, Badge } from "../context";
@@ -93,6 +94,7 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
                 </button>
                 <span>PNG / JPG / WebP</span>
               </div>
+              <CoverInbox workId={id} requestId={requestId||undefined} brief={brief} disabled={planLocked||busy}/>
               <details className="cover-options">
                 <summary>提示词与外部出图</summary>
                 <div className="cover-options-body">

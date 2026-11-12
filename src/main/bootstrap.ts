@@ -46,6 +46,7 @@ import {TmeAiCloudSessionManager} from './tme/ai-cloud-session';
 import {createAccountIdentityBroker,accountIdentityUiResponse} from './account-identity-broker';
 import {FanqieCatalogSession, fanqieCatalogError} from './fanqie/catalog-session';
 import {FanqieUploadBroker} from './fanqie/upload-broker';
+import {createPlanFanqiePublisher} from './fanqie/plan-publisher';
 import {createUnifiedPublishBroker,createTmeAiTransportProvider} from './tme/unified-publish';
 import {externalReceiptBarrier,persistExternalReceiptBarrier,persistExternalReceiptStop} from './tme/external-receipt-barrier';
 import {installNativeDiagnostics} from './native-diagnostics';
@@ -86,7 +87,10 @@ protocol.registerSchemesAsPrivileged([
     },
   },
 ]);
-const root = resolveDataRoot(process.env.RAINFALL_DATA_ROOT,
+const rootArgIndex=process.argv.indexOf('--rainfall-data-root');
+const startupRoot=rootArgIndex>=0?process.argv[rootArgIndex+1]:undefined;
+if(rootArgIndex>=0&&(!startupRoot||!path.isAbsolute(startupRoot)))throw Error('ABSOLUTE_DATA_ROOT_REQUIRED');
+const root = resolveDataRoot(process.env.RAINFALL_DATA_ROOT??startupRoot,
   process.env.RAINFALL_PREVIEW_DATA_ROOT, app.getPath("appData"));
 fs.mkdirSync(path.join(root, "runtime"), { recursive: true });
 app.setPath("userData", path.join(root, "runtime"));
@@ -126,13 +130,13 @@ const sessionRuntime = new SessionRuntime({
       tray.on("double-click", () => sessionRuntime.open());
     }
   },
-  login: (enabled) => app.setLoginItemSettings({ openAtLogin: enabled }),
+  login: (enabled) => app.setLoginItemSettings({ openAtLogin: enabled,path:process.execPath,args:['--rainfall-data-root',root,'--rainfall-background'] }),
   pause: () => {
     void rpc("internal.pauseAutomation").catch(() => undefined);
   },
   quit: () => app.quit(),
 });
-// Activation is intentionally unavailable in this build. No configure(true) call or OS registration.
+// Only saved user runtime preferences activate background execution or login registration.
 let ready: Promise<void>;
 let coreGeneration = 0;
 let interruptTme:()=>void=()=>{};
@@ -167,6 +171,7 @@ const fanqieCatalog = new FanqieCatalogSession({root, available:()=>mode==='prod
 const fanqieUpload = new FanqieUploadBroker({root,session:fanqieCatalog,available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,
   work:async selection=>{const result=await rpc('internal.fanqie.work',selection);if(!result.ok)throw Error(result.error.code);return result.value;},
   pickBundle:async()=>{const result=await dialog.showOpenDialog(window,{title:'选择番茄发布材料清单',properties:['openFile'],filters:[{name:'番茄发布材料清单',extensions:['json']}]});return result.canceled?null:result.filePaths[0];}});
+const planFanqiePublisher=createPlanFanqiePublisher({rpc,upload:fanqieUpload,available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration});
 tmeAiCloud.onIdentityInvalidated(()=>{try{child?.postMessage({kind:'account-identity-invalidated'})}catch{/* Old worker already stopped. */}});
 // Cloud sessions and calibrated browser contracts must be supplied by Main, never renderer flags.
 const tmeAiTransport=createTmeAiTransportProvider({platform:process.platform,cloudSession:()=>tmeAiCloud.submissionSession(),cloudExistingAlbumSession:()=>tmeAiCloud.existingAlbumSession(),readExternalReceipt:async(context)=>{const receipt=await tmeAiCloud.readExternalReceipt(context);persistExternalReceiptBarrier(root,receipt);return receipt},cloudPreparationSession:()=>tmeAiCloud.preparationSession(),native:tmeAiNative,nativeObserve:async(context)=>{
@@ -192,7 +197,7 @@ const planAlbums=createPlanAlbumBroker({rpc:(method,input)=>rpc(method,input),av
 const providerText=createProviderTextBroker({credentials:apiCredentials,rpc,available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration});
 const materialWorkbench=createMaterialWorkbenchBroker({credentials:apiCredentials,rpc,available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,chooseDirectory:()=>dialog.showOpenDialog(window,{title:'选择只读素材目录',properties:['openDirectory']})});
 app.on('before-quit',()=>providerText.stop());
-setInterval(()=>{if(offlineAcceptance)return;void productionFlow.pump();void unifiedPublish.pump();void providerText.pump().catch(()=>undefined);void materialWorkbench.pump().catch(()=>undefined);},2000).unref();
+setInterval(()=>{if(offlineAcceptance)return;void productionFlow.pump();void unifiedPublish.pump();void providerText.pump().catch(()=>undefined);void materialWorkbench.pump().catch(()=>undefined);void planFanqiePublisher.pump().catch(()=>undefined);},2000).unref();
 const pending = new Map<
   string,
   { resolve: (v: any) => void; reject: (e: any) => void; timer: NodeJS.Timeout }
@@ -376,6 +381,12 @@ function handlers() {
         capture:()=>({mode,generation:coreGeneration,epoch:importEpoch,available:!switching&&!closing}),
         choose:()=>dialog.showOpenDialog(window,{title:'选择专用 dot-delivery 项目目录（包含 incoming 和 receipts）',properties:['openDirectory']}),rpc,
       });
+      if(method==='runtime.settings')return{ok:true,value:sessionRuntime.status()};
+      if(method==='runtime.configure'){
+        const settings=sessionRuntime.configure(parsed as {backgroundEnabled:boolean;loginAtStartup:boolean},true);
+        const file=path.join(root,'runtime-preferences.json');fs.writeFileSync(file+'.tmp',JSON.stringify(settings));fs.renameSync(file+'.tmp',file);
+        return{ok:true,value:settings};
+      }
       if (method === "runtime")
         return {
           ok: true,
@@ -615,6 +626,13 @@ app
       },
     });
     window.removeMenu();
+    const runtimePreferences=path.join(root,'runtime-preferences.json');
+    if(fs.existsSync(runtimePreferences)){
+      try {
+        const saved=JSON.parse(fs.readFileSync(runtimePreferences,'utf8'));
+        if(typeof saved.backgroundEnabled==='boolean'&&typeof saved.loginAtStartup==='boolean')sessionRuntime.configure({backgroundEnabled:saved.backgroundEnabled,loginAtStartup:saved.loginAtStartup},true);
+      } catch { /* Preserve malformed preferences; open normally so the user can repair them. */ }
+    }
     window.on("close", (event) => {
       if (!closing && sessionRuntime.closeRequested()) event.preventDefault();
     });
@@ -627,7 +645,7 @@ app
     );
     handlers();
     await window.loadURL("app://ui/index.html");
-    window.show();
+    if(!process.argv.includes('--rainfall-background')||!sessionRuntime.status().backgroundEnabled)window.show();
   })
   .catch((err) => {
     console.error(err);

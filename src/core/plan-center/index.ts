@@ -30,6 +30,7 @@ const names:Record<PlanCenterStage,PlanCenterCapabilityName|undefined>={dot:'dot
 const safeId=z.string().min(1).max(500);
 const targetInput=z.strictObject({runId:safeId,platform:safeId,accountId:safeId});
 const publishInput=targetInput.extend({itemId:safeId});
+const missingTheme=(plan:PlanCenterPlanInput)=>plan.material.source==='provider'&&!plan.theme?.trim()&&!plan.storyContext?.storyBeat.trim();
 export class PlanCenterService {
   private store:CenterStore;
   constructor(readonly repo:Repository,readonly options:PlanCenterOptions={}) {
@@ -48,6 +49,7 @@ export class PlanCenterService {
   }
   save(input:{plan:PlanCenterPlanInput;expectedRevision:number|null}) {
     const parsed=PlanCenterSaveSchema.parse(input);
+    if(parsed.plan.enabled&&missingTheme(parsed.plan))throw Error('THEME_REQUIRED');
     return this.repo.transaction(()=>{
       const old=this.store.get('plan',parsed.plan.id);
       if((old?.revision??null)!==parsed.expectedRevision)throw Error('REVISION_CONFLICT');
@@ -67,11 +69,11 @@ export class PlanCenterService {
   }
   toggle(input:z.input<typeof PlanCenterToggleSchema>) {
     const p=PlanCenterToggleSchema.parse(input);
-    return this.repo.transaction(()=>{const old=this.store.get('plan',p.id);if(!old)throw Error('NOT_FOUND');if(old.revision!==p.expectedRevision)throw Error('REVISION_CONFLICT');const now=this.now();const plan=this.store.put('plan',{...old,enabled:p.enabled,revision:old.revision+1,updatedAt:now});this.store.put('cursor',{id:plan.id,lastAt:now});return plan;});
+    return this.repo.transaction(()=>{const old=this.store.get('plan',p.id);if(!old)throw Error('NOT_FOUND');if(old.revision!==p.expectedRevision)throw Error('REVISION_CONFLICT');if(p.enabled&&missingTheme(old))throw Error('THEME_REQUIRED');const now=this.now();const plan=this.store.put('plan',{...old,enabled:p.enabled,revision:old.revision+1,updatedAt:now});this.store.put('cursor',{id:plan.id,lastAt:now});return plan;});
   }
   preview(input:z.input<typeof PlanCenterIdSchema>) {
     const {id}=PlanCenterIdSchema.parse(input),plan=this.store.get('plan',id);if(!plan)throw Error('NOT_FOUND');
-    const summary={title:plan.title,artistId:plan.artistId,count:plan.count,outputs:plan.outputs,theme:plan.theme,styleTemplate:plan.styleTemplate,artistSnapshot:plan.artistSnapshot,storyContext:plan.storyContext,material:plan.material,text:plan.text,music:plan.music,routing:plan.routing,routeSnapshot:plan.routeSnapshot,routeIssue:planRouteIssue(this.repo,plan),publishTargets:plan.publishTargets.filter(t=>t.enabled),authorization:plan.authorization};
+    const summary={title:plan.title,artistId:plan.artistId,count:plan.count,outputs:plan.outputs,theme:plan.theme,styleTemplate:plan.styleTemplate,artistSnapshot:plan.artistSnapshot,storyContext:plan.storyContext,material:plan.material,text:plan.text,music:plan.music,routing:plan.routing,routeSnapshot:plan.routeSnapshot,routeIssue:planRouteIssue(this.repo,plan),publishTargets:plan.publishTargets.filter(t=>t.enabled),fanqie:plan.fanqie,authorization:plan.authorization};
     return {planRevision:plan.revision,summaryHash:digest({plan,summary}),summary};
   }
   run(input:z.input<typeof PlanCenterRunSchema>) {
@@ -94,6 +96,7 @@ export class PlanCenterService {
     });
   }
   private createRun(plan:PlanCenterPlan,source:PlanCenterRun['source'],requestId:string,summaryHash:string,occurrenceKey?:string) {
+    if(missingTheme(plan))throw Error('THEME_REQUIRED');
     if(this.store.all('run').some(r=>r.planId===plan.id&&!terminalRuns.has(r.state)))throw Error('ACTIVE_RUN');
     const routeIssue=planRouteIssue(this.repo,plan);if(routeIssue)plan={...plan,needsConfiguration:[routeIssue,...plan.needsConfiguration]};
     const now=this.now(),run=this.store.put('run',{id:randomUUID(),planId:plan.id,planRevision:plan.revision,snapshot:plan,summaryHash,requestId,source,occurrenceKey,state:'running',stopRequested:false,createdAt:now,updatedAt:now});
@@ -104,6 +107,7 @@ export class PlanCenterService {
     return this.repo.transaction(()=>{
       const now=this.now();
       for(const plan of this.store.all('plan').filter(p=>p.enabled)) {
+        if(missingTheme(plan))continue;
         if(this.store.all('run').some(r=>r.planId===plan.id&&!terminalRuns.has(r.state)))continue;
         const cursor=this.store.get('cursor',plan.id)??{id:plan.id,lastAt:plan.createdAt??now};
         const times=dueTimes(plan,cursor.lastAt,now);if(!times.length)continue;
@@ -414,6 +418,7 @@ export class PlanCenterService {
       const saved=this.store.put('publish',{...old,state:p.status,externalId:p.externalId??old.externalId,evidenceId:p.evidenceId??old.evidenceId,reason:p.reason,updatedAt:this.now()});this.refresh(old.runId);return saved;
     });
   }
+  refreshPublication(runId:string){this.refresh(runId);}
   private refresh(runId:string) {
     const run=this.store.get('run',runId)!;if(terminalRuns.has(run.state))return;
     const stages=this.store.all('stage').filter(a=>a.runId===run.id),publish=this.store.all('publish').filter(a=>a.runId===run.id),items=this.store.all('item').filter(i=>i.runId===run.id),now=this.now();
@@ -425,6 +430,13 @@ export class PlanCenterService {
     for(const item of items) {
       const required=this.stages(run.snapshot),next=required.find(s=>!stages.some(a=>a.itemId===item.id&&a.stage===s&&a.state==='succeeded'));
       if(!next) {
+        if(run.snapshot.fanqie&&run.snapshot.authorization.publish){
+          const job=this.repo.maybe('settings','plan-fanqie:'+item.id)?.value;
+          if(!job||!['uploaded','existing'].includes(job.state)){
+            waiting=true;blocked ||= ['unknown','blocked'].includes(job?.state);
+            this.store.put('item',{...item,state:'waiting_publication',reason:job?.reason??'FANQIE_UPLOAD_PENDING',updatedAt:now});continue;
+          }
+        }
         const targets=run.snapshot.authorization.publish?run.snapshot.publishTargets.filter(t=>t.enabled):[],done=targets.every(t=>publish.some(a=>a.itemId===item.id&&a.platform===t.platform&&a.accountId===t.accountId&&['published','rejected','failed'].includes(a.state)));
         if(done){complete++;this.store.put('item',{...item,state:'completed',reason:undefined,updatedAt:now});}
         else {waiting=true;this.store.put('item',{...item,state:'waiting_publication',reason:this.capabilities().publication.available?'PUBLICATION_PENDING':'PUBLICATION_PORT_UNAVAILABLE',updatedAt:now});}

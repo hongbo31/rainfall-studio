@@ -27,7 +27,7 @@ export async function readFanqieCatalog(page: FanqieCatalogPage): Promise<Fanqie
   catch (error) {
     // The count badges and table rows finish their separate SPA updates at different times.
     // Retry only this read; never navigate, click, clear a filter or write to the site.
-    if (error instanceof Error && error.message === 'FANQIE_CATALOG_COUNT_INVALID' && Date.now() < deadline) {
+    if (error instanceof Error && ['FANQIE_CATALOG_COUNT_INVALID','FANQIE_CATALOG_ROW_UNVERIFIED'].includes(error.message) && Date.now() < deadline) {
       await new Promise(resolve => setTimeout(resolve,250)); continue;
     }
     throw error;

@@ -42,6 +42,7 @@ import { selectInboxMusicInput, selectedInboxMusicInput } from "./inbox/music-in
 import { parseTextProviderProfile } from "../shared/text-providers";
 import { TmeDraftService } from './tme-drafts';
 import { CoverHandoff } from './cover-handoff';
+import {watchCoverInbox,coverInboxStatus,scanCoverInbox} from './cover-inbox';
 import {assertPlanCoverWork} from './plan-cover-work';
 import {LyricService,candidateLyricOrigin,type LyricOrigin} from './lyrics';
 import {publicationPayload} from './publication-payload';
@@ -404,6 +405,8 @@ export class Studio {
       case 'publication.payload': return publicationPayload(this,this.get('works',v.workId));
       case 'cover.request': return this.coverHandoff().request(v);
       case 'cover.list': return this.coverHandoff().list(v.workId);
+      case 'cover.watch': return watchCoverInbox(this,v.requestId);
+      case 'cover.inboxStatus': return coverInboxStatus(this,v.workId);
       case 'tme.preview': return this.tmeDraftService().preview(v);
       case 'tme.prepare': return this.tmeDraftService().prepare(v);
       case 'tme.list': return this.tmeDraftService().list();
@@ -1164,6 +1167,7 @@ export class Studio {
     if(this.mode==='production')this.productionFlowService().tick();
     if (Date.now() - this.inboxTickAt >= 5000) {
       this.inboxTickAt = Date.now();
+      await scanCoverInbox(this);
       await this.scanInbox();
     }
     await this.dailyScheduler().tick();
