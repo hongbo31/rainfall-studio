@@ -51,7 +51,7 @@ export function prepareManualCreation(s: Studio, raw: unknown) {
         schedule: { kind: "daily", localTime: "09:00" },
         theme: i.storyBeat.slice(0, 2000),
         storyContext: { storyBeat: i.storyBeat, storyStage: i.storyStage },
-        styleTemplate: "",
+        styleTemplate: i.styleTemplate ?? "",
         outputs: i.outputs,
         material: { source: "provider" },
         routing,

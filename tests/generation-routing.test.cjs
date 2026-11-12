@@ -147,6 +147,7 @@ test("manual generation uses the same real plan/provider route and keeps request
     artistId: x.artist.id,
     storyBeat: "A rainy street",
     storyStage: "meeting",
+    styleTemplate: "华语流行、民谣、木吉他、轻鼓组",
     outputs: { lyrics: true, cover: false, music: false },
     text: { consent: false },
     music: { consent: false },
@@ -154,6 +155,7 @@ test("manual generation uses the same real plan/provider route and keeps request
   const a = await x.call("manualCreation.prepare", input);
   assert.equal(a.run.snapshot.text.profileId, p.id);
   assert.equal(a.run.snapshot.routeSnapshot.text.modelId, "ep-manual");
+  assert.equal(a.run.snapshot.styleTemplate, input.styleTemplate);
   tickPlanCenter(x.s);
   assert.equal(x.s.all("operations").length, 0);
   const other = await profile(x, "text", "deepseek", "deepseek-flash");
@@ -329,6 +331,7 @@ test("manual DeepSeek and Doubao execute the frozen route through Main broker fi
         artistId: x.artist.id,
         storyBeat: "Original rainy street story",
         storyStage: "first meeting",
+        styleTemplate: "华语流行、R&B、温暖、轻鼓组",
         outputs: { lyrics: true, cover: false, music: false },
         text: { consent: true, budgetMicros: 1000000 },
         music: { consent: false },
@@ -415,6 +418,7 @@ test("manual DeepSeek and Doubao execute the frozen route through Main broker fi
       ),
     );
     assert.match(requests[0].messages[1].content, /first meeting/);
+    assert.match(requests[0].messages[1].content, /华语流行、R&B、温暖、轻鼓组/);
     const run = x.s
         .planCenterService()
         .list()

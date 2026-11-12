@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import "./ui-system.css";
 import "./plan-center.css";
 import "./themes.css";
+import "./account-style.css";
 import { initializeTheme } from "./theme";
 import ThemeToggle from "./components/ThemeToggle";
 import PlanCenter from "./pages/PlanCenter";
@@ -18,6 +19,7 @@ import CoverStudio from "./pages/CoverStudio";
 import PublishCenter from "./pages/PublishCenter";
 import Insights from "./pages/Insights";
 import ConfigurationCenter from "./pages/ConfigurationCenter";
+import PlatformAccounts from "./pages/PlatformAccounts";
 import { createSelectionWriter } from "./publish-selection";
 import {
   platformTargets,
@@ -36,6 +38,7 @@ const pages = [
   ["cover", "▧", "封面工作室"],
   ["publish", "↗", "发布中心"],
   ["insights", "▥", "数据看板"],
+  ["platform-accounts", "◎", "账号管理"],
   ["accounts", "⚙", "配置中心"],
 ];
 function App() {
@@ -50,6 +53,8 @@ function App() {
     }),
     [configurationTarget, setConfigurationTarget] =
       useState<PlatformTarget>("netease"),
+    [configurationCategory, setConfigurationCategory] = useState<"platforms" | "artists">("platforms"),
+    [configurationAccount, setConfigurationAccount] = useState(""),
     [toast, setToast] = useState(""),
     [audio, setAudio] = useState<any>(null),
     [fatal, setFatal] = useState(""),
@@ -139,12 +144,15 @@ function App() {
     );
   const exportArtifact = (kind: string, input: any = {}) =>
     native(window.rainfall.exportFile(kind, input), "文件已保存到所选位置");
-  const go = (p: string, workId?: string) => {
+  const go = (p: string, workId?: string, accountId?: string) => {
     setPage(p);
     if (p === "accounts") {
+      setConfigurationCategory(workId === "artists" ? "artists" : "platforms");
+      setConfigurationAccount(accountId ?? "");
       if (platformTargets.includes(workId as PlatformTarget))
         setConfigurationTarget(workId as PlatformTarget);
-    } else if (workId) setId(workId);
+    } else if (p === "platform-accounts") setId(workId ?? "");
+    else if (workId) setId(workId);
     window.scrollTo(0, 0);
   };
   const play = (w: any, slot = "audio_A") => {
@@ -299,7 +307,9 @@ function App() {
           ) : page === "insights" ? (
             <Insights />
           ) : page === "accounts" ? (
-            <ConfigurationCenter initialTarget={configurationTarget} />
+            <ConfigurationCenter initialTarget={configurationTarget} initialCategory={configurationCategory} initialAccountId={configurationAccount} />
+          ) : page === "platform-accounts" ? (
+            <PlatformAccounts key={data.mode + ":" + id} initialProvider={id}/>
           ) : (
             <Overview />
           )}

@@ -8,7 +8,7 @@ export interface StudioContext {
   call: (method: string, input?: any) => Promise<any>;
   refresh: () => Promise<void>;
   notify: (text: string) => void;
-  go: (page: string, id?: string) => void;
+  go: (page: string, id?: string, accountId?: string) => void;
   play: (work: any, slot?: string) => void;
   selected: string[];
   setSelected: (ids: string[]) => void;

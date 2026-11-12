@@ -44,8 +44,10 @@ import {createTmeAiPrepareBroker,TmeAiNativePort,nativeSnapshot} from './tme/ai-
 import {createTmeAiSubmissionBroker} from './tme/ai-submission';
 import {TmeAiCloudSessionManager} from './tme/ai-cloud-session';
 import {createAccountIdentityBroker,accountIdentityUiResponse} from './account-identity-broker';
-import {FanqieCatalogSession, fanqieCatalogError} from './fanqie/catalog-session';
-import {FanqieUploadBroker} from './fanqie/upload-broker';
+import {fanqieCatalogError} from './fanqie/catalog-session';
+import {FanqieAccountSessions, splitFanqieAccountInput} from './fanqie/account-sessions';
+import {PlatformBrowserSessions} from './browser-accounts';
+import {PlatformAccountIdSchema, type PlatformAccount} from '../shared/platform-accounts';
 import {createPlanFanqiePublisher} from './fanqie/plan-publisher';
 import {createUnifiedPublishBroker,createTmeAiTransportProvider} from './tme/unified-publish';
 import {externalReceiptBarrier,persistExternalReceiptBarrier,persistExternalReceiptStop} from './tme/external-receipt-barrier';
@@ -167,11 +169,26 @@ const productionFlow=createProductionFlowBroker({credentials:apiCredentials,rpc:
 const tmeAiNative=new TmeAiNativePort(path.join(__dirname,'tme-ai-uia-host.ps1'));
 const tmeAiCloud=new TmeAiCloudSessionManager({enableExistingAlbum:true,available:()=>mode==='production'&&!switching&&!closing});
 const accountIdentity=createAccountIdentityBroker({session:tmeAiCloud,rpc:(method,input)=>rpc(method,input),available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration});
-const fanqieCatalog = new FanqieCatalogSession({root, available:()=>mode==='production'&&!switching&&!closing, generation:()=>coreGeneration});
-const fanqieUpload = new FanqieUploadBroker({root,session:fanqieCatalog,available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,
+const accountBrowsers = new PlatformBrowserSessions(root);
+const fanqieAccounts = new FanqieAccountSessions({root,available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,
   work:async selection=>{const result=await rpc('internal.fanqie.work',selection);if(!result.ok)throw Error(result.error.code);return result.value;},
   pickBundle:async()=>{const result=await dialog.showOpenDialog(window,{title:'选择番茄发布材料清单',properties:['openFile'],filters:[{name:'番茄发布材料清单',extensions:['json']}]});return result.canceled?null:result.filePaths[0];}});
-const planFanqiePublisher=createPlanFanqiePublisher({rpc,upload:fanqieUpload,available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration});
+async function browserAccount(accountId:string):Promise<PlatformAccount>{
+  if(mode!=='production'||switching||closing)throw Error('PRODUCTION_REQUIRED');
+  const generation=coreGeneration;
+  const result=await rpc('internal.accountSession.get',{accountId});
+  if(generation!==coreGeneration||switching||closing)throw Error('WORKSPACE_CHANGED');
+  if(!result.ok)throw Error(result.error.code);
+  return result.value;
+}
+async function fanqieAccount(accountId?:string){
+  if(accountId&&(await browserAccount(accountId)).provider!=='fanqie')throw Error('ACCOUNT_PROVIDER_MISMATCH');
+  return fanqieAccounts.get(accountId);
+}
+const planFanqiePublisher=createPlanFanqiePublisher({
+  rpc,upload:fanqieAccounts.get().upload,forAccount:async id=>(await fanqieAccount(id)).upload,
+  available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,
+});
 tmeAiCloud.onIdentityInvalidated(()=>{try{child?.postMessage({kind:'account-identity-invalidated'})}catch{/* Old worker already stopped. */}});
 // Cloud sessions and calibrated browser contracts must be supplied by Main, never renderer flags.
 const tmeAiTransport=createTmeAiTransportProvider({platform:process.platform,cloudSession:()=>tmeAiCloud.submissionSession(),cloudExistingAlbumSession:()=>tmeAiCloud.existingAlbumSession(),readExternalReceipt:async(context)=>{const receipt=await tmeAiCloud.readExternalReceipt(context);persistExternalReceiptBarrier(root,receipt);return receipt},cloudPreparationSession:()=>tmeAiCloud.preparationSession(),native:tmeAiNative,nativeObserve:async(context)=>{
@@ -290,6 +307,7 @@ async function safe(fn: () => any) {
   }
 }
 const official: Record<string, string> = {
+  fanqie: "https://www.novelfm.com/creator/music/home",
   suno: "https://suno.com",
   yourmusic: "https://app.yourmusic.fun/create",
   netease: "https://music.163.com/st/musician",
@@ -302,12 +320,18 @@ const official: Record<string, string> = {
 function handlers() {
   ipcMain.handle('rainfall:fanqie-upload',(event,action,input)=>safe(async()=>{
     trusted(event);
-    try {return {ok:true,value:await fanqieUpload.ui(action,input)}}
+    try {
+      const {accountId,actionInput}=splitFanqieAccountInput(input);
+      return {ok:true,value:await (await fanqieAccount(accountId)).upload.ui(action,actionInput)};
+    }
     catch (error) {return {ok:false,error:fanqieCatalogError(error)}}
   }));
   ipcMain.handle('rainfall:fanqie-catalog',(event,action,input)=>safe(async()=>{
     trusted(event);
-    try {return {ok:true,value:await fanqieCatalog.ui(action,input)}}
+    try {
+      const {accountId,actionInput}=splitFanqieAccountInput(input);
+      return {ok:true,value:await (await fanqieAccount(accountId)).catalog.ui(action,actionInput)};
+    }
     catch (error) {return {ok:false,error:fanqieCatalogError(error)}}
   }));
     ipcMain.handle('rainfall:tme-ai-submission',(event,action,input)=>safe(async()=>{
@@ -371,6 +395,26 @@ function handlers() {
     safe(async () => {
       trusted(e);
       const parsed = validate(method, input);
+      if(method==="accountSession.status"||method==="accountSession.open"){
+        try {
+          const {accountId}=PlatformAccountIdSchema.parse(parsed);
+          const generation=coreGeneration,account=await browserAccount(accountId);
+          const guard=()=>{
+            if(mode!=='production'||switching||closing||generation!==coreGeneration)
+              throw Error('WORKSPACE_CHANGED');
+          };
+          guard();
+          if(account.provider==='fanqie'){
+            const value=await fanqieAccounts.get(accountId).catalog.ui(method.endsWith('.open')?'open':'status');
+            if(!value)throw Error('FANQIE_BROWSER_CONNECTION_REQUIRED');
+            return {ok:true,value:{...value,opened:value.connected}};
+          }
+          const value=method.endsWith('.open')
+            ?await accountBrowsers.open(account,official[account.provider],guard)
+            :accountBrowsers.status(accountId);
+          return {ok:true,value};
+        } catch(error){return {ok:false,error:fanqieCatalogError(error)};}
+      }
         if(method.startsWith('materials.'))return{ok:true,value:await materialWorkbench.ui(method.slice('materials.'.length),parsed)};
       if(method.startsWith('accountIdentity.'))return accountIdentityUiResponse(()=>accountIdentity.ui(method.slice('accountIdentity.'.length),parsed));
       if(method==='directoryTasks.chooseDirectory')return chooseDirectoryTaskSource(parsed,{
@@ -658,7 +702,7 @@ app.on("before-quit", (e) => {
   if (!closing && child) {
     e.preventDefault();
     closing = true;
-    rpc("internal.close").finally(() => {
+    Promise.allSettled([rpc("internal.close"),accountBrowsers.close(),fanqieAccounts.close()]).finally(() => {
       child.kill();
       app.quit();
     });

@@ -132,6 +132,49 @@ test('only pre-editor opening failures may be explicitly recovered after a fresh
  }
 });
 
+test('configured publication recovers a closed editor after a material timeout and verifies the original scope',async()=>{
+ for(const condition of ['closed','open','duplicate','confirmation','different-lyrics']){
+  const f=uploadFixture(),workId='00000000-0000-4000-8000-000000000003';
+  const bundle=loadFanqieBundle(f.manifest);
+  const page={url:()=>catalogUrl+'/uploadProduct',isClosed:()=>false};
+  const pages=[];let writes=0;
+  f.options.work=async selection=>({...selection,title:f.raw.title,ai:'generated',artistId:workId,fingerprint:h('work')});
+  f.options.materials=async()=>bundle.assets;
+  f.options.session.status=()=>({connected:true,report:f.current.report});
+  f.options.session.run=async action=>action({pages:()=>pages},()=>{});
+  f.options.execute=async(_context,input,callbacks)=>{
+   writes++;
+   if(writes===1){
+    await callbacks.intent(condition==='confirmation'?'first-step:confirm-upload':'upload:lyrics');
+    throw Error('FANQIE_UPLOAD_READBACK_TIMEOUT');
+   }
+   await callbacks.intent('first-step:confirm-upload');
+   f.current.catalog.rows.push({id:'9876543210987654321',title:input.title,stage:'contract_pending',officialStatus:'待授权'});
+   f.current.catalog.total=f.current.catalog.rows.length;
+  };
+  const selected={workId,variant:'A'};
+  const broker=new FanqieUploadBroker(f.options);
+  await broker.ui('saveConfiguration',{version:1,authors:f.raw.authors,useWorkMaterials:true,publicationConsent:true});
+  await assert.rejects(broker.ui('publishConfigured',selected),/FANQIE_UPLOAD_READBACK_TIMEOUT/);
+  if(condition==='open')pages.push(page);
+  if(condition==='duplicate'){
+   f.current.catalog.rows.push({id:'9876543210987654321',title:f.raw.title,stage:'contract_pending',officialStatus:'待授权'});
+   f.current.catalog.total=1;
+  }
+  if(condition==='different-lyrics')f.options.materials=async()=>({...bundle.assets,lyrics:{...bundle.assets.lyrics,sha256:h('edited')}});
+  const restarted=new FanqieUploadBroker(f.options);
+  if(condition==='closed'){
+   assert.equal((await restarted.ui('publishConfigured',selected)).result.officialRecord.id,'9876543210987654321');
+   assert.equal(writes,2);
+   assert.equal(fs.readdirSync(path.join(f.root,'production/fanqie/uploads/opening-history')).length,1);
+  }else{
+   await assert.rejects(restarted.ui('publishConfigured',selected),/RECONCILIATION_REQUIRED|REQUIRES_RECONCILIATION/);
+   assert.equal(writes,1);
+   assert.equal(restarted.status().jobs[0].phase,'unknown');
+  }
+ }
+});
+
 test('authorization preferences persist without granting automatic contract signature',async()=>{
  const f=uploadFixture(),broker=new FanqieUploadBroker(f.options);
  const authorizationPreference={mode:'exclusive',platforms:['fanqie_music','fanqie_audio'],confirmContractManually:true};
@@ -167,16 +210,20 @@ test('authorization skips all reviewing works and rejects changed account withou
  await assert.rejects(authorizeFanqieRecords(f.root,f.options.session,'other',['1234567890'],pref,()=>{}),/SCOPE_CHANGED/);
 });
 
-test('configured batch uploads two distinct works once and skips them on a repeated batch',async()=>{
+test('configured batch uses each work artist’s credits and skips existing works on repeat',async()=>{
  const f=uploadFixture(),ids=['00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000002'];
+ const alternate={lyricist:'第二艺人',composer:'第二艺人',singer:'第二艺人'};
+ f.current.artists.push({name:alternate.singer,artistId:'987654321'});
  f.options.session.status=()=>({connected:true,report:f.current.report});
- f.options.work=async selection=>({workId:selection.workId,variant:selection.variant,title:'合成作品'+selection.workId.slice(-1),ai:'generated',fingerprint:h(selection.workId)});
+ f.options.work=async selection=>({workId:selection.workId,artistId:selection.workId,variant:selection.variant,title:'合成作品'+selection.workId.slice(-1),ai:'generated',fingerprint:h(selection.workId)});
  f.options.materials=async(_root,source)=>{
   const result={};for(const role of ['audio','lyrics','cover']){const file=path.join(f.root,source.workId+'-'+role);const bytes=Buffer.from(source.workId+role);fs.writeFileSync(file,bytes);result[role]={file,bytes:bytes.length,sha256:h(bytes)};}return result;
  };
- let uploads=0;f.options.execute=async(_context,input,callbacks)=>{await callbacks.intent('first-step:confirm-upload');uploads++;f.current.catalog.rows.push({id:'987654321098765432'+uploads,title:input.title,stage:'contract_pending',officialStatus:'待授权',createdAtText:'fixture',publishedAtText:'-'});f.current.catalog.total=f.current.catalog.rows.length;return{authorizationPageObserved:true,officialRecordVerified:false};};
- const broker=new FanqieUploadBroker(f.options);await broker.ui('saveConfiguration',{version:1,authors:f.raw.authors,useWorkMaterials:true,publicationConsent:true});
+ let uploads=0;const credits=[];
+ f.options.execute=async(_context,input,callbacks)=>{await callbacks.intent('first-step:confirm-upload');credits.push(input.authors);uploads++;f.current.catalog.rows.push({id:'987654321098765432'+uploads,title:input.title,stage:'contract_pending',officialStatus:'待授权',createdAtText:'fixture',publishedAtText:'-'});f.current.catalog.total=f.current.catalog.rows.length;return{authorizationPageObserved:true,officialRecordVerified:false};};
+ const broker=new FanqieUploadBroker(f.options);await broker.ui('saveConfiguration',{version:1,authors:f.raw.authors,artistAuthors:{[ids[1]]:alternate},useWorkMaterials:true,publicationConsent:true});
  const request={items:ids.map(workId=>({workId,variant:'A'}))};const first=await broker.ui('publishBatch',request);assert.equal(first.batch.state,'complete',JSON.stringify(first.batch));assert.equal(uploads,2);assert.equal(first.jobs.length,2);
+ assert.deepEqual(credits,[f.raw.authors,alternate]);
  const second=await broker.ui('publishBatch',request);assert.equal(second.batch.state,'complete');assert.equal(uploads,2);assert.equal(f.current.catalog.rows.length,2);
 });
 

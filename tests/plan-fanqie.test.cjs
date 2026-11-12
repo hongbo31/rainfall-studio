@@ -18,6 +18,20 @@ test('scheduled publisher drains two distinct works once and never replays recei
  const h=harness(),p=createPlanFanqiePublisher({rpc:h.rpc,upload:h.upload,available:()=>true,generation:()=>h.epoch});
  await p.pump();await p.pump();assert.equal(h.writes,2);assert.deepEqual(h.jobs.map(j=>j.state),['uploaded','uploaded']);
 });
+test('scheduled publisher sends explicitly scoped jobs to that account and preserves the legacy default',async()=>{
+ const h=harness(),accountId='00000000-0000-4000-8000-000000000013',routed=[];
+ h.jobs[1].accountId=accountId;
+ const other={status:()=>({busy:false}),publishScheduled:async(input,check)=>{
+  await check();routed.push(input.workId);
+  return {result:{uploaded:true,officialRecord:{id:'8001',stage:'contract_pending'}}};
+ }};
+ const p=createPlanFanqiePublisher({rpc:h.rpc,upload:h.upload,available:()=>true,generation:()=>h.epoch,
+  forAccount:async id=>{assert.equal(id,accountId);return other;}});
+ await p.pump();
+ assert.equal(h.writes,1);
+ assert.deepEqual(routed,['work2']);
+ assert.deepEqual(h.jobs.map(j=>j.state),['uploaded','uploaded']);
+});
 test('uncertain upload pauses remaining works; restart does not dispatch unknown intent',async()=>{
  const h=harness();h.fail();const options={rpc:h.rpc,upload:h.upload,available:()=>true,generation:()=>h.epoch};
  await createPlanFanqiePublisher(options).pump();assert.deepEqual(h.jobs.map(j=>j.state),['unknown','ready']);

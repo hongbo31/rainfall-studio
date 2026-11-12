@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import MusicStylePicker from "../components/MusicStylePicker";
 import {
   useStudio,
   PageHead,
@@ -72,15 +73,8 @@ export default function Create() {
               maxLength={200}
             />
           </label>
+          <MusicStylePicker label="音乐风格" value={form.genre} inherited={defaults.genre} onChange={value => set("genre", value)}/>
           <div className="form-grid">
-            <label>
-              音乐风格
-              <input
-                value={form.genre}
-                placeholder={"继承：" + defaults.genre}
-                onChange={(e) => set("genre", e.target.value)}
-              />
-            </label>
             <label>
               语言
               <input

@@ -3,7 +3,7 @@ import type {BrowserContext, Page, Locator} from 'playwright-core';
 import type {FanqieInput} from '../../shared/fanqie';
 import {readFanqieAccountUid} from './identity';
 import {chooseFanqieFile, fanqieFileControl} from './form';
-import {readFanqieVisibleForm, selectFanqieCredit, confirmFanqieFirstStep, assertFanqieFirstStepReadback, type FanqieExpectedForm} from './first-step';
+import {readFanqieVisibleForm, selectFanqieCredit, confirmFanqieFirstStep, assertFanqieFirstStepReadback, fanqieTransferVerified, type FanqieExpectedForm} from './first-step';
 
 /** Translate the calibrated locator surface to Playwright's native timeout spelling. */
 function locatorAdapter(locator: Locator): any {
@@ -32,8 +32,8 @@ export function nativeFanqiePage(page: Page): any {
 const sizeText = (bytes: number) => bytes >= 1024 * 1024 ? (bytes / 1024 / 1024).toFixed(1)+'MB' : (bytes / 1024).toFixed(1)+'KB';
 export function expectedFanqieForm(input: FanqieInput): FanqieExpectedForm {
   return {title: input.title, authors: input.authors, ai: input.ai, musicType: input.musicType,
-    audio: {displayName: input.title, format: path.extname(input.assets.audio.file).toLowerCase() === '.wav' ? 'WAV' : 'MP3', displaySize: sizeText(input.assets.audio.bytes)},
-    lyrics: {fileName: path.basename(input.assets.lyrics.file), displaySize: sizeText(input.assets.lyrics.bytes)}};
+    audio: {displayName: input.title, format: path.extname(input.assets.audio.file).toLowerCase() === '.wav' ? 'WAV' : 'MP3', displaySize: sizeText(input.assets.audio.bytes), bytes: input.assets.audio.bytes},
+    lyrics: {fileName: path.basename(input.assets.lyrics.file), displaySize: sizeText(input.assets.lyrics.bytes), bytes: input.assets.lyrics.bytes}};
 }
 export async function executeFanqieNativeUpload(context: BrowserContext, input: FanqieInput,
   callbacks: {guard: () => void; intent: (step: string) => Promise<void>; progress: (step: string) => void; diagnostic?:(value:unknown)=>void}) {
@@ -80,13 +80,20 @@ export async function executeFanqieNativeUpload(context: BrowserContext, input: 
     callbacks.progress('正在填写署名');
     await selectFanqieCredit(adapter, role, input.authors[role], intent, assertScope);
   }
-  const waitReadback = async (test: (state: Awaited<ReturnType<typeof readFanqieVisibleForm>>) => boolean, milliseconds = 120000) => {
-    const end = Date.now() + milliseconds;
+  const waitReadback = async (
+    role: 'audio' | 'lyrics' | 'cover',
+    test: (state: Awaited<ReturnType<typeof readFanqieVisibleForm>>) => boolean,
+  ) => {
+    const end = Date.now() + 120000;
+    let state: Awaited<ReturnType<typeof readFanqieVisibleForm>> | undefined;
     while (Date.now() < end) {
-      await assertScope(); const state = await readFanqieVisibleForm(adapter);
+      await assertScope(); state = await readFanqieVisibleForm(adapter);
       if (test(state)) return state;
       await new Promise(resolve => setTimeout(resolve, 300));
     }
+    callbacks.diagnostic?.({stage:'material-readback', role,
+      acknowledgement: role === 'cover' ? state?.coverPreview :
+        (role === 'audio' ? state?.audioText : state?.lyricsText)?.trim().slice(0, 240)});
     throw Error('FANQIE_UPLOAD_READBACK_TIMEOUT');
   };
   for (const role of ['audio','lyrics','cover'] as const) {
@@ -99,9 +106,9 @@ export async function executeFanqieNativeUpload(context: BrowserContext, input: 
       await intent('confirm-square-crop'); await assertScope();
       await crop.getByRole('button', {name:'确定', exact:true}).click();
       await crop.waitFor({state:'hidden', timeout:20000});
-      await waitReadback(s => s.coverPreview.length === 1 && s.coverPreview[0].complete && s.coverPreview[0].width > 0 && s.coverPreview[0].width === s.coverPreview[0].height);
-    } else if (role === 'audio') await waitReadback(s => s.audioText.trim() === `${expected.audio.displayName}\n${expected.audio.format}｜上传完成｜${expected.audio.displaySize}`);
-    else await waitReadback(s => s.lyricsText.trim() === `${expected.lyrics.fileName}\n上传完成｜${expected.lyrics.displaySize}`);
+      await waitReadback(role, s => s.coverPreview.length === 1 && s.coverPreview[0].complete && s.coverPreview[0].width > 0 && s.coverPreview[0].width === s.coverPreview[0].height);
+    } else if (role === 'audio') await waitReadback(role, s => fanqieTransferVerified(s.audioText, expected.audio));
+    else await waitReadback(role, s => fanqieTransferVerified(s.lyricsText, expected.lyrics));
   }
   assertFanqieFirstStepReadback(await readFanqieVisibleForm(adapter), expected);
   callbacks.progress('正在确认上传结果');

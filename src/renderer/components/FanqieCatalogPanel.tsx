@@ -1,8 +1,10 @@
 import React, {useEffect, useRef, useState} from 'react';
 import type {FanqieCatalogReport} from '../../shared/fanqie-catalog';
 import {checkFanqieNewUpload} from '../../shared/fanqie-catalog';
+import {fanqieScope} from '../fanqie-accounts';
 
-export default function FanqieCatalogPanel({mode, selectedTitles = []}: {mode: string; selectedTitles?: string[]}) {
+export default function FanqieCatalogPanel({mode, accountId, selectedTitles = []}: {mode: string; accountId?:string; selectedTitles?: string[]}) {
+  const scope = fanqieScope(accountId);
   const [connected, setConnected] = useState(false), [busy, setBusy] = useState(false);
   const [report, setReport] = useState<FanqieCatalogReport | null>(null);
   const [error, setError] = useState('');
@@ -11,24 +13,24 @@ export default function FanqieCatalogPanel({mode, selectedTitles = []}: {mode: s
   const epoch = useRef(0);
   useEffect(() => {
     const current = ++epoch.current; setAuthorizationIds([]); setReport(null); setError(''); setConnected(false); setBusy(false);
-    if (mode === 'production' && window.rainfall?.fanqieCatalog) void window.rainfall.fanqieCatalog('status').then(r => {
+    if (mode === 'production' && window.rainfall?.fanqieCatalog) void window.rainfall.fanqieCatalog('status',scope).then(r => {
       if (current === epoch.current && r.ok) {setConnected(r.value.connected); setReport(r.value.report);}
     }).catch(() => {});
     return () => {++epoch.current;};
-  }, [mode]);
+  }, [mode,accountId]);
   useEffect(() => {
     if (!busy) return; const current = epoch.current;
-    const timer = setInterval(() => {void window.rainfall.fanqieCatalog('status').then(r => {
+    const timer = setInterval(() => {void window.rainfall.fanqieCatalog('status',scope).then(r => {
       if (current === epoch.current && r.ok) setProgress(r.value.progress ?? '');
     }).catch(() => {});}, 1000);
     return () => clearInterval(timer);
-  }, [busy]);
+  }, [busy,accountId]);
   if (mode !== 'production') return null;
   const run = async (action: 'open' | 'read') => {
     if (busy) return; setBusy(true); setError('');
     const current = epoch.current;
     try {
-      const result = await window.rainfall.fanqieCatalog(action);
+      const result = await window.rainfall.fanqieCatalog(action,scope);
       if (current !== epoch.current) return;
       if (!result.ok) {setError(result.error.message); return;}
       setAuthorizationIds([]);setConnected(result.value.connected); setReport(result.value.report); setProgress(result.value.progress ?? "");
@@ -49,7 +51,7 @@ export default function FanqieCatalogPanel({mode, selectedTitles = []}: {mode: s
       <table><thead><tr><th>选择</th><th>作品</th><th>状态</th><th>作品 ID</th></tr></thead><tbody>
         {report.rows.map(row => <tr key={row.id}><td>{row.stage==='contract_pending'&&<input type="checkbox" aria-label={'授权 '+row.title} disabled={busy} checked={authorizationIds.includes(row.id)} onChange={e=>setAuthorizationIds(ids=>e.target.checked?[...ids,row.id]:ids.filter(id=>id!==row.id))}/>}</td><td>{row.title}</td><td>{row.officialStatus}</td><td>{row.id}</td></tr>)}
       </tbody></table>
-      {!!authorizationIds.length&&<button disabled={busy||!report.complete} onClick={async()=>{setBusy(true);setError('');const current=epoch.current;try{const r=await window.rainfall.fanqieUpload('authorizeExisting',{accountKey:report.accountKey,ids:authorizationIds});if(!r.ok)throw Error(r.error.message);if(current===epoch.current)setProgress('授权信息已准备，请在官网确认合同');}catch(e:any){if(current===epoch.current)setError(e.message)}finally{if(current===epoch.current)setBusy(false)}}}>继续授权（{authorizationIds.length} 首）</button>}
+      {!!authorizationIds.length&&<button disabled={busy||!report.complete} onClick={async()=>{setBusy(true);setError('');const current=epoch.current;try{const r=await window.rainfall.fanqieUpload('authorizeExisting',{...scope,accountKey:report.accountKey,ids:authorizationIds});if(!r.ok)throw Error(r.error.message);if(current===epoch.current)setProgress('授权信息已准备，请在官网确认合同');}catch(e:any){if(current===epoch.current)setError(e.message)}finally{if(current===epoch.current)setBusy(false)}}}>继续授权（{authorizationIds.length} 首）</button>}
       {!busy&&progress&&<p role="status">{progress}</p>}
       <small>读取于 {new Date(report.observedAt).toLocaleString()}；待授权表示尚未签约。</small>
       {selectedTitles.map(title => {

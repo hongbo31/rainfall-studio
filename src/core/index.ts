@@ -22,6 +22,7 @@ import {ProductionFlowSchemas} from '../shared/production-flow';
 import {importProductionAudio} from './production-integration';
 import {executeTmeAiPrepare} from './tme-ai-prepare-integration';
 import {resolveFanqieWork} from './fanqie-work';
+import { AccountProviderSchema, PlatformAccountIdSchema } from "../shared/platform-accounts";
 import {planFanqieAction,recoverPlanFanqie} from './plan-fanqie';
 import {executeTmeAiSubmission} from './tme-ai-submission-integration';
 import {createAccountIdentityBridge} from './account-identity-channel';
@@ -230,6 +231,17 @@ if (port) {
       return true;
     }
     if (method === 'internal.fanqie.work') return resolveFanqieWork(studio,input);
+    if (method === "internal.accountSession.get") {
+      const { accountId } = PlatformAccountIdSchema.parse(input);
+      const account = studio.repo.maybe("accounts", accountId);
+      if (!account) throw Error("ACCOUNT_NOT_FOUND");
+      return {
+        id: account.id,
+        provider: AccountProviderSchema.parse(account.provider),
+        name: account.name,
+        dailyLimit: account.dailyLimit,
+      };
+    }
     if (method === "internal.locate") return studio.locate(input.id);
     if (method === 'internal.tme.get') return studio.tmeDraftService().get(input.id);
     if (method === 'internal.tme.list') return studio.tmeDraftService().list();

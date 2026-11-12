@@ -53,6 +53,8 @@ export class PlanCenterService {
     return this.repo.transaction(()=>{
       const old=this.store.get('plan',parsed.plan.id);
       if((old?.revision??null)!==parsed.expectedRevision)throw Error('REVISION_CONFLICT');
+      if(parsed.plan.fanqie?.accountId&&this.repo.maybe('accounts',parsed.plan.fanqie.accountId)?.provider!=='fanqie')
+        throw Error('ACCOUNT_PROVIDER_MISMATCH');
       let inputPlan=freezePlanIdentities(this.repo,freezeArtist(this.repo,freezePlanRoutes(this.repo,parsed.plan)));
       if(old?.routeSnapshot&&digest(old.routeSnapshot)!==digest(inputPlan.routeSnapshot)){inputPlan={...inputPlan,text:{...inputPlan.text,consent:false},music:{...inputPlan.music,consent:false},authorization:{...inputPlan.authorization,text:false,music:false}};}
       if(inputPlan.material.source==='provider'&&inputPlan.text.profileId){

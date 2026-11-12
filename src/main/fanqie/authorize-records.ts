@@ -6,7 +6,7 @@ import {FanqieCatalogSession} from './catalog-session';
 import {prepareFanqieAuthorization} from './authorization';
 
 const preparedPages=new WeakMap<BrowserContext,Map<string,Page>>();
-export async function authorizeFanqieRecords(root:string,session:FanqieCatalogSession,accountKey:string,ids:string[],preference:FanqieAuthorizationPreference,outerGuard:()=>void){
+export async function authorizeFanqieRecords(root:string,session:FanqieCatalogSession,accountKey:string,ids:string[],preference:FanqieAuthorizationPreference,outerGuard:()=>void,stateDirectory=path.join(root,'production','fanqie')){
  return session.run(async(context,guard)=>{
   const current=await session.inspect(context,guard);outerGuard();
   if(!current.catalog.complete||current.report.accountKey!==accountKey)throw Error('FANQIE_BATCH_SCOPE_CHANGED');
@@ -15,7 +15,7 @@ export async function authorizeFanqieRecords(root:string,session:FanqieCatalogSe
   for(const row of rows){
    guard();outerGuard();
    if(row.stage!=='contract_pending'){results.push({id:row.id,title:row.title,status:row.officialStatus,phase:'already_processed'});continue;}
-   const folder=path.join(root,'production','fanqie','authorizations');fs.mkdirSync(folder,{recursive:true});
+   const folder=path.join(stateDirectory,'authorizations');fs.mkdirSync(folder,{recursive:true});
    const file=path.join(folder,accountKey+'-'+row.id+'.json');
    const save=(phase:string,step?:string)=>{fs.writeFileSync(file+'.tmp',JSON.stringify({id:row.id,title:row.title,accountKey,phase,step,preference,updatedAt:new Date().toISOString()}));fs.renameSync(file+'.tmp',file);};
    // If a previous signature page remains open, preserve it instead of preparing another contract.

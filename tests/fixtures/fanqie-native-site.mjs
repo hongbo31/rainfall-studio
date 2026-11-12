@@ -39,7 +39,8 @@ export async function installFanqieNativeSite(context, {title, artist, accountId
         const dialog=modal('裁剪图片 (1/1)','<button type="button">确定</button>');
         dialog.querySelector('button').onclick=async()=>{await event({kind:'crop'});region.innerHTML='<img class="arco-image-img" src="/fixture-cover.png">';dialog.remove();};
       }else{
-        const file=selected[0], size=file.size>=1048576?(file.size/1048576).toFixed(1)+'MB':(file.size/1024).toFixed(1)+'KB';
+        const file=selected[0], unit=role==='lyrics'?1000:1024;
+        const size=file.size>=unit**2?(file.size/unit**2).toFixed(1)+'MB':(file.size/unit).toFixed(1)+'KB';
         region.innerHTML='';const first=document.createElement('div'),second=document.createElement('div');first.textContent=role==='audio'?document.querySelector('#songs_0_name_input').value:file.name;
         second.textContent=(role==='audio'?'WAV｜':'')+'上传完成｜'+size;region.append(first,second);
       }

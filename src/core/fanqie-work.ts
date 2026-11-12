@@ -17,6 +17,6 @@ export function resolveFanqieWork(s:Studio,raw:unknown) {
  const lyrics=s.lyricService().forWork(work).cleaned;
  if(!lyrics.trim())throw Error('FANQIE_LYRICS_INVALID');
  const source={...selection,title:work.title,audio,cover,lyrics,ai:work.ai};
- return {...source,fingerprint:hash(source)};
+ return {...source,artistId:work.artistId as string,fingerprint:hash(source)};
 }
 export type FanqieWorkSource=ReturnType<typeof resolveFanqieWork>;

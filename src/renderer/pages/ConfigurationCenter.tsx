@@ -44,18 +44,22 @@ function moveTab(event: React.KeyboardEvent<HTMLButtonElement>) {
 }
 export default function ConfigurationCenter({
   initialTarget = "netease",
+  initialCategory = "platforms",
+  initialAccountId = "",
 }: {
   initialTarget?: PlatformTarget;
+  initialCategory?: "platforms" | "artists";
+  initialAccountId?: string;
 }) {
   const { go } = useStudio();
-  const [category, setCategory] = useState("platforms"),
+  const [category, setCategory] = useState<string>(initialCategory),
     [target, setTarget] = useState(initialTarget),
     [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   useEffect(() => {
     setTarget(initialTarget);
-    setCategory("platforms");
+    setCategory(initialCategory);
     setDiagnosticsOpen(false);
-  }, [initialTarget]);
+  }, [initialTarget, initialCategory]);
   return (
     <div className="configuration-center">
       <PageHead
@@ -119,10 +123,10 @@ export default function ConfigurationCenter({
               id="platform-configuration-panel"
               aria-labelledby={"platform-" + target}
             >
-              {target==='fanqie'?<FanqieConfigurationPanel/>:<PlatformConfigurationPanel
+              {target==='fanqie'?<FanqieConfigurationPanel key={initialAccountId} initialAccountId={initialAccountId}/>:<PlatformConfigurationPanel
                 key={target}
                 target={target}
-                onManageAccounts={() => setCategory("artists")}
+                onManageAccounts={() => go("platform-accounts", target)}
               />}
             </div>
           </>

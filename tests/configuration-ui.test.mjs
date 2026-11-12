@@ -28,7 +28,7 @@ test("configuration categories and independent target form expose real defaults 
     "诊断与历史",
   ])
     assert.ok(html.includes(text), text);
-  assert.equal((html.match(/role="tab"/g) || []).length, 10);
+  assert.equal((html.match(/role="tab"/g) || []).length, 12);
   const platform = renderPlatform();
   for (const text of [
     "QQ 音乐配置",
@@ -54,7 +54,10 @@ test("configuration categories and independent target form expose real defaults 
     'type="checkbox"',
   ])
     assert.ok(!platform.includes(text), text);
-  assert.match(platform, /<option value="" selected="">请选择账号<\/option>/);
+  assert.match(
+    platform,
+    /aria-label="默认账号"[\s\S]*?aria-pressed="true"[^>]*>未指定<\/button>/,
+  );
   const netease = renderPlatform("netease");
   assert.ok(netease.includes("云音乐账号"));
   assert.ok(!netease.includes("腾讯本地备注"));

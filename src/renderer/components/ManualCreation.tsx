@@ -5,11 +5,14 @@ import GenerationRoutes, {
   generationRoleNames,
 } from "./GenerationRoutes";
 import ProviderPlanStatus from "./ProviderPlanStatus";
+import ChoiceButtons from "./ChoiceButtons";
+import MusicStylePicker from "./MusicStylePicker";
 export default function ManualCreation() {
   const { data, call, go, notify } = useStudio(),
     [artistId, setArtist] = useState(data.artists[0]?.id ?? ""),
     [story, setStory] = useState("下雨的傍晚，两个人第一次在同一屋檐下相遇。"),
     [stage, setStage] = useState("相识"),
+    [styleTemplate, setStyleTemplate] = useState(""),
     [routing, setRouting] = useState(defaultRoutes),
     [cover, setCover] = useState(false),
     [music, setMusic] = useState(false),
@@ -47,6 +50,7 @@ export default function ManualCreation() {
         artistId,
         storyBeat: story,
         storyStage: stage,
+        ...(styleTemplate.trim() ? { styleTemplate } : {}),
         routing,
         outputs: { lyrics: true, cover, music },
         text: {
@@ -72,28 +76,24 @@ export default function ManualCreation() {
   return (
     <section className="panel" aria-label="单次 AI 创作">
       <h2>单次 AI 创作</h2>
-      <p className="muted">
-        使用与计划相同的生成管线。每一步显示实际接入状态。
-      </p>
       <form onSubmit={submit}>
         <div className="form-grid">
-          <label>
-            创作艺人
-            <select
-              aria-label="创作艺人"
+          <div>
+            <span>创作艺人</span>
+            <ChoiceButtons
+              label="创作艺人"
               value={artistId}
-              onChange={(e) => {
-                setArtist(e.target.value);
+              choices={data.artists.map((a: { id: string; name: string }) => ({
+                value: a.id,
+                label: a.name,
+              }))}
+              disabled={busy}
+              onChange={(id) => {
+                setArtist(id);
                 setConsent(false);
               }}
-            >
-              {data.artists.map((a: any) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-            </select>
-          </label>
+            />
+          </div>
           <label>
             本次故事阶段
             <input
@@ -143,6 +143,13 @@ export default function ManualCreation() {
             onChange={(e) => setStory(e.target.value)}
           />
         </label>
+        <MusicStylePicker
+          value={styleTemplate}
+          onChange={setStyleTemplate}
+          inherited={artist?.defaults?.genre}
+          maxLength={4000}
+          disabled={busy}
+        />
         <GenerationRoutes
           value={routing}
           onChange={(r) => {
@@ -224,6 +231,8 @@ export default function ManualCreation() {
             <p>
               艺人 {row.run?.snapshot.artistSnapshot?.name} · v
               {row.run?.snapshot.artistSnapshot?.revision}
+              {row.run?.snapshot.styleTemplate &&
+                " · " + row.run.snapshot.styleTemplate}
             </p>
             {row.run?.snapshot.routeSnapshot && (
               <div className="plan-tags">

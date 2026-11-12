@@ -6,14 +6,14 @@ const {FanqiePreparationService,fanqieMetadataFingerprint,verifyFanqieMaterials,
 const {parseFanqieCatalog,checkFanqieNewUpload,readFanqieCatalog}=require(process.env.RAINFALL_FANQIE_BUNDLE);
 const {parseFanqieArtists,readFanqieAccountUid,fanqieFileControl,fanqieCreditControl}=require(process.env.RAINFALL_FANQIE_BUNDLE);
 const {assertFanqieFirstStepReadback,confirmFanqieFirstStep,selectFanqieCredit}=require(process.env.RAINFALL_FANQIE_BUNDLE);
-const {FanqieCatalogSession}=require(path.join(path.dirname(process.env.RAINFALL_FANQIE_BUNDLE),'session.cjs'));
+const {FanqieCatalogSession,FanqieAccountSessions,defaultFanqieAccountId}=require(path.join(path.dirname(process.env.RAINFALL_FANQIE_BUNDLE),'session.cjs'));
 const h=x=>createHash('sha256').update(x).digest('hex');
 const dir=fs.mkdtempSync(path.join(os.tmpdir(),'rainfall-fanqie-test-'));
 function catalogSessionFixture() {
  const root=fs.mkdtempSync(path.join(dir,'session-'));let generation=1,available=true,uid='123456789012345',closed;
  const visits=[],editor={url:()=>catalogUrl+'/uploadProduct',isClosed:()=>false,bringToFront:async()=>{}};
  const probes=[];const context={setDefaultTimeout:n=>assert.equal(n,15000),setDefaultNavigationTimeout:n=>assert.equal(n,20000),pages:()=>[editor],on:(event,fn)=>{assert.equal(event,'close');closed=fn},newPage:async()=>{
-  const page={goto:async url=>visits.push(url),close:async()=>{page.closed=true}};probes.push(page);return page;
+  const page={goto:async url=>visits.push(url),close:async()=>{page.closed=true},accountUid:()=>uid};probes.push(page);return page;
  }};
  const catalog={source:'browser',url:catalogUrl,observedAt:new Date().toISOString(),total:1,complete:true,rows:[{id:'1234567890123456789',title:'已有作品',stage:'contract_pending',officialStatus:'待授权',createdAtText:'测试时间',publishedAtText:'-'}]};
  const options={root,available:()=>available,generation:()=>generation,launch:async()=>context,account:async()=>({accountId:uid}),catalog:async()=>structuredClone(catalog)};
@@ -245,6 +245,15 @@ test('first-step readback verifies every credit and material without mistaking c
  assert.doesNotThrow(()=>assertFanqieFirstStepReadback(visibleForm(),expectedForm));
  for(const mutate of [x=>{x.ai='否'},x=>{x.title='other'},x=>{x.songCount=2},x=>{x.authors.singer=[]},x=>{x.authors.composer.push('extra')},x=>{x.audioText='测试作品\nWAV｜上传中｜29.4MB'},x=>{x.lyricsText='other.txt\n上传完成｜1.1KB'},x=>{x.coverPreview[0].complete=false}]){const value=visibleForm();mutate(value);assert.throws(()=>assertFanqieFirstStepReadback(value,expectedForm),/READBACK_REQUIRED/)}
 });
+test('material readback accepts the displayed precision while requiring the exact file and transfer status',()=>{
+ const expected={...expectedForm,lyrics:{fileName:'测试歌词.txt',displaySize:'1.2KB',bytes:1277}};
+ const actual={...visibleForm(),lyricsText:'测试歌词.txt\n上传完成 ｜ 1.25 KB'};
+ assert.doesNotThrow(()=>assertFanqieFirstStepReadback(actual,expected));
+ assert.doesNotThrow(()=>assertFanqieFirstStepReadback({...actual,lyricsText:'测试歌词.txt\n上传完成｜1.3KB'},expected));
+ for(const lyricsText of ['测试歌词.txt\n上传完成｜1.27 KB','另一个文件.txt\n上传完成｜1.25 KB','测试歌词.txt\n上传中｜1.25 KB']){
+  assert.throws(()=>assertFanqieFirstStepReadback({...actual,lyricsText},expected),/FANQIE_UPLOAD_READBACK_REQUIRED/);
+ }
+});
 test('first-step confirmation persists two intents, sends no signing action and does not invent a work ID',async()=>{
  const events=[];let changed=false;
  const locator=(role,name)=>({count:async()=>1,evaluate:async()=>visibleForm(),waitFor:async()=>{},click:async()=>{events.push('click:'+name)},getByRole:(role,options)=>locator(role,options.name)});
@@ -283,6 +292,53 @@ test('artist sync refuses switched identity and preserves last verified snapshot
  const session=new FanqieCatalogSession(f.options);await session.ui('syncProfile');const original=session.status().profile;
  f.options.artists=async()=>{f.setUid('987654321000001');return{artists:[{artistId:'99999999',name:'其他艺人'}]}};
  await assert.rejects(session.ui('syncProfile'),/SCOPE_CHANGED/);assert.deepEqual(session.status().profile,original);
+});
+
+test('account slots keep the legacy session and independently persist two artist rosters and publication configurations',async()=>{
+ const legacy=catalogSessionFixture(),second=catalogSessionFixture(),duplicate=catalogSessionFixture();
+ const root=legacy.root,newId='00000000-0000-4000-8000-000000000011',duplicateId='00000000-0000-4000-8000-000000000012';
+ const legacyDirectory=path.join(root,'browser-sessions','fanqie');
+ const newDirectory=path.join(root,'browser-sessions','accounts',newId);
+ const duplicateDirectory=path.join(root,'browser-sessions','accounts',duplicateId);
+ const windows=new Map([[legacyDirectory,legacy],[newDirectory,second],[duplicateDirectory,duplicate]]);
+ second.setUid('999999999998765');
+ const launches=[];
+ const options={...legacy.options,pickBundle:async()=>null,launch:async directory=>{
+  launches.push(directory);const window=windows.get(directory);assert.ok(window);
+  return {...window.context,close:async()=>window.close()};
+ },account:async page=>({accountId:page.accountUid()}),artists:async page=>({
+  artists:[1,2].map(i=>({artistId:'90000'+i,name:page.accountUid().slice(-4)+' 艺人 '+i})),
+ }),catalog:async()=>{throw Error('Profile sync must not depend on a populated works list');}};
+ const previous=new FanqieCatalogSession(options);
+ const original=await previous.ui('syncProfile');
+ await previous.close();
+ const accounts=new FanqieAccountSessions(options),originalSlot=accounts.get(),newSlot=accounts.get(newId);
+ assert.equal(accounts.get(defaultFanqieAccountId),originalSlot);
+ assert.deepEqual(originalSlot.catalog.status().profile,original.profile);
+ assert.equal(originalSlot.catalog.status().savedProfile,true);
+ assert.equal(newSlot.catalog.status().savedProfile,false);
+ assert.equal(newSlot.catalog.status().profile,null);
+ const fresh=await newSlot.catalog.ui('syncProfile');
+ assert.deepEqual(fresh.profile.artists.map(a=>a.name),['8765 艺人 1','8765 艺人 2']);
+ assert.equal(fresh.profileVerified,true);
+ assert.equal(fresh.report,null);
+ await assert.rejects(accounts.get(duplicateId).catalog.ui('syncProfile'),/FANQIE_ACCOUNT_ALREADY_BOUND/);
+ assert.equal(accounts.get(duplicateId).catalog.status().profile,null);
+ const config=name=>({version:1,authors:{lyricist:name,composer:name,singer:name},useWorkMaterials:true,publicationConsent:true});
+ await originalSlot.upload.ui('saveConfiguration',config('原艺人'));
+ await newSlot.upload.ui('saveConfiguration',config('新艺人'));
+ assert.deepEqual(launches,[legacyDirectory,newDirectory,duplicateDirectory]);
+ await accounts.close();
+ assert.equal(newSlot.catalog.status().profileVerified,false);
+ const restarted=new FanqieAccountSessions(options);
+ for(const [id,name] of [[defaultFanqieAccountId,'原艺人'],[newId,'新艺人']]){
+  assert.equal((await restarted.get(id).upload.ui('configuration')).configuration.authors.singer,name);
+ }
+ assert.deepEqual(restarted.get(newId).catalog.status().profile,fresh.profile);
+ second.setUid('777777777777777');
+ await assert.rejects(restarted.get(newId).catalog.ui('syncProfile'),/FANQIE_ACCOUNT_IDENTITY_MISMATCH/);
+ assert.deepEqual(restarted.get(newId).catalog.status().profile,fresh.profile);
+ await restarted.close();
 });
 
 test('catalog reader waits for row text to finish rendering without accepting incomplete IDs',async()=>{

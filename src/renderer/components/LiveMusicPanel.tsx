@@ -3,6 +3,7 @@ import type {ApiProfile} from '../../shared/api-profiles';
 import {leaveALightLyrics,leaveALightStyle} from '../../shared/leave-a-light';
 import {useStudio} from '../context';
 import HelpNote from './HelpNote';
+import MusicStylePicker from './MusicStylePicker';
 export default function LiveMusicPanel({profile}:{profile:ApiProfile}){
  const {play,refresh,notify,go}=useStudio();
  const [lyrics,setLyrics]=useState(leaveALightLyrics),[style,setStyle]=useState(leaveALightStyle),[requestId,setRequestId]=useState(()=>crypto.randomUUID()),[state,setState]=useState<any>(null),[busy,setBusy]=useState(false),[consent,setConsent]=useState(false),[error,setError]=useState('');
@@ -15,7 +16,7 @@ export default function LiveMusicPanel({profile}:{profile:ApiProfile}){
   <p>单次积分未知 · 本次上限385积分 · 不充值、不发布</p>
   <HelpNote label="本次生成参数">Suno chirp-v6，正常模式，MaxMode 关闭；一次请求预期返回 A/B 两版，210秒目标。</HelpNote>
   <label>完整原创歌词<textarea aria-label="示例作品A完整原创歌词" rows={14} value={lyrics} disabled={!!state||busy} onChange={e=>setLyrics(e.target.value)}/></label>
-  <label>歌曲风格<textarea aria-label="示例作品A歌曲风格" rows={4} value={style} disabled={!!state||busy} onChange={e=>setStyle(e.target.value)}/></label>
+  <MusicStylePicker label="示例作品A歌曲风格" value={style} disabled={!!state||busy} onChange={setStyle} maxLength={1000}/>
   <label><input type="checkbox" aria-label="确认本次仅使用现有385积分" checked={consent} onChange={e=>setConsent(e.target.checked)}/>已授权本次最多使用现有385积分，不充值、不额外付款</label>
   {!state&&<button disabled={busy||!consent} onClick={()=>void action('stage')}>保存《示例作品A》候选（不扣费）</button>}
   {op?.state==='prepared'&&<button className="primary" disabled={busy||!consent} onClick={()=>void action('submit')}>确认一次真实生成《示例作品A》</button>}

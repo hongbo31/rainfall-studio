@@ -5,6 +5,9 @@ import { useStudio, PageHead, Badge, names, label } from "../context";
 import HelpHint from "../components/HelpHint";
 import PublicationPipelineProgress from "../components/PublicationPipelineProgress";
 import PublicationMaterialResult from "../components/PublicationMaterialResult";
+import ChoiceButtons from "../components/ChoiceButtons";
+import { accountSupportsTarget } from "../../shared/platform-accounts";
+import { fanqieChoices, defaultFanqieChoice, fanqieScope } from "../fanqie-accounts";
 import {
   platformTargets,
   type PlatformTarget,
@@ -48,13 +51,30 @@ export default function PublishCenter() {
     [error, setError] = useState(""),
     [message, setMessage] = useState("");
   const inFlight = useRef(false);
-  const [fanqieState,setFanqieState]=useState<any>(null),[fanqieConfigured,setFanqieConfigured]=useState(false);
+  const fanqieAccounts = fanqieChoices(data.accounts ?? []);
+  const fanqieAccountId = selection.accountOverrides.fanqie ?? defaultFanqieChoice(fanqieAccounts);
+  const fanqieAccountRequired = fanqieAccounts.length > 1 && !fanqieAccountId;
+  const fanqieInput = fanqieScope(fanqieAccountId);
+  const [accountState, setAccountState] = useState<{ accountId: string; value: any }>();
+  const [accountConfig, setAccountConfig] = useState<{ accountId: string; ready: boolean }>();
+  const fanqieState = data.mode==='production' && accountState?.accountId === fanqieAccountId ? accountState.value : null;
+  const fanqieConfigured = accountConfig?.accountId === fanqieAccountId && accountConfig.ready;
+  const setFanqieState = (value: any) => setAccountState({ accountId: fanqieAccountId, value });
   const [channelResults,setChannelResults]=useState<string[]>([]);
-  useEffect(()=>{let active=true;setFanqieState(null);setFanqieConfigured(false);if(data.mode==='production'&&window.rainfall?.fanqieUpload){
-    void window.rainfall.fanqieUpload('status').then(r=>{if(active&&r.ok)setFanqieState(r.value)}).catch(()=>{});
-    void window.rainfall.fanqieUpload('configuration').then(r=>{if(active&&r.ok)setFanqieConfigured(!!r.value.configuration)}).catch(()=>{});
-  }return()=>{active=false};},[data.mode]);
-  useEffect(()=>{if(!busy||!selection.targets.includes('fanqie'))return;let active=true;const timer=setInterval(()=>{void window.rainfall.fanqieCatalog('status').then(r=>{if(active&&r.ok&&r.value.progress)setMessage('番茄音乐：'+r.value.progress)}).catch(()=>{});},1200);return()=>{active=false;clearInterval(timer)};},[busy,data.mode]);
+  useEffect(()=>{
+    let active=true;
+    setAccountState(undefined);
+    setAccountConfig(undefined);
+    setChannelResults([]);
+    if(data.mode==='production'&&!fanqieAccountRequired&&window.rainfall?.fanqieUpload){
+      void window.rainfall.fanqieUpload('status',fanqieInput).then(r=>{if(active&&r.ok)setFanqieState(r.value)}).catch(()=>{});
+      void window.rainfall.fanqieUpload('configuration',fanqieInput).then(r=>{
+        if(active&&r.ok)setAccountConfig({accountId:fanqieAccountId,ready:!!r.value.configuration});
+      }).catch(()=>{});
+    }
+    return()=>{active=false};
+  },[data.mode,fanqieAccountId,fanqieAccountRequired]);
+  useEffect(()=>{if(!busy||!selection.targets.includes('fanqie'))return;let active=true;const timer=setInterval(()=>{void window.rainfall.fanqieCatalog('status',fanqieInput).then(r=>{if(active&&r.ok&&r.value.progress)setMessage('番茄音乐：'+r.value.progress)}).catch(()=>{});},1200);return()=>{active=false;clearInterval(timer)};},[busy,data.mode,fanqieAccountId,selection.targets.includes('fanqie')]);
   const [currentResult, setCurrentResult] = useState<{
     requests: SimplePublicationRequest[];
     reused: boolean;
@@ -93,7 +113,7 @@ export default function PublishCenter() {
   const configure = async (target: PlatformTarget) => {
     try {
       await flushPublishSelection?.();
-      go("accounts", target);
+      go("accounts", target, target === "fanqie" ? fanqieAccountId : undefined);
     } catch (e: any) {
       setError(e.message);
     }
@@ -111,11 +131,12 @@ export default function PublishCenter() {
       await save(selection);
       if(selection.targets.includes('fanqie')){
         if(data.mode!=='production')throw Error('番茄音乐暂不提供模拟发布');
-        const config=await window.rainfall.fanqieUpload('configuration');
+        if(fanqieAccountRequired)throw Error('请选择番茄发布账号');
+        const config=await window.rainfall.fanqieUpload('configuration',fanqieInput);
         if(!config.ok)throw Error(config.error.message);
         if(!config.value.configuration)throw Error('请先在配置中心保存番茄音乐设置');
         const items=selection.workIds.map(workId=>{const work=data.works.find((w:any)=>w.id===workId);if(!work)throw Error('作品已变化，请重新选择');return {workId,variant:work.selectedAudioVariant==='B'?'B':'A'};});
-        const uploaded=await window.rainfall.fanqieUpload('publishBatch',{items});
+        const uploaded=await window.rainfall.fanqieUpload('publishBatch',{...fanqieInput,items});
         if(!uploaded.ok)throw Error(uploaded.error.message);
         if(scopeRef.current!==submittedScope)return;
         setFanqieState(uploaded.value);
@@ -263,14 +284,11 @@ export default function PublishCenter() {
                   (item: any) => item.target === target,
                 );
                 const accounts = data.accounts.filter(
-                  (account: any) =>
-                    account.provider === target ||
-                    (["qqmusic", "kugou"].includes(target) &&
-                      account.provider === "tme"),
+                  (account: any) => accountSupportsTarget(account.provider, target),
                 );
                 const chosen = selection.targets.includes(target);
                 const accountId =
-                  selection.accountOverrides[target] ?? config?.accountId ?? "";
+                  target === "fanqie" ? fanqieAccountId : selection.accountOverrides[target] ?? config?.accountId ?? "";
                 return (
                   <article
                     className={"simple-target" + (chosen ? " is-selected" : "")}
@@ -321,32 +339,24 @@ export default function PublishCenter() {
                         {"配置 " + names[target]}
                       </button>
                     </div>
-                    {chosen && target!=='fanqie' &&
+                    {chosen && (target!=='fanqie'||accounts.length>0) &&
                       (accounts.length ? (
-                        <label className="target-account">
-                          发布账号
-                          <select
-                            aria-label={names[target] + "发布账号"}
+                        <div className="target-account">
+                          <ChoiceButtons label={names[target] + "发布账号"}
+                            choices={[
+                              ...(target==='fanqie'?[]:[{value:"",label:"用平台默认账号"}]),
+                              ...accounts.map((account:any)=>({value:account.id,label:account.name})),
+                            ]}
                             value={accountId}
-                            onChange={(event) => {
-                              const accountOverrides = {
-                                ...selection.accountOverrides,
-                              };
-                              if (event.target.value)
-                                accountOverrides[target] = event.target.value;
+                            disabled={busy}
+                            onChange={value => {
+                              const accountOverrides = { ...selection.accountOverrides };
+                              if (value) accountOverrides[target] = value;
                               else delete accountOverrides[target];
                               change({ ...selection, accountOverrides });
                             }}
-                          >
-                            <option value="">请选择账号</option>
-                            {accounts.map((account: any) => (
-                              <option key={account.id} value={account.id}>
-                                {account.name} ·{" "}
-                                {label(account.authStatus ?? "not_connected")}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
+                          />
+                        </div>
                       ) : (
                         <small className="configuration-missing">
                           缺少账号
@@ -366,6 +376,7 @@ export default function PublishCenter() {
               busy ||
               !selection.workIds.length ||
               !selection.targets.length ||
+              (fanqieAccountRequired && selection.targets.includes("fanqie")) ||
               (data.mode !== "simulation" &&
                 selection.targets.some(
                   (target) => !["fanqie", "qqmusic", "kugou"].includes(target),
@@ -396,9 +407,9 @@ export default function PublishCenter() {
           )}
         </div>
         {channelResults.map((text,index)=><p role="status" key={index}>{text}</p>)}
-        {fanqieState?.batch&&<section className="publication-current-result" aria-label="番茄批次"><h3>番茄批次</h3><p>{fanqieState.batch.items.filter((i:any)=>i.state==='complete').length}/{fanqieState.batch.items.length} 首已处理 · {fanqieState.batch.state==='complete'?'处理完成':fanqieState.batch.state==='paused'?'已暂停':'处理中'}</p>{fanqieState.batch.state==='paused'&&<button disabled={busy} onClick={async()=>{if(inFlight.current)return;inFlight.current=true;setBusy(true);setError('');try{const r=await window.rainfall.fanqieUpload('publishBatch',{items:fanqieState.batch.items.map(({workId,variant}:any)=>({workId,variant})),resume:true});if(!r.ok)throw Error(r.error.message);setFanqieState(r.value);if(r.value.batch.state==='paused')setError('仍有作品待核对，已完成作品保留。');}catch(e:any){setError(e.message)}finally{inFlight.current=false;setBusy(false)}}}>核对后继续批次</button>}</section>}
-        <details><summary>番茄账号与已有作品</summary><FanqieCatalogPanel mode={data.mode}/></details>
-        {!!fanqieState?.jobs?.length&&<section className="publication-current-result" aria-label="番茄发布记录"><h3>发布记录</h3>{fanqieState.jobs.map((job:any)=><div className="publication-channel-result" key={job.id}><span><b>{job.title}</b> · 番茄音乐 · {job.officialRecord?.officialStatus??(job.phase==='unknown'?'待核对':'处理中')}{job.officialRecord&&` · ${job.officialRecord.id}`}</span><button disabled={busy} onClick={async()=>{if(inFlight.current)return;inFlight.current=true;setBusy(true);try{const r=await window.rainfall.fanqieUpload('reconcile',{id:job.id});if(!r.ok)throw Error(r.error.message);setFanqieState(r.value);}catch(e:any){setError(e.message)}finally{inFlight.current=false;setBusy(false)}}}>更新状态</button></div>)}</section>}
+        {fanqieState?.batch&&<section className="publication-current-result" aria-label="番茄批次"><h3>番茄批次</h3><p>{fanqieState.batch.items.filter((i:any)=>i.state==='complete').length}/{fanqieState.batch.items.length} 首已处理 · {fanqieState.batch.state==='complete'?'处理完成':fanqieState.batch.state==='paused'?'已暂停':'处理中'}</p>{fanqieState.batch.state==='paused'&&<button disabled={busy} onClick={async()=>{if(inFlight.current)return;inFlight.current=true;setBusy(true);setError('');try{const r=await window.rainfall.fanqieUpload('publishBatch',{...fanqieInput,items:fanqieState.batch.items.map(({workId,variant}:any)=>({workId,variant})),resume:true});if(!r.ok)throw Error(r.error.message);setFanqieState(r.value);if(r.value.batch.state==='paused')setError('仍有作品待核对，已完成作品保留。');}catch(e:any){setError(e.message)}finally{inFlight.current=false;setBusy(false)}}}>核对后继续批次</button>}</section>}
+        {!fanqieAccountRequired&&<details><summary>番茄账号与已有作品</summary><FanqieCatalogPanel key={fanqieAccountId} mode={data.mode} accountId={fanqieAccountId}/></details>}
+        {!!fanqieState?.jobs?.length&&<section className="publication-current-result" aria-label="番茄发布记录"><h3>发布记录</h3>{fanqieState.jobs.map((job:any)=><div className="publication-channel-result" key={job.id}><span><b>{job.title}</b> · 番茄音乐 · {job.officialRecord?.officialStatus??(job.phase==='unknown'?'待核对':'处理中')}{job.officialRecord&&` · ${job.officialRecord.id}`}</span><button disabled={busy} onClick={async()=>{if(inFlight.current)return;inFlight.current=true;setBusy(true);try{const opened=await window.rainfall.fanqieCatalog('open',fanqieInput);if(!opened.ok)throw Error(opened.error.message);const r=await window.rainfall.fanqieUpload('reconcile',{...fanqieInput,id:job.id});if(!r.ok)throw Error(r.error.message);setFanqieState(r.value);}catch(e:any){setError(e.message)}finally{inFlight.current=false;setBusy(false)}}}>更新状态</button></div>)}</section>}
         {currentResult && (
           <section
             className="publication-current-result"

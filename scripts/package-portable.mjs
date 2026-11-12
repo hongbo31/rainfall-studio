@@ -42,7 +42,7 @@ fs.writeFileSync(path.join(root,'README.txt'),[
  'Rainfall Studio '+pkg.version+' · Windows x64 免安装版',
  '保留整个文件夹，双击 RainfallStudio.exe。无需安装 Node.js、npm 或 Codex。',
  '作品和配置保存到当前 Windows 用户的 %APPDATA%\\RainfallStudio，与程序目录分开。',
- '首次使用：配置中心设置艺人、歌词服务、音乐服务及番茄署名；在番茄工作窗口登录一次。',
+ '首次使用：在配置中心设置艺人、模型和发布默认值；在账号管理添加账号并打开登录窗口。',
  '音乐和歌词 API 密钥在本机加密保存，其他设备需重新配置；不要复制旧设备凭据目录。',
  '番茄自动上传需要 Google Chrome。当前封面支持导入本地图片；不要求 Codex。',
  '计划中心可开启关闭窗口后后台运行与登录 Windows 后启动。电脑须开机联网，休眠或关机时不执行。',

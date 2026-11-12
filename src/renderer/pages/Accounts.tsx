@@ -1,7 +1,9 @@
 import React, { useState } from "react";
-import { useStudio, PageHead, Badge, names, label } from "../context";
+import { useStudio, PageHead } from "../context";
 import ApiSettings from "../components/ApiSettings";
 import HelpHint from "../components/HelpHint";
+import ChoiceButtons from "../components/ChoiceButtons";
+import MusicStylePicker from "../components/MusicStylePicker";
 const blank = {
   genre: "流行",
   voice: "female",
@@ -25,11 +27,6 @@ export default function Accounts({
   const initial = data.artists.find((a: any) => a.id === artistId);
   const [name, setName] = useState(initial?.name || ""),
     [defaults, setDefaults] = useState(initial?.defaults || blank);
-  const [provider, setProvider] = useState("suno"),
-    [accountName, setAccountName] = useState(""),
-    [limit, setLimit] = useState(3),
-    [bindArtist, setBindArtist] = useState(data.artists[0]?.id || ""),
-    [bindAccount, setBindAccount] = useState("");
   const [cost, setCost] = useState(data.budget.costLimit / 100),
     [candidates, setCandidates] = useState(data.budget.candidateLimit);
   const choose = (id: string) => {
@@ -40,248 +37,96 @@ export default function Accounts({
   };
   return (
     <>
-      {!compact && <PageHead title="账号与艺人" />}
+      {!compact && <PageHead title="艺人与预算" />}
       {showApi && <ApiSettings compact={compact} />}
-      <div className="split">
-        <section className="panel">
-          <h2>艺人资料与创作默认值</h2>
-          <label>
-            选择艺人
-            <select value={artistId} onChange={(e) => choose(e.target.value)}>
-              {data.artists.map((a: any) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-              <option value="">＋ 新建艺人</option>
-            </select>
-          </label>
-          <label>
-            艺名
-            <input
-              aria-label="艺名"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-          </label>
-          <div className="form-grid">
-            {[
-              ["genre", "曲风"],
-              ["lyricTone", "歌词语气"],
-              ["language", "语言"],
-              ["mood", "情绪"],
-              ["coverStyle", "封面风格"],
-              ["instruments", "主要乐器"],
-              ["seriesStory", "系列长期故事线"],
-            ].map(([key, title]) => (
-              <label key={key}>
-                {title}
-                <input
-                  value={defaults[key]??""}
-                  onChange={(e) =>
-                    setDefaults({ ...defaults, [key]: e.target.value })
-                  }
-                />
-              </label>
-            ))}
-            <label>
-              默认人声
-              <select
-                value={defaults.voice}
-                onChange={(e) =>
-                  setDefaults({ ...defaults, voice: e.target.value })
-                }
-              >
-                <option value="female">女声</option>
-                <option value="male">男声</option>
-                <option value="duet">对唱</option>
-                <option value="instrumental">纯音乐</option>
-              </select>
-            </label>
-            {[
-              ["bpmMin", "BPM 下限"],
-              ["bpmMax", "BPM 上限"],
-              ["duration", "时长参考（秒）"],
-            ].map(([key, title]) => (
-              <label key={key}>
-                {title}
-                <input
-                  type="number"
-                  value={defaults[key]??""}
-                  onChange={(e) =>
-                    setDefaults({ ...defaults, [key]: Number(e.target.value) })
-                  }
-                />
-              </label>
-            ))}
-          </div>
-          <button
-            className="primary"
-            disabled={!name}
-            onClick={async () => {
-              const a = await call("artist.save", {
-                ...(artistId
-                  ? { id: artistId, expected: initial.revision }
-                  : {}),
-                name,
-                defaults,
-              });
-              setArtistId(a.id);
-              notify("已保存艺人配置；已有任务的冻结配置不变。");
-            }}
-          >
-            保存艺人配置
-          </button>
-        </section>
-        <div>
-          <section className="panel">
-            <h2>添加账号资料</h2>
-            <HelpHint label="本地账号说明">
-              仅保存身份与本地配额配置，不会登录、绑定真实账号或伪造授权。账号隔离用于防串号，不规避平台限制。
-            </HelpHint>
-            <label>
-              平台
-              <select
-                aria-label="平台"
-                value={provider}
-                onChange={(e) => setProvider(e.target.value)}
-              >
-                {Object.entries(names).map(([k, n]) => (
-                  <option key={k} value={k}>
-                    {n}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              账号备注名
+      <section className="panel">
+        <h2>艺人资料与创作默认值</h2>
+        <ChoiceButtons
+          label="本地艺人"
+          value={artistId}
+          onChange={choose}
+          choices={[
+            ...data.artists.map((a: any) => ({ value: a.id, label: a.name })),
+            { value: "", label: "＋ 新建艺人" },
+          ]}
+        />
+        <label>
+          艺名
+          <input
+            aria-label="艺名"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </label>
+        <MusicStylePicker
+          value={defaults.genre ?? ""}
+          onChange={(genre) => setDefaults({ ...defaults, genre })}
+        />
+        <div className="form-grid">
+          {[
+            ["lyricTone", "歌词语气"],
+            ["language", "语言"],
+            ["mood", "情绪"],
+            ["coverStyle", "封面风格"],
+            ["instruments", "主要乐器"],
+            ["seriesStory", "系列长期故事线"],
+          ].map(([key, title]) => (
+            <label key={key}>
+              {title}
               <input
-                aria-label="账号备注名"
-                value={accountName}
-                onChange={(e) => setAccountName(e.target.value)}
-                placeholder="例如：个人发行账号"
+                value={defaults[key] ?? ""}
+                onChange={(e) =>
+                  setDefaults({ ...defaults, [key]: e.target.value })
+                }
               />
             </label>
-            <label>
-              每日提交本地上限
+          ))}
+          <div>
+            <span>默认人声</span>
+            <ChoiceButtons
+              label="默认人声"
+              value={defaults.voice}
+              onChange={(voice) => setDefaults({ ...defaults, voice })}
+              choices={[
+                { value: "female", label: "女声" },
+                { value: "male", label: "男声" },
+                { value: "duet", label: "对唱" },
+                { value: "instrumental", label: "纯音乐" },
+              ]}
+            />
+          </div>
+          {[
+            ["bpmMin", "BPM 下限"],
+            ["bpmMax", "BPM 上限"],
+            ["duration", "时长参考（秒）"],
+          ].map(([key, title]) => (
+            <label key={key}>
+              {title}
               <input
                 type="number"
-                min="0"
-                max="10000"
-                value={limit}
-                onChange={(e) => setLimit(Number(e.target.value))}
+                value={defaults[key] ?? ""}
+                onChange={(e) =>
+                  setDefaults({ ...defaults, [key]: Number(e.target.value) })
+                }
               />
             </label>
-            <button
-              disabled={!accountName}
-              onClick={async () => {
-                await call("account.save", {
-                  provider,
-                  name: accountName,
-                  dailyLimit: limit,
-                });
-                setAccountName("");
-              }}
-            >
-              保存本地账号资料
-            </button>
-            <HelpHint label="本地上限说明">
-              这个上限是你的本地设置，不代表官方平台配额或许可。
-            </HelpHint>
-          </section>
-          <section className="panel">
-            <h2>艺人与账号绑定</h2>
-            <div className="form-grid">
-              <label>
-                艺人
-                <select
-                  value={bindArtist}
-                  onChange={(e) => setBindArtist(e.target.value)}
-                >
-                  {data.artists.map((a: any) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                平台账号
-                <select
-                  aria-label="平台账号"
-                  value={bindAccount}
-                  onChange={(e) => setBindAccount(e.target.value)}
-                >
-                  <option value="">选择账号</option>
-                  {data.accounts.map((a: any) => (
-                    <option key={a.id} value={a.id}>
-                      {names[a.provider]} · {a.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            <button
-              disabled={!bindAccount || !bindArtist}
-              onClick={() => {
-                const a = data.accounts.find((a: any) => a.id === bindAccount);
-                void call("binding.save", {
-                  artistId: bindArtist,
-                  accountId: bindAccount,
-                  targets:
-                    a.provider === "tme" ? ["qqmusic", "kugou"] : [a.provider],
-                });
-              }}
-            >
-              建立本地绑定
-            </button>
-            <HelpHint label="绑定说明">
-              生效能力仍取平台资格、账号权限、绑定和本次确认范围的交集。
-            </HelpHint>
-          </section>
+          ))}
         </div>
-      </div>
-      <section className="panel">
-        <h2>账号身份与授权状态</h2>
-        {data.accounts.map((a: any) => (
-          <div className="account-card" key={a.id}>
-            <div className="section-title">
-              <div>
-                <h3>
-                  {names[a.provider]} · {a.name}
-                </h3>
-                <p>平台余额：未知 · 发布权限：未接入 · 数据权限：未接入</p>
-              </div>
-              <Badge>{label(a.authStatus)}</Badge>
-            </div>
-            {data.bindings
-              .filter((b: any) => b.accountId === a.id)
-              .map((b: any) => (
-                <div className="row" key={b.id}>
-                  <div>
-                    {data.artists.find((x: any) => x.id === b.artistId)?.name}
-                    <small>
-                      目标 {b.targets.map((x: string) => names[x]).join(" / ")}{" "}
-                      ·{" "}
-                      {b.status === "revoked" ? "已撤销" : "仅本地准备 / 演练"}
-                    </small>
-                  </div>
-                  <button
-                    disabled={b.status === "revoked"}
-                    onClick={() => call("binding.revoke", { id: b.id })}
-                  >
-                    撤销绑定
-                  </button>
-                </div>
-              ))}
-            <button onClick={() => window.rainfall.openOfficial(a.provider)}>
-              打开官方页面 ↗
-            </button>
-          </div>
-        ))}
-        {!data.accounts.length && (
-          <p>暂无账号资料</p>
-        )}
+        <button
+          className="primary"
+          disabled={!name}
+          onClick={async () => {
+            const a = await call("artist.save", {
+              ...(artistId ? { id: artistId, expected: initial.revision } : {}),
+              name,
+              defaults,
+            });
+            setArtistId(a.id);
+            notify("已保存艺人配置；已有任务的冻结配置不变。");
+          }}
+        >
+          保存艺人配置
+        </button>
       </section>
       <section className="panel">
         <h2>预算与配额</h2>

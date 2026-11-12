@@ -52,6 +52,7 @@ export const GenerationConfigSchemas: Record<string, z.ZodType> = {
     artistId: z.uuid(),
     storyBeat: z.string().trim().min(1).max(10000),
     storyStage: z.string().max(1000).default(""),
+    styleTemplate: z.string().trim().max(4000).optional(),
     outputs: z.strictObject({
       lyrics: z.literal(true),
       cover: z.boolean(),

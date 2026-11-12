@@ -32,8 +32,8 @@ export type FanqieVisibleForm = {
 export type FanqieExpectedForm = {
   title: string; ai: boolean; musicType: 'original' | 'cover';
   authors: {lyricist: string; composer: string; singer: string};
-  audio: {displayName: string; format: 'WAV' | 'MP3'; displaySize: string};
-  lyrics: {fileName: string; displaySize: string};
+  audio: {displayName: string; format: 'WAV' | 'MP3'; displaySize: string; bytes?: number};
+  lyrics: {fileName: string; displaySize: string; bytes?: number};
 };
 function assertUrl(raw: string | undefined) {
   const url = raw ? new URL(raw) : null;
@@ -64,6 +64,27 @@ export async function readFanqieVisibleForm(page: FanqieFirstStepPage): Promise<
   return state;
 }
 
+function matchesSize(displayed: string, expected: {displaySize: string; bytes?: number}) {
+  if (displayed === expected.displaySize) return true;
+  const size = /^(\d{1,9})(?:\.(\d{1,3}))?\s*(B|KB|MB)$/i.exec(displayed);
+  if (!size || expected.bytes === undefined) return false;
+  const units: Record<string, number> = { B: 0, KB: 1, MB: 2 };
+  const [, whole, decimals = '', unit] = size;
+  const bytes = expected.bytes, power = units[unit.toUpperCase()];
+  const amount = Number(whole + '.' + decimals);
+  // Fanqie can show decimal KB for lyrics and binary units for audio.
+  return [1000, 1024].some(base => amount === Number((bytes / base ** power).toFixed(decimals.length)));
+}
+
+export function fanqieTransferVerified(text: string, expected: FanqieExpectedForm['audio'] | FanqieExpectedForm['lyrics']) {
+  const [label, acknowledgement, extra] = text.trim().split(/\r?\n/).map(line => line.trim());
+  if (!acknowledgement || extra !== undefined) return false;
+  const parts = acknowledgement.split(/[|｜]/).map(part => part.trim());
+  if ('format' in expected && (label !== expected.displayName || parts.shift() !== expected.format)) return false;
+  if ('fileName' in expected && label !== expected.fileName) return false;
+  return parts.length === 2 && parts[0] === '上传完成' && matchesSize(parts[1], expected);
+}
+
 /** These are visible transfer acknowledgements, not remote file hashes or a saved official work ID. */
 export function assertFanqieFirstStepReadback(actual: FanqieVisibleForm, expected: FanqieExpectedForm) {
   if (actual.songCount !== 1 || actual.title !== expected.title || actual.ai !== (expected.ai ? '是' : '否') ||
@@ -71,8 +92,8 @@ export function assertFanqieFirstStepReadback(actual: FanqieVisibleForm, expecte
   for (const role of ['lyricist', 'composer', 'singer'] as const) {
     if (actual.authors[role].length !== 1 || actual.authors[role][0] !== expected.authors[role]) throw Error('FANQIE_AUTHOR_READBACK_REQUIRED');
   }
-  if (actual.audioText.trim() !== `${expected.audio.displayName}\n${expected.audio.format}｜上传完成｜${expected.audio.displaySize}` ||
-      actual.lyricsText.trim() !== `${expected.lyrics.fileName}\n上传完成｜${expected.lyrics.displaySize}`) throw Error('FANQIE_UPLOAD_READBACK_REQUIRED');
+  if (!fanqieTransferVerified(actual.audioText, expected.audio) ||
+      !fanqieTransferVerified(actual.lyricsText, expected.lyrics)) throw Error('FANQIE_UPLOAD_READBACK_REQUIRED');
   // The official cropper turns a valid 2048px source into a 1400px preview. Validate source dimensions before transfer.
   if (actual.coverPreview.length !== 1 || !actual.coverPreview[0].complete || actual.coverPreview[0].width <= 0 ||
       actual.coverPreview[0].width !== actual.coverPreview[0].height) throw Error('FANQIE_COVER_READBACK_REQUIRED');

@@ -49,6 +49,7 @@ import {publicationPayload} from './publication-payload';
 import {listTmeObservations, recordTmeObservation} from './tme-observations';
 import type {MusicAdapter} from './workflow/yourmusic';
 import {liveMusicGrantKey} from '../shared/live-music';
+import { defaultFanqieAccountId } from "../shared/platform-accounts";
 import {LiveTextService} from './live-text';
 import {createProductionFlowService} from './production-integration';
 import type {ProductionFlowService} from './production-flow';
@@ -285,6 +286,24 @@ export class Studio {
         candidateLimit: 10,
       });
     initializePlatformConfigurations(this.repo);
+    const fanqieDirectory = path.join(root, "production", "fanqie");
+    if (mode === "production" &&
+        !this.repo.maybe("accounts", defaultFanqieAccountId) &&
+        (fs.existsSync(path.join(root, "browser-sessions", "fanqie")) ||
+          ["configuration.json", "profile.json", "catalog.json", "uploads"].some(file =>
+            fs.existsSync(path.join(fanqieDirectory, file)),
+          ))) {
+      this.save("accounts", {
+        id: defaultFanqieAccountId,
+        provider: "fanqie",
+        name: "原番茄账号",
+        dailyLimit: 3,
+        authStatus: "not_connected",
+        remoteSubject: null,
+        scopes: [],
+        providerBalance: null,
+      });
+    }
     this.providerTextService();
   }
   get db() {
@@ -578,13 +597,14 @@ export class Studio {
         if (old && old.provider !== v.provider)
           throw Error("IDENTITY_IMMUTABLE");
         return this.save("accounts", {
-          ...v,
-          id: v.id || randomUUID(),
           authStatus:
             this.mode === "simulation" ? "simulation" : "not_connected",
           remoteSubject: null,
           scopes: [],
           providerBalance: null,
+          ...old,
+          ...v,
+          id: v.id || randomUUID(),
         });
       }
       case "binding.save": {
@@ -598,8 +618,16 @@ export class Studio {
           )
         )
           throw Error("TARGET_ACCOUNT_MISMATCH");
+        const targets = [...new Set<string>(v.targets)].sort();
+        const existing = this.all("bindings").find(binding =>
+          binding.accountId === account.id &&
+          binding.artistId === v.artistId &&
+          binding.status !== "revoked" &&
+          JSON.stringify([...new Set<string>(binding.targets)].sort()) === JSON.stringify(targets),
+        );
+        if (existing) return existing;
         return this.save("bindings", {
-          ...v,
+          ...v, targets,
           id: randomUUID(),
           revision: 1,
           status: this.mode === "simulation" ? "simulation" : "local_only",

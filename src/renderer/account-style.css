@@ -1,0 +1,118 @@
+.choice-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.choice-buttons .choice-button {
+  min-height: 36px;
+  padding: 5px 12px;
+  border-radius: 18px;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+.choice-button[aria-pressed="true"],
+.choice-button.selected-tag {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.selected-tag span {
+  margin-inline-start: 8px;
+  color: var(--accent);
+}
+.music-style-picker {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  margin: 12px 0;
+  padding: 10px 12px 12px;
+}
+.music-style-picker > legend {
+  font-weight: 600;
+  padding: 0 4px;
+}
+.music-style-picker details .choice-buttons {
+  margin-top: 8px;
+}
+.style-custom {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  max-width: 420px;
+}
+.style-custom input {
+  min-width: 0;
+  margin: 0;
+}
+.style-selection:empty {
+  display: none;
+}
+.platform-account-filters {
+  margin-bottom: 16px;
+}
+.platform-account-grid {
+  display: grid;
+  grid-template-columns: minmax(230px, 1fr) minmax(0, 2.25fr);
+  gap: 16px;
+  align-items: start;
+}
+.platform-account-list,
+.platform-account-content {
+  min-width: 0;
+}
+.platform-account-grid .section-title h2 {
+  margin: 0;
+}
+.platform-account-list .choice-buttons {
+  display: grid;
+}
+.platform-account-list .choice-button {
+  text-align: left;
+  border-radius: 8px;
+  width: 100%;
+}
+.platform-account-list .account-search {
+  margin: 0 0 12px;
+}
+.platform-account-content .account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.platform-account-content .account-roster {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.platform-account-content .account-roster span {
+  background: var(--accent-soft);
+  color: var(--text);
+  padding: 4px 10px;
+  border-radius: 14px;
+}
+.account-rename {
+  max-width: 420px;
+}
+.platform-account-content .artist-links {
+  border: 0;
+  margin: 12px 0 0;
+  padding: 0;
+}
+.platform-account-content .artist-links > legend {
+  font-weight: 600;
+}
+@media (max-width: 1050px) {
+  .platform-account-grid {
+    grid-template-columns: 1fr;
+  }
+  .platform-account-list .choice-buttons {
+    display: flex;
+  }
+  .platform-account-list .choice-button {
+    width: auto;
+  }
+}

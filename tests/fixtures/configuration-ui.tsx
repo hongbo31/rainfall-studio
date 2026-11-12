@@ -127,7 +127,10 @@ export function configurationCategoryCycle() {
   render();
   tab("诊断与历史");
   const initial = mounted();
-  walk(tree, (node) => node.type === "details").props.onToggle({
+  walk(
+    tree,
+    (node) => node.props?.className === "panel publication-diagnostics",
+  ).props.onToggle({
     currentTarget: { open: true },
   });
   render();

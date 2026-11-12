@@ -1,6 +1,7 @@
-import AccountBinding from './AccountBinding';
 import React, { useRef, useState } from "react";
 import { useStudio, names, label, Badge } from "../context";
+import ChoiceButtons from "./ChoiceButtons";
+import { accountSupportsTarget } from "../../shared/platform-accounts";
 import HelpHint from "./HelpHint";
 import type {
   PlatformTarget,
@@ -38,9 +39,7 @@ export default function PlatformConfigurationPanel({
     [status, setStatus] = useState("");
   const saving = useRef(false);
   const accounts = data.accounts.filter(
-    (account: any) =>
-      account.provider === target ||
-      (["qqmusic", "kugou"].includes(target) && account.provider === "tme"),
+    (account: any) => accountSupportsTarget(account.provider, target),
   );
   const edit = (patch: Partial<PlatformConfigurationInput>) => {
     setDraft({ ...draft, ...patch });
@@ -86,41 +85,24 @@ export default function PlatformConfigurationPanel({
       <form onSubmit={(event) => void save(event)}>
         <fieldset disabled={busy} className="platform-fields">
           <div className="form-grid">
-            <label>
-              默认账号
-              <select
-                aria-label="默认账号"
-                value={draft.accountId ?? ""}
-                onChange={(event) =>
-                  edit({ accountId: event.target.value || null })
-                }
-              >
-                <option value="">请选择账号</option>
-                {accounts.map((account: any) => (
-                  <option key={account.id} value={account.id}>
-                    {account.name} ·{" "}
-                    {label(account.authStatus ?? "not_connected")}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              默认艺人
-              <select
-                aria-label="默认艺人"
-                value={draft.artistId ?? ""}
-                onChange={(event) =>
-                  edit({ artistId: event.target.value || null })
-                }
-              >
-                <option value="">请选择艺人</option>
-                {data.artists.map((artist: any) => (
-                  <option key={artist.id} value={artist.id}>
-                    {artist.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <div>
+              <span>默认账号</span>
+              <ChoiceButtons label="默认账号" value={draft.accountId ?? ""} onChange={value => edit({ accountId: value || null })}
+                choices={[
+                  { value: "", label: "未指定" },
+                  ...accounts.map((account: any) => ({
+                    value: account.id, label: account.name + " · " + label(account.authStatus ?? "not_connected"),
+                  })),
+                ]}/>
+            </div>
+            <div>
+              <span>默认艺人</span>
+              <ChoiceButtons label="默认艺人" value={draft.artistId ?? ""} onChange={value => edit({ artistId: value || null })}
+                choices={[
+                  { value: "", label: "用作品艺人" },
+                  ...data.artists.map((artist: any) => ({ value: artist.id, label: artist.name })),
+                ]}/>
+            </div>
             {(
               [
                 ["lyricist", "词作者", 500],
@@ -187,7 +169,7 @@ export default function PlatformConfigurationPanel({
           </button>
           {onManageAccounts && (
             <button type="button" onClick={onManageAccounts}>
-              管理账号与艺人
+              管理账号
             </button>
           )}
           {status && <span role="status">{status}</span>}
@@ -198,7 +180,6 @@ export default function PlatformConfigurationPanel({
           </p>
         )}
       </form>
-      <AccountBinding artistId={draft.artistId} accountId={draft.accountId}/>
     </section>
   );
 }

@@ -7,8 +7,8 @@ export type BatchState={id:string;accountKey:string;state:'running'|'paused'|'co
 /** Durable sequential queue. A failed item stops the batch; restart never blindly replays writes. */
 export class FanqieBatch {
   private busy=false;
-  constructor(private root:string){}
-  private file(){return path.join(this.root,'production','fanqie','batch.json');}
+  constructor(root:string,private readonly directory=path.join(root,'production','fanqie')){}
+  private file(){return path.join(this.directory,'batch.json');}
   read():BatchState|null{
     if(!fs.existsSync(this.file()))return null;
     const state=JSON.parse(fs.readFileSync(this.file(),'utf8')) as BatchState;
