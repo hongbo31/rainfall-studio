@@ -145,9 +145,12 @@ export async function confirmFanqieFirstStep(page: FanqieFirstStepPage, expected
   await beforeWrite('first-step:confirm-upload'); await assertCurrentScope();
   await dialog.getByRole('button', {name: '确认上传', exact: true}).click();
   await page.playwright.getByRole('heading', {name: '选择签约模式', exact: true}).waitFor({state: 'visible', timeoutMs: 15000});
+  const rights = page.playwright.getByRole('heading', {name: '授权信息·1', exact: true});
+  const song = page.playwright.getByText(expected.title, {exact: true});
+  await rights.waitFor({state: 'visible', timeoutMs: 15000});
+  await song.waitFor({state: 'visible', timeoutMs: 15000});
   await assertCurrentScope(); assertUrl(await page.url());
-  if (await page.playwright.getByRole('heading', {name: '授权信息·1', exact: true}).count() !== 1 ||
-      await page.playwright.getByText(expected.title, {exact: true}).count() !== 1) throw Error('FANQIE_SAVED_WORK_READBACK_REQUIRED');
+  if (await rights.count() !== 1 || await song.count() !== 1) throw Error('FANQIE_SAVED_WORK_READBACK_REQUIRED');
   // A separate fresh catalog read must supply the official work ID before a durable contract_pending receipt is stored.
   return {authorizationPageObserved: true as const, officialRecordVerified: false as const};
 }

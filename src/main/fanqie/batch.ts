@@ -1,9 +1,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
+import type {FanqieAuthorizationResult} from '../../shared/fanqie';
+import type {FanqieCatalogRow} from '../../shared/fanqie-catalog';
+import {fanqieCatalogError} from './catalog-session';
 
 export type BatchItem={workId:string;variant:'A'|'B'};
-export type BatchState={id:string;accountKey:string;state:'running'|'paused'|'complete';items:(BatchItem&{state:'queued'|'running'|'complete'|'paused';result?:unknown;error?:string})[];updatedAt:string};
+export type BatchState={
+  id:string;accountKey:string;state:'running'|'paused'|'complete';
+  items:(BatchItem&{state:'queued'|'running'|'complete'|'paused';result?:unknown;error?:string})[];
+  authorization?:FanqieAuthorizationResult[];
+  authorizationError?:string;
+  updatedAt:string;
+};
 /** Durable sequential queue. A failed item stops the batch; restart never blindly replays writes. */
 export class FanqieBatch {
   private busy=false;
@@ -16,7 +25,22 @@ export class FanqieBatch {
     return state;
   }
   private save(state:BatchState){state.updatedAt=new Date().toISOString();fs.mkdirSync(path.dirname(this.file()),{recursive:true});fs.writeFileSync(this.file()+'.tmp',JSON.stringify(state,null,2));fs.renameSync(this.file()+'.tmp',this.file());}
-  async run(items:BatchItem[],accountKey:string,execute:(item:BatchItem)=>Promise<unknown>,guard:()=>void,resume=false){
+  refreshAuthorization(accountKey:string,rows:FanqieCatalogRow[]){
+    const state=this.read();
+    if(state?.state!=='complete'||state.accountKey!==accountKey||!state.authorization?.length)return;
+    const results=state.authorization.map(record=>{
+      const observed=rows.find(row=>row.id===record.id&&row.title===record.title);
+      return observed&&observed.stage!=='contract_pending'
+        ? {...record,status:observed.officialStatus,phase:'already_processed' as const}
+        : record;
+    });
+    if(JSON.stringify(results)!==JSON.stringify(state.authorization)){
+      state.authorization=results;
+      this.save(state);
+    }
+  }
+  async run(items:BatchItem[],accountKey:string,execute:(item:BatchItem)=>Promise<unknown>,guard:()=>void,resume=false,
+    authorize?:(items:BatchState['items'])=>Promise<FanqieAuthorizationResult[]>){
     if(this.busy)throw Error('FANQIE_BROWSER_BUSY');
     const prior=this.read();
     if(resume&&(!prior||prior.accountKey!==accountKey||JSON.stringify(prior.items.map(({workId,variant})=>({workId,variant})))!==JSON.stringify(items)))throw Error('FANQIE_BATCH_SCOPE_CHANGED');
@@ -26,7 +50,20 @@ export class FanqieBatch {
       for(const item of state.items){
         if(item.state==='complete')continue;
         try{guard();item.state='running';delete item.error;this.save(state);item.result=await execute({workId:item.workId,variant:item.variant});guard();item.state='complete';this.save(state);}
-        catch(error){item.state='paused';item.error=error instanceof Error&&/^[A-Z0-9_]+$/.test(error.message)?error.message:'FANQIE_BROWSER_OPERATION_FAILED';state.state='paused';this.save(state);return state;}
+        catch(error){item.state='paused';item.error=fanqieCatalogError(error).code;state.state='paused';this.save(state);return state;}
+      }
+      if(authorize){
+        try{
+          guard();
+          state.authorization=await authorize(state.items);
+          guard();
+          delete state.authorizationError;
+        }catch(error){
+          state.authorizationError=fanqieCatalogError(error).code;
+          state.state='paused';
+          this.save(state);
+          return state;
+        }
       }
       state.state='complete';this.save(state);return state;
     }finally{this.busy=false;}

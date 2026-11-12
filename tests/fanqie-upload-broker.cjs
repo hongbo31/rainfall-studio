@@ -132,8 +132,8 @@ test('only pre-editor opening failures may be explicitly recovered after a fresh
  }
 });
 
-test('configured publication recovers a closed editor after a material timeout and verifies the original scope',async()=>{
- for(const condition of ['closed','open','duplicate','confirmation','different-lyrics']){
+test('configured publication recovers a closed editor after a pre-confirmation timeout and verifies the original scope',async()=>{
+ for(const condition of ['closed','account-timeout','open','duplicate','confirmation','different-lyrics']){
   const f=uploadFixture(),workId='00000000-0000-4000-8000-000000000003';
   const bundle=loadFanqieBundle(f.manifest);
   const page={url:()=>catalogUrl+'/uploadProduct',isClosed:()=>false};
@@ -146,6 +146,7 @@ test('configured publication recovers a closed editor after a material timeout a
    writes++;
    if(writes===1){
     await callbacks.intent(condition==='confirmation'?'first-step:confirm-upload':'upload:lyrics');
+    if(condition==='account-timeout'||condition==='confirmation')throw Object.assign(Error('browser read timed out'),{name:'TimeoutError'});
     throw Error('FANQIE_UPLOAD_READBACK_TIMEOUT');
    }
    await callbacks.intent('first-step:confirm-upload');
@@ -155,7 +156,7 @@ test('configured publication recovers a closed editor after a material timeout a
   const selected={workId,variant:'A'};
   const broker=new FanqieUploadBroker(f.options);
   await broker.ui('saveConfiguration',{version:1,authors:f.raw.authors,useWorkMaterials:true,publicationConsent:true});
-  await assert.rejects(broker.ui('publishConfigured',selected),/FANQIE_UPLOAD_READBACK_TIMEOUT/);
+  await assert.rejects(broker.ui('publishConfigured',selected),/FANQIE_UPLOAD_READBACK_TIMEOUT|browser read timed out/);
   if(condition==='open')pages.push(page);
   if(condition==='duplicate'){
    f.current.catalog.rows.push({id:'9876543210987654321',title:f.raw.title,stage:'contract_pending',officialStatus:'待授权'});
@@ -163,7 +164,7 @@ test('configured publication recovers a closed editor after a material timeout a
   }
   if(condition==='different-lyrics')f.options.materials=async()=>({...bundle.assets,lyrics:{...bundle.assets.lyrics,sha256:h('edited')}});
   const restarted=new FanqieUploadBroker(f.options);
-  if(condition==='closed'){
+  if(condition==='closed'||condition==='account-timeout'){
    assert.equal((await restarted.ui('publishConfigured',selected)).result.officialRecord.id,'9876543210987654321');
    assert.equal(writes,2);
    assert.equal(fs.readdirSync(path.join(f.root,'production/fanqie/uploads/opening-history')).length,1);

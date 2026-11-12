@@ -45,11 +45,21 @@ export async function executeFanqieNativeUpload(context: BrowserContext, input: 
   };
   let accountProbe: Page | undefined;
   const account = async () => {
+    const read = async () => {
+      callbacks.guard();
+      const probe = accountProbe ??= await context.newPage();
+      await probe.goto('https://www.novelfm.com/creator/music/account/profile', {waitUntil:'commit', timeout:20000});
+      return readFanqieAccountUid(nativeFanqiePage(probe));
+    };
+    const current = await read().catch(async error => {
+      if (!(error instanceof Error) || error.name !== 'TimeoutError') throw error;
+      // Only repeat this read-only account check, before dispatching the pending action.
+      await accountProbe?.close().catch(() => {});
+      accountProbe = undefined;
+      return read();
+    });
     callbacks.guard();
-    const probe = accountProbe ??= await context.newPage();
-      await probe.goto('https://www.novelfm.com/creator/music/account/profile', {waitUntil:'domcontentloaded', timeout:20000});
-      const current = await readFanqieAccountUid(nativeFanqiePage(probe)); callbacks.guard();
-      if (current.accountId !== input.scope.accountId) throw Error('FANQIE_CATALOG_SCOPE_CHANGED');
+    if (current.accountId !== input.scope.accountId) throw Error('FANQIE_CATALOG_SCOPE_CHANGED');
   };
   const intent = async (step: string) => {await account(); await callbacks.intent(step); callbacks.guard();};
   const expected = expectedFanqieForm(input);
@@ -113,7 +123,10 @@ export async function executeFanqieNativeUpload(context: BrowserContext, input: 
   assertFanqieFirstStepReadback(await readFanqieVisibleForm(adapter), expected);
   callbacks.progress('正在确认上传结果');
   const uploaded=await confirmFanqieFirstStep(adapter, expected, intent, assertScope);
-  return uploaded;
+  return {...uploaded,closeUploadPage:async()=>{
+    if(!page.isClosed()&&page.url()===formUrl&&await page.getByRole('heading',{name:'选择签约模式',exact:true}).isVisible())
+      await page.close();
+  }};
   } finally {
     await accountProbe?.close().catch(() => {});
   }

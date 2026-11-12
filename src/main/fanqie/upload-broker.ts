@@ -35,6 +35,7 @@ const ConfigurationSchema=z.strictObject({
 type Bundle = Omit<z.infer<typeof FanqieBundleSchema>, 'files'> & {assets: Record<FanqieRole,FanqieAsset>;source?:WorkBinding};
 type Job = {id:string;title:string;phase:'uploading'|'unknown'|'contract_pending'|'recorded';accountKey:string;recordingSha256:string;
   pending:string|null;updatedAt:string;reason?:string;officialRecord?:FanqieCatalogRow;input:FanqieInput;baselineIds:string[]};
+type BatchUploadResult={result?:{uploaded?:boolean;officialRecord?:FanqieCatalogRow}};
 type Options = {root:string;stateDirectory?:string;session:FanqieCatalogSession;available:()=>boolean;generation:()=>number;pickBundle:()=>Promise<string|null>;
   work?:(selection:{workId:string;variant:'A'|'B'})=>Promise<FanqieWorkSource>;
   materials?:typeof prepareFanqieWorkMaterials;verify?:typeof verifyFanqieMaterials;execute?:typeof executeFanqieNativeUpload};
@@ -67,6 +68,7 @@ export class FanqieUploadBroker {
   private localBusy = false;
   private pipelineBusy = false;
   private batchBusy = false;
+  private batchAccountKey?:string;
   private readonly batch:FanqieBatch;
   private result: unknown = null;
   constructor(private readonly options: Options) {
@@ -100,9 +102,9 @@ export class FanqieUploadBroker {
     fs.renameSync(path.join(this.folder(),job.id+'.json'),path.join(archive,job.id+'-'+randomUUID()+'.json'));
   }
   private recoverClosedEditor(job: Job, bundle: Bundle, current: Awaited<ReturnType<FanqieCatalogSession['inspect']>>, context: BrowserContext) {
-    // Only a material readback timeout is eligible. These checkpoints precede
-    // the durable confirmation intent, and the original form must be gone.
-    if (job.phase !== 'unknown' || job.reason !== 'FANQIE_UPLOAD_READBACK_TIMEOUT' ||
+    // These transfer checkpoints precede the durable confirmation intent.
+    // Recovery requires the same materials and a closed original editor.
+    if (job.phase !== 'unknown' || !['FANQIE_UPLOAD_READBACK_TIMEOUT','FANQIE_BROWSER_TIMEOUT'].includes(job.reason ?? '') ||
         !['upload:audio','upload:lyrics','upload:cover','confirm-square-crop'].includes(job.pending ?? '') ||
         job.officialRecord || job.input.workId !== bundle.source?.workId ||
         job.title !== bundle.title || job.input.ai !== bundle.ai ||
@@ -143,8 +145,12 @@ export class FanqieUploadBroker {
     if(!fs.existsSync(file))return null;
     return ConfigurationSchema.parse(JSON.parse(fs.readFileSync(file,'utf8')));
   }
-  status() {return {defaults:this.defaults(),bundle:publicBundle(this.bundle),ready:!!this.prepared && this.prepared.expires>Date.now(),token:this.prepared?.token??null,
-    result:this.result,jobs:this.jobs().map(publicJob),batch:this.batch.read(),busy:this.localBusy||this.batchBusy||this.pipelineBusy};}
+  status() {
+    const batch=this.batch.read(),batchError=batch?.authorizationError??batch?.items.find(item=>item.error)?.error;
+    return {defaults:this.defaults(),bundle:publicBundle(this.bundle),ready:!!this.prepared && this.prepared.expires>Date.now(),token:this.prepared?.token??null,
+      result:this.result,jobs:this.jobs().map(publicJob),batch,batchError:batchError?fanqieCatalogError(Error(batchError)).message:null,
+      busy:this.localBusy||this.batchBusy||this.pipelineBusy};
+  }
   async ui(action: unknown, input: unknown = {}):Promise<any> {
     if(this.batchBusy&&action!=='status')throw Error('FANQIE_BROWSER_BUSY');
     if(action==='publishBatch'){
@@ -152,17 +158,32 @@ export class FanqieUploadBroker {
       if(this.localBusy||this.pipelineBusy)throw Error('FANQIE_BROWSER_BUSY');
       this.batchBusy=true;const generation=this.options.generation();
       try{
+        const preference=this.configuration()?.authorizationPreference;
         this.guard(generation);if(!this.options.session.status().connected)await this.options.session.ui('open');
         const initial=await this.options.session.run((context,guard)=>this.options.session.inspect(context,guard));this.guard(generation);
-        const batch=await this.batch.run(request.items,initial.report.accountKey,async item=>{
-          const fresh=await this.options.session.run((context,guard)=>this.options.session.inspect(context,guard));this.guard(generation);
-          if(fresh.report.accountKey!==initial.report.accountKey)throw Error('FANQIE_BATCH_SCOPE_CHANGED');
-          const state=await this.publishConfigured(item);
+        const accountKey=initial.report.accountKey;
+        this.batchAccountKey=accountKey;
+        const batch=await this.batch.run(request.items,accountKey,async item=>{
+          const state=await this.publishConfigured(item,false);
           if(!state.result?.uploaded&&!state.result?.matches?.length)throw Error('FANQIE_RECONCILIATION_REQUIRED');
-          return {result:state.result,authorization:state.authorization};
-        },()=>this.guard(generation),request.resume);
+          return {result:state.result};
+        },()=>this.guard(generation),request.resume,preference?async items=>{
+          const jobs=this.jobs();
+          const ids:string[]=[];
+          for(const item of items){
+            const outcome=(item.result as BatchUploadResult|undefined)?.result;
+            if(!outcome?.uploaded)continue;
+            const id=outcome.officialRecord?.id;
+            if(!id||!jobs.some(job=>job.accountKey===accountKey&&job.input.workId===item.workId&&job.officialRecord?.id===id))
+              throw Error('FANQIE_RECONCILIATION_REQUIRED');
+            ids.push(id);
+          }
+          if(new Set(ids).size!==ids.length)throw Error('FANQIE_AUTHORIZATION_WORK_MISMATCH');
+          return ids.length?authorizeFanqieRecords(this.options.root,this.options.session,accountKey,ids,preference,
+            ()=>this.guard(generation),this.stateDirectory()):[];
+        }:undefined);
         return {...this.status(),batch};
-      }finally{this.batchBusy=false;}
+      }finally{this.batchAccountKey=undefined;this.batchBusy=false;}
     }
     if(action==='authorizeExisting'){
       const request=z.strictObject({accountKey:z.string().regex(/^[a-f0-9]{64}$/),ids:z.array(z.string().regex(/^[1-9]\d{4,24}$/)).min(1).max(50).refine(ids=>new Set(ids).size===ids.length)}).parse(input);
@@ -200,6 +221,7 @@ export class FanqieUploadBroker {
       const prior=await this.options.session.run(async(context,guard)=>{
         const current=await this.options.session.inspect(context,guard);
         guard();this.guard(generation);
+        if(this.batchAccountKey&&current.report.accountKey!==this.batchAccountKey)throw Error('FANQIE_BATCH_SCOPE_CHANGED');
         const job=this.jobs().find(job=>job.accountKey===current.report.accountKey&&job.recordingSha256===bundle.assets.audio.sha256);
         return job&&!this.recoverClosedEditor(job,bundle,current,context)?job:null;
       });
@@ -213,7 +235,7 @@ export class FanqieUploadBroker {
       return await this.runAction('upload',{token:prepared.token,consent:true});
     }finally{this.pipelineBusy=false;}
   }
-  private async publishConfigured(input:unknown):Promise<any>{
+  private async publishConfigured(input:unknown,authorize=true):Promise<any>{
       const generation=this.options.generation();this.guard(generation);
       const selection=FanqieWorkSelection.parse(input),config=this.configuration();
       if(!config)throw Error('FANQIE_CONFIGURATION_REQUIRED');
@@ -222,7 +244,7 @@ export class FanqieUploadBroker {
       if(!['generated','assisted','none'].includes(source.ai))throw Error('FANQIE_AI_DISCLOSURE_REQUIRED');
       const authors=config.artistAuthors?.[source.artistId]??config.authors;
       const state=await this.publishWork({...selection,authors,ai:source.ai!=='none',rightsConfirmed:true,lyricsMatchConfirmed:true},source);
-      if(state.result?.uploaded&&state.result.officialRecord?.stage==='contract_pending'&&config.authorizationPreference){
+      if(authorize&&state.result?.uploaded&&state.result.officialRecord?.stage==='contract_pending'&&config.authorizationPreference){
         const report=this.options.session.status().report;if(!report)throw Error('FANQIE_CATALOG_INCOMPLETE');
         state.authorization=await authorizeFanqieRecords(this.options.root,this.options.session,report.accountKey,[state.result.officialRecord.id],config.authorizationPreference,()=>this.guard(generation),this.stateDirectory());
       }
@@ -269,7 +291,16 @@ export class FanqieUploadBroker {
           const matches=current.catalog.rows.filter(row=>job.officialRecord?row.id===job.officialRecord.id:row.title===job.title&&!job.baselineIds.includes(row.id));
           // A title match cannot reconcile an operation that never reached final confirmation.
           if(!current.catalog.complete||matches.length!==1||matches[0].title!==job.title||(!job.officialRecord&&job.pending!=='first-step:confirm-upload'))throw Error('FANQIE_RECONCILIATION_REQUIRED');
-          this.save({...job,phase:matches[0].stage==='contract_pending'?'contract_pending':'recorded',officialRecord:matches[0],pending:null,reason:undefined});
+          const batch=this.batch.read();
+          const groupIds=new Set(batch?.accountKey===job.accountKey?batch.authorization?.map(record=>record.id):[]);
+          for(const candidate of this.jobs()){
+            const record=candidate.id===job.id?matches[0]:
+              candidate.accountKey===job.accountKey&&groupIds.has(candidate.officialRecord?.id??'')
+                ? current.catalog.rows.find(row=>row.id===candidate.officialRecord?.id&&row.title===candidate.title)
+                : undefined;
+            if(record)this.save({...candidate,phase:record.stage==='contract_pending'?'contract_pending':'recorded',officialRecord:record,pending:null,reason:undefined});
+          }
+          this.batch.refreshAuthorization(current.report.accountKey,current.catalog.rows);
           this.result={title:job.title,uploaded:true,officialRecord:matches[0]};return this.status();
         });
       }
@@ -291,6 +322,7 @@ export class FanqieUploadBroker {
         await this.verifyWork(bundle.source);this.guard(generation);
         return await this.options.session.run(async(context,guard)=>{
           const current=await this.options.session.inspect(context,guard,true);this.guard(generation);
+          if(this.batchAccountKey&&current.report.accountKey!==this.batchAccountKey)throw Error('FANQIE_BATCH_SCOPE_CHANGED');
           const duplicate=checkFanqieNewUpload(current.catalog,bundle.title);
           if (!duplicate.allowed) {this.result={title:bundle.title,...duplicate};return this.status();}
           const artists=Object.fromEntries(Object.entries(bundle.authors).map(([role,author])=>{
@@ -328,7 +360,7 @@ export class FanqieUploadBroker {
           input:prepared.input,baselineIds:current.catalog.rows.map(r=>r.id),updatedAt:new Date().toISOString()};this.save(job);
         try {
           const assertCurrent=()=>{guard();this.guard(generation)};
-          await (this.options.execute??executeFanqieNativeUpload)(context,prepared.input,{guard:assertCurrent,diagnostic:value=>{const folder=path.join(this.options.root,'diagnostics');fs.mkdirSync(folder,{recursive:true});fs.writeFileSync(path.join(folder,'fanqie-entry.json'),JSON.stringify(value,null,2));},progress:step=>this.options.session.mark(step),intent:async step=>{
+          const upload=await (this.options.execute??executeFanqieNativeUpload)(context,prepared.input,{guard:assertCurrent,diagnostic:value=>{const folder=path.join(this.options.root,'diagnostics');fs.mkdirSync(folder,{recursive:true});fs.writeFileSync(path.join(folder,'fanqie-entry.json'),JSON.stringify(value,null,2));},progress:step=>this.options.session.mark(step),intent:async step=>{
             assertCurrent();await this.verifyWork(prepared.source);assertCurrent(); await (this.options.verify??verifyFanqieMaterials)(prepared.input);assertCurrent();
             // Re-read the catalog before the final confirmation to catch another tab/device creating this title.
             if(step==='first-step:confirm-upload'){
@@ -343,6 +375,7 @@ export class FanqieUploadBroker {
           const matches=after.catalog.rows.filter(r=>r.title===job.title&&!job.baselineIds.includes(r.id));
           if(!after.catalog.complete||matches.length!==1||matches[0].stage!=='contract_pending')throw Error('FANQIE_SAVED_WORK_READBACK_REQUIRED');
           job={...job,phase:'contract_pending',pending:null,officialRecord:matches[0]};this.save(job);this.result={title:job.title,uploaded:true,officialRecord:matches[0]};
+          if(this.batchAccountKey&&prepared.input.authorizationPreference)await upload?.closeUploadPage?.().catch(()=>{});
           this.options.session.mark('上传完成，待授权');return this.status();
         } catch(error) {job={...job,phase:'unknown',reason:fanqieCatalogError(error).code};this.save(job);throw error;}
       });

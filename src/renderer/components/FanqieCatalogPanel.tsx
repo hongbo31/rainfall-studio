@@ -1,6 +1,7 @@
 import React, {useEffect, useRef, useState} from 'react';
 import type {FanqieCatalogReport} from '../../shared/fanqie-catalog';
 import {checkFanqieNewUpload} from '../../shared/fanqie-catalog';
+import type {FanqieAuthorizationResult} from '../../shared/fanqie';
 import {fanqieScope} from '../fanqie-accounts';
 
 export default function FanqieCatalogPanel({mode, accountId, selectedTitles = []}: {mode: string; accountId?:string; selectedTitles?: string[]}) {
@@ -37,6 +38,23 @@ export default function FanqieCatalogPanel({mode, accountId, selectedTitles = []
     } catch {if (current === epoch.current) setError('番茄窗口连接未完成，请稍后重试。');}
     finally {if (current === epoch.current) setBusy(false);}
   };
+  const authorize = async () => {
+    if (busy || !report) return;
+    setBusy(true); setError(''); setProgress('');
+    const current = epoch.current;
+    try {
+      const result = await window.rainfall.fanqieUpload('authorizeExisting', {
+        ...scope, accountKey:report.accountKey, ids:authorizationIds,
+      });
+      if (current !== epoch.current) return;
+      if (!result.ok) throw Error(result.error.message);
+      const records:FanqieAuthorizationResult[] = result.value.authorization;
+      const pending = records.filter(record => record.phase === 'awaiting_signature').length;
+      setProgress(pending ? pending + ' 首待确认同一份合同' : '所选作品已处理');
+    } catch (error) {
+      if (current === epoch.current) setError(error instanceof Error ? error.message : '授权未完成');
+    } finally {if (current === epoch.current) setBusy(false);}
+  };
   return <section className="panel" aria-label="番茄已有作品">
     <div className="section-title"><h2>番茄已有作品</h2></div>
     <div className="actions">
@@ -51,7 +69,9 @@ export default function FanqieCatalogPanel({mode, accountId, selectedTitles = []
       <table><thead><tr><th>选择</th><th>作品</th><th>状态</th><th>作品 ID</th></tr></thead><tbody>
         {report.rows.map(row => <tr key={row.id}><td>{row.stage==='contract_pending'&&<input type="checkbox" aria-label={'授权 '+row.title} disabled={busy} checked={authorizationIds.includes(row.id)} onChange={e=>setAuthorizationIds(ids=>e.target.checked?[...ids,row.id]:ids.filter(id=>id!==row.id))}/>}</td><td>{row.title}</td><td>{row.officialStatus}</td><td>{row.id}</td></tr>)}
       </tbody></table>
-      {!!authorizationIds.length&&<button disabled={busy||!report.complete} onClick={async()=>{setBusy(true);setError('');const current=epoch.current;try{const r=await window.rainfall.fanqieUpload('authorizeExisting',{...scope,accountKey:report.accountKey,ids:authorizationIds});if(!r.ok)throw Error(r.error.message);if(current===epoch.current)setProgress('授权信息已准备，请在官网确认合同');}catch(e:any){if(current===epoch.current)setError(e.message)}finally{if(current===epoch.current)setBusy(false)}}}>继续授权（{authorizationIds.length} 首）</button>}
+      {!!authorizationIds.length&&<button disabled={busy||!report.complete} onClick={()=>void authorize()}>
+        {authorizationIds.length>1?'合并授权':'继续授权'}（{authorizationIds.length} 首）
+      </button>}
       {!busy&&progress&&<p role="status">{progress}</p>}
       <small>读取于 {new Date(report.observedAt).toLocaleString()}；待授权表示尚未签约。</small>
       {selectedTitles.map(title => {

@@ -14,6 +14,12 @@ export type FanqieRole = 'audio' | 'lyrics' | 'cover';
 export type FanqieAsset = { file: string; sha256: string; bytes: number };
 export type FanqieScope = { accountId: string; artistId: string; sessionId: string };
 export type FanqieAuthorizationPreference = {mode:'exclusive'|'nonexclusive';platforms:('fanqie_music'|'fanqie_audio')[];confirmContractManually:true};
+export type FanqieAuthorizationResult = {
+  id: string;
+  title: string;
+  status: string;
+  phase: 'already_processed' | 'awaiting_signature';
+};
 export type FanqieInput = {
   authorizationPreference?: FanqieAuthorizationPreference;
   workId: string; scope: FanqieScope; title: string; ai: boolean;

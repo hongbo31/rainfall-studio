@@ -1,29 +1,102 @@
 import type {Page} from 'playwright-core';
 import type {FanqieAuthorizationPreference} from '../../shared/fanqie';
 
-/** Prepare the observed authorization form only. Never click confirmation/signature controls. */
-export async function prepareFanqieAuthorization(page:Page, title:string, preference:FanqieAuthorizationPreference,
+export function assertFanqieAuthorizationLocation(page:Page) {
+  const url=new URL(page.url());
+  if(url.origin!=='https://www.novelfm.com'||url.pathname!=='/creator/music/finished/ugc/uploadProduct'||url.username||url.password)
+    throw Error('FANQIE_AUTHORIZATION_SCOPE_CHANGED');
+}
+
+/** Select the requested works and options, then stop at the official contract preview. */
+export async function prepareFanqieAuthorization(page:Page, titles:readonly string[], preference:FanqieAuthorizationPreference,
   beforeWrite:(step:string)=>Promise<void>) {
-  const assertLocation=()=>{
-    const url=new URL(page.url());
-    if(url.origin!=='https://www.novelfm.com'||url.pathname!=='/creator/music/finished/ugc/uploadProduct'||url.username||url.password)
-      throw Error('FANQIE_AUTHORIZATION_SCOPE_CHANGED');
-  };
-  const heading=page.getByRole('heading',{name:/^授权信息\s*[·・]\s*1$/u});
-  const songs=page.locator('.auth-rights-list .auth-right-item .song-name').filter({visible:true});
-  const guard=async()=>{
-    assertLocation();
-    if(await heading.count()!==1||await songs.count()!==1||(await songs.innerText()).trim()!==title)
+  const heading=(count:number)=>page.getByRole('heading',{name:new RegExp('^授权信息\\s*[·・]\\s*'+count+'$','u')});
+  const rights=page.locator('.auth-rights-list .auth-right-item').filter({visible:true});
+  const songs=rights.locator('.song-name').filter({visible:true});
+  const guard=async(expected:readonly string[])=>{
+    assertFanqieAuthorizationLocation(page);
+    const observed=(await songs.allInnerTexts()).map(title=>title.trim()).sort();
+    if(await heading(expected.length).count()!==1||JSON.stringify(observed)!==JSON.stringify([...expected].sort()))
       throw Error('FANQIE_AUTHORIZATION_WORK_MISMATCH');
-    assertLocation();
+    assertFanqieAuthorizationLocation(page);
   };
+  if(!titles.length||new Set(titles).size!==titles.length)throw Error('FANQIE_AUTHORIZATION_WORK_MISMATCH');
   if(!preference.confirmContractManually||!preference.platforms.includes('fanqie_music'))throw Error('FANQIE_AUTHORIZATION_PREFERENCE_INVALID');
-  assertLocation();
+  assertFanqieAuthorizationLocation(page);
   // The mode heading renders before the asynchronous rights list.
-  await heading.waitFor({state:'visible',timeout:20000});
-  await songs.waitFor({state:'visible',timeout:20000});
-  await guard();
-  const write=async(step:string,action:()=>Promise<void>)=>{await guard();await beforeWrite('authorization:'+step);await guard();await action();};
+  const anchor=[titles[0]];
+  await heading(1).waitFor({state:'visible',timeout:20000});
+  await songs.first().waitFor({state:'visible',timeout:20000});
+  await guard(anchor);
+  if(titles.length>1){
+    await beforeWrite('authorization:open-picker');
+    await guard(anchor);
+    await page.getByRole('button',{name:'添加未授权歌曲',exact:true}).click();
+    const confirm=page.getByRole('button',{name:'确认添加',exact:true});
+    await confirm.waitFor({state:'visible',timeout:15000});
+    const list=page.getByRole('list').filter({has:page.getByRole('checkbox')}).filter({visible:true});
+    const pickerRow=(title:string)=>list.locator('.unauth-song-item').filter({has:page.getByText(title,{exact:true})});
+    const selectionCount=page.getByText(/^[（(]\s*已选\s*\d+\s*首\s*[)）]$/u).filter({visible:true});
+    const verifyCount=async(count:number)=>{
+      const expected=new RegExp('^[（(]\\s*已选\\s*'+count+'\\s*首\\s*[)）]$','u');
+      const labels=await selectionCount.allInnerTexts();
+      if(!labels.length||!labels.every(text=>expected.test(text.trim())))
+        throw Error('FANQIE_AUTHORIZATION_PICKER_MISMATCH');
+    };
+    await selectionCount.first().waitFor({state:'visible',timeout:15000});
+    await pickerRow(titles[0]).first().waitFor({state:'visible',timeout:15000});
+    // Fanqie can render the anchor both as the current work and in the pending list.
+    const anchorChecks=await pickerRow(titles[0]).getByRole('checkbox').all();
+    if(!anchorChecks.length||!(await Promise.all(anchorChecks.map(checkbox=>checkbox.isChecked()))).every(Boolean))
+      throw Error('FANQIE_AUTHORIZATION_PICKER_MISMATCH');
+    await verifyCount(1);
+    await beforeWrite('authorization:select-songs');
+    for(const title of titles.slice(1)){
+      const row=pickerRow(title);
+      if(!await row.count()){
+        // The virtual list loads other works after opening and mounts rows as it scrolls.
+        await list.evaluate(el=>{el.scrollTop=0;});
+        const deadline=Date.now()+15000;
+        while(Date.now()<deadline&&!await row.count()){
+          assertFanqieAuthorizationLocation(page);
+          await list.evaluate(el=>{el.scrollTop+=Math.max(1,Math.floor(el.clientHeight*0.8));});
+          await new Promise(resolve=>setTimeout(resolve,200));
+        }
+      }
+      await guard(anchor);
+      const checkbox=row.getByRole('checkbox'),label=row.locator('label.arco-checkbox');
+      if(await row.count()!==1||await checkbox.count()!==1||await label.count()!==1||await checkbox.isChecked())
+        throw Error('FANQIE_AUTHORIZATION_PICKER_MISMATCH');
+      await label.click();
+      if(!(await checkbox.isChecked()))throw Error('FANQIE_AUTHORIZATION_PICKER_MISMATCH');
+    }
+    await beforeWrite('authorization:add-songs');
+    await guard(anchor);
+    await verifyCount(titles.length);
+    await confirm.click();
+    await confirm.waitFor({state:'hidden',timeout:15000});
+    const duplicatedHeading=heading(titles.length+1);
+    await heading(titles.length).or(duplicatedHeading).waitFor({state:'visible',timeout:15000});
+    if(await duplicatedHeading.isVisible()){
+      // The official picker can add the current work twice. Remove one copy from
+      // the authorization list only after proving there is exactly one duplicate.
+      const duplicated=[...titles,titles[0]];
+      await songs.nth(duplicated.length-1).waitFor({state:'visible',timeout:15000});
+      await guard(duplicated);
+      await beforeWrite('authorization:remove-duplicate');
+      await guard(duplicated);
+      const copies=rights.filter({has:page.getByText(titles[0],{exact:true})});
+      const remove=copies.last().locator('.rights-selection svg.serial-fm-icon-general_delete.delete-icon');
+      if(await copies.count()!==2||await remove.count()!==1)throw Error('FANQIE_AUTHORIZATION_WORK_MISMATCH');
+      await remove.click();
+    }
+    await heading(titles.length).waitFor({state:'visible',timeout:15000});
+    await songs.nth(titles.length-1).waitFor({state:'visible',timeout:15000});
+  }
+  await guard(titles);
+  const write=async(step:string,action:()=>Promise<void>)=>{
+    await guard(titles);await beforeWrite('authorization:'+step);await guard(titles);await action();
+  };
   const modeTitle=preference.mode==='exclusive'?'独家授权':'非独家授权';
   const modeCard=page.locator('.auth-type-card').filter({has:page.getByText(modeTitle,{exact:true})});
   await write('mode',()=>modeCard.click());
@@ -58,6 +131,6 @@ export async function prepareFanqieAuthorization(page:Page, title:string, prefer
   if(!(await page.getByRole('button',{name:'下一步',exact:true}).isEnabled()))throw Error('FANQIE_AUTHORIZATION_INCOMPLETE');
   await write('preview',()=>page.getByRole('button',{name:'下一步',exact:true}).click());
   await page.getByRole('heading',{name:'确认签约协议',exact:true}).waitFor({state:'visible',timeout:20000});
-  assertLocation();
+  assertFanqieAuthorizationLocation(page);
   return {phase:'awaiting_signature' as const,contractAccepted:false as const};
 }

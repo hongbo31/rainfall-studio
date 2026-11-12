@@ -7,6 +7,7 @@ import PublicationPipelineProgress from "../components/PublicationPipelineProgre
 import PublicationMaterialResult from "../components/PublicationMaterialResult";
 import ChoiceButtons from "../components/ChoiceButtons";
 import { accountSupportsTarget } from "../../shared/platform-accounts";
+import type { FanqieAuthorizationResult } from "../../shared/fanqie";
 import { fanqieChoices, defaultFanqieChoice, fanqieScope } from "../fanqie-accounts";
 import {
   platformTargets,
@@ -58,6 +59,11 @@ export default function PublishCenter() {
   const [accountState, setAccountState] = useState<{ accountId: string; value: any }>();
   const [accountConfig, setAccountConfig] = useState<{ accountId: string; ready: boolean }>();
   const fanqieState = data.mode==='production' && accountState?.accountId === fanqieAccountId ? accountState.value : null;
+  const fanqieBatch = fanqieState?.batch;
+  const batchAuthorization: FanqieAuthorizationResult[] = fanqieBatch?.authorization ?? [];
+  const pendingSignature = batchAuthorization.filter(record => record.phase === 'awaiting_signature').length;
+  const groupedIds = new Set(batchAuthorization.map(record => record.id));
+  const groupJob = fanqieState?.jobs?.find((job:any) => groupedIds.has(job.officialRecord?.id));
   const fanqieConfigured = accountConfig?.accountId === fanqieAccountId && accountConfig.ready;
   const setFanqieState = (value: any) => setAccountState({ accountId: fanqieAccountId, value });
   const [channelResults,setChannelResults]=useState<string[]>([]);
@@ -84,6 +90,49 @@ export default function PublishCenter() {
   const currentScope = JSON.stringify({ mode: data.mode, selection });
   const scopeRef = useRef(currentScope);
   scopeRef.current = currentScope;
+  const showFanqieBatch = (value:any) => {
+    setFanqieState(value);
+    const records = new Map<string, FanqieAuthorizationResult>(
+      (value.batch?.authorization ?? []).map((record:FanqieAuthorizationResult) => [record.id, record]),
+    );
+    setChannelResults((value.batch?.items ?? []).filter((item:any) => item.state === 'complete').map((item:any) => {
+      const outcome = item.result?.result;
+      const title = data.works.find((work:any) => work.id === item.workId)?.title ?? '作品';
+      const status = records.get(outcome?.officialRecord?.id)?.status ?? item.result?.authorization?.[0]?.status ??
+        (outcome?.uploaded ? outcome.officialRecord.officialStatus : '官网已有同名作品，已跳过上传');
+      return title + ' · 番茄音乐 · ' + status;
+    }));
+  };
+  const continueFanqie = async (jobId?:string) => {
+    if (inFlight.current) return;
+    const submittedScope = currentScope;
+    inFlight.current = true;
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      if (jobId) {
+        const opened = await window.rainfall.fanqieCatalog('open', fanqieInput);
+        if (!opened.ok) throw Error(opened.error.message);
+      }
+      const response = jobId
+        ? await window.rainfall.fanqieUpload('reconcile', {...fanqieInput, id:jobId})
+        : await window.rainfall.fanqieUpload('publishBatch', {
+          ...fanqieInput, items:fanqieBatch.items.map(({workId,variant}:any) => ({workId,variant})), resume:true,
+        });
+      if (!response.ok) throw Error(response.error.message);
+      if (scopeRef.current !== submittedScope) return;
+      showFanqieBatch(response.value);
+      if (!jobId && response.value.batch?.state === 'paused')
+        setError(response.value.batchError ?? '本批已暂停，请核对官网状态。');
+    } catch (e) {
+      if (scopeRef.current === submittedScope) setError(e instanceof Error ? e.message : '番茄处理未完成');
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+      setMessage('');
+    }
+  };
   useEffect(() => {
     if (currentResult) {
       resultRef.current?.focus({ preventScroll: true });
@@ -139,13 +188,11 @@ export default function PublishCenter() {
         const uploaded=await window.rainfall.fanqieUpload('publishBatch',{...fanqieInput,items});
         if(!uploaded.ok)throw Error(uploaded.error.message);
         if(scopeRef.current!==submittedScope)return;
-        setFanqieState(uploaded.value);
-        const batch=uploaded.value.batch;
-        setChannelResults(batch.items.filter((i:any)=>i.state==='complete').map((i:any)=>{const outcome=i.result?.result;const title=data.works.find((w:any)=>w.id===i.workId)?.title??'作品';return title+' · 番茄音乐 · '+(i.result?.authorization?.[0]?.status??(outcome?.uploaded?outcome.officialRecord.officialStatus:'官网已有同名作品，已跳过上传'));}));
-        if(batch.state!=='complete')throw Error('本批已暂停，已完成作品保留；请查看发布记录后继续');
+        showFanqieBatch(uploaded.value);
+        if(uploaded.value.batch.state!=='complete')throw Error(uploaded.value.batchError??'本批已暂停，请核对官网状态。');
       }
       const otherTargets=selection.targets.filter(t=>t!=='fanqie');
-      if(!otherTargets.length){setMessage('番茄处理完成，请查看发布记录');return;}
+      if(!otherTargets.length){setMessage('');return;}
       const result = await call("publish.simple", {...selection,targets:otherTargets});
       if (scopeRef.current !== submittedScope) return;
       setCurrentResult({
@@ -321,7 +368,7 @@ export default function PublishCenter() {
                         {target === "douyin"
                           ? "使用作品已有视频。"
                           : "使用所选音频版本、已选封面和已有歌词。"}
-                        {target==='fanqie'?'自动上传至待授权，合同在官网处理。':'正式提交前需逐首确认当前条款。'}
+                        {target==='fanqie'?'同一账号的待授权作品合并到一份合同。':'正式提交前需逐首确认当前条款。'}
                       </HelpHint>
                     </div>
                     <div className="simple-target-meta">
@@ -407,9 +454,22 @@ export default function PublishCenter() {
           )}
         </div>
         {channelResults.map((text,index)=><p role="status" key={index}>{text}</p>)}
-        {fanqieState?.batch&&<section className="publication-current-result" aria-label="番茄批次"><h3>番茄批次</h3><p>{fanqieState.batch.items.filter((i:any)=>i.state==='complete').length}/{fanqieState.batch.items.length} 首已处理 · {fanqieState.batch.state==='complete'?'处理完成':fanqieState.batch.state==='paused'?'已暂停':'处理中'}</p>{fanqieState.batch.state==='paused'&&<button disabled={busy} onClick={async()=>{if(inFlight.current)return;inFlight.current=true;setBusy(true);setError('');try{const r=await window.rainfall.fanqieUpload('publishBatch',{...fanqieInput,items:fanqieState.batch.items.map(({workId,variant}:any)=>({workId,variant})),resume:true});if(!r.ok)throw Error(r.error.message);setFanqieState(r.value);if(r.value.batch.state==='paused')setError('仍有作品待核对，已完成作品保留。');}catch(e:any){setError(e.message)}finally{inFlight.current=false;setBusy(false)}}}>核对后继续批次</button>}</section>}
+        {fanqieBatch&&<section className="publication-current-result" aria-label="番茄批次">
+          <h3>番茄批次</h3>
+          <p role="status">{fanqieBatch.state==='paused'?'已暂停':
+            pendingSignature>0?`${pendingSignature} 首待确认同一份合同`:
+            `${fanqieBatch.items.filter((item:any)=>item.state==='complete').length}/${fanqieBatch.items.length} 首已处理`}</p>
+          {fanqieBatch.state==='paused'&&<button disabled={busy} onClick={()=>void continueFanqie()}>继续批次</button>}
+          {groupJob&&<button disabled={busy} onClick={()=>void continueFanqie(groupJob.id)}>更新批次状态</button>}
+        </section>}
         {!fanqieAccountRequired&&<details><summary>番茄账号与已有作品</summary><FanqieCatalogPanel key={fanqieAccountId} mode={data.mode} accountId={fanqieAccountId}/></details>}
-        {!!fanqieState?.jobs?.length&&<section className="publication-current-result" aria-label="番茄发布记录"><h3>发布记录</h3>{fanqieState.jobs.map((job:any)=><div className="publication-channel-result" key={job.id}><span><b>{job.title}</b> · 番茄音乐 · {job.officialRecord?.officialStatus??(job.phase==='unknown'?'待核对':'处理中')}{job.officialRecord&&` · ${job.officialRecord.id}`}</span><button disabled={busy} onClick={async()=>{if(inFlight.current)return;inFlight.current=true;setBusy(true);try{const opened=await window.rainfall.fanqieCatalog('open',fanqieInput);if(!opened.ok)throw Error(opened.error.message);const r=await window.rainfall.fanqieUpload('reconcile',{...fanqieInput,id:job.id});if(!r.ok)throw Error(r.error.message);setFanqieState(r.value);}catch(e:any){setError(e.message)}finally{inFlight.current=false;setBusy(false)}}}>更新状态</button></div>)}</section>}
+        {!!fanqieState?.jobs?.length&&<section className="publication-current-result" aria-label="番茄发布记录">
+          <h3>发布记录</h3>
+          {fanqieState.jobs.map((job:any)=><div className="publication-channel-result" key={job.id}>
+            <span><b>{job.title}</b> · 番茄音乐 · {job.officialRecord?.officialStatus??(job.phase==='unknown'?'待核对':'处理中')}{job.officialRecord&&` · ${job.officialRecord.id}`}</span>
+            {!groupedIds.has(job.officialRecord?.id)&&<button disabled={busy} onClick={()=>void continueFanqie(job.id)}>更新状态</button>}
+          </div>)}
+        </section>}
         {currentResult && (
           <section
             className="publication-current-result"

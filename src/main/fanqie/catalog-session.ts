@@ -198,6 +198,7 @@ export function fanqieCatalogError(error: unknown) {
     FANQIE_BATCH_SCOPE_CHANGED: '账号或批次选择已变化，已停止操作，请重新核对。',
     FANQIE_AUTHORIZATION_RECONCILIATION_REQUIRED: '已有待确认合同，请先在官网完成或核对签约，再更新状态；不会重新上传。',
     FANQIE_AUTHORIZATION_WORK_MISMATCH: '授权页作品与当前任务不一致，已停止操作。',
+    FANQIE_AUTHORIZATION_PICKER_MISMATCH: '官网待授权列表未能匹配本批作品，请刷新官网记录后继续。',
     FANQIE_AUTHORIZATION_IDENTITY_REQUIRED: '请在官网完成个人签约身份认证。',
     FANQIE_AUTHORIZATION_MODE_UNVERIFIED: '官网签约模式未能核对，请检查授权页面。',
     FANQIE_AUTHORIZATION_PLATFORM_UNVERIFIED: '官网发行平台未能核对，已保留当前页面。',
