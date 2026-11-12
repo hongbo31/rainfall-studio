@@ -30,7 +30,7 @@ const names:Record<PlanCenterStage,PlanCenterCapabilityName|undefined>={dot:'dot
 const safeId=z.string().min(1).max(500);
 const targetInput=z.strictObject({runId:safeId,platform:safeId,accountId:safeId});
 const publishInput=targetInput.extend({itemId:safeId});
-const missingTheme=(plan:PlanCenterPlanInput)=>plan.material.source==='provider'&&!plan.theme?.trim()&&!plan.storyContext?.storyBeat.trim();
+const missingTheme=(plan:PlanCenterPlanInput)=>['provider','pule_prompt'].includes(plan.material.source??'dot')&&!plan.theme?.trim()&&!plan.storyContext?.storyBeat.trim();
 export class PlanCenterService {
   private store:CenterStore;
   constructor(readonly repo:Repository,readonly options:PlanCenterOptions={}) {
@@ -149,6 +149,7 @@ export class PlanCenterService {
     });
   }
   private stages(plan:PlanCenterPlan):PlanCenterStage[] {
+    if(plan.material.source==='pule_prompt')return ['music_submit','music_assets',...(plan.outputs.cover?['cover' as const]:[]),'materials'];
     return [...(plan.material.source==='provider'?['text_generate' as const]:['dot' as const]),'text_score',...(plan.outputs.music?['music_submit' as const,'music_assets' as const]:[]),...(plan.outputs.cover?['cover' as const]:[]),'materials'];
   }
   private stageGate(run:PlanCenterRun,item:PlanCenterItem,stage:PlanCenterStage):{state:string;reason?:string} {
@@ -355,7 +356,8 @@ export class PlanCenterService {
       const item=this.store.get('item',p.itemId);if(!item)throw Error('NOT_FOUND');const run=this.store.get('run',item.runId)!;
       if(item.versions.length) {
         const first=item.versions.find(v=>v.version==='A')??item.versions[0];
-        if(run.snapshot.music.versionPolicy==='first'&&p.selectedVersion!==first.version)throw Error('VERSION_POLICY_FIRST');
+        const expected=run.snapshot.material.source==='pule_prompt'?item.selectedVersion:first.version;
+        if(run.snapshot.music.versionPolicy==='first'&&p.selectedVersion!==expected)throw Error('VERSION_POLICY_FIRST');
         const version=item.versions.find(v=>v.version===p.selectedVersion);if(!version||version.assetId!==p.audioAssetId)throw Error('AUDIO_VERSION_MISMATCH');
       }
       const {itemId,...materials}=p;const saved=this.store.put('item',{...item,materials,updatedAt:this.now()});this.refresh(item.runId);return saved;

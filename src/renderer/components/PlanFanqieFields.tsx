@@ -110,7 +110,7 @@ export default function PlanFanqieFields({
             }
           }}
         />
-        {busy ? "正在核对账号…" : "完成后上传番茄音乐"}
+        {busy ? "正在核对账号…" : "批量上传并准备番茄合同"}
       </label>
       {accountRequired && <small>请选择番茄账号。</small>}
       {error && (

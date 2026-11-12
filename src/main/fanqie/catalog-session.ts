@@ -4,7 +4,7 @@ import {createHash} from 'node:crypto';
 import type {BrowserContext, Page} from 'playwright-core';
 import {z} from 'zod';
 import {readFanqieAccountUid, readFanqieArtists} from './identity';
-import {readFanqieCatalog} from './catalog';
+import {readFanqieCatalogPages} from './catalog';
 import {launchAccountBrowser} from '../browser-accounts';
 import type {FanqieCatalog, FanqieCatalogReport} from '../../shared/fanqie-catalog';
 type Options = {
@@ -119,7 +119,7 @@ export class FanqieCatalogSession {
     const { value: { catalog, artists }, accountId, accountKey, maskedAccount } = await this.observeAccount(context, guard, async (page, go) => {
       this.mark('正在读取已有作品');
       await go('https://www.novelfm.com/creator/music/finished/ugc');
-      const catalog = await (this.options.catalog ?? (p => readFanqieCatalog(readPage(p))))(page);
+      const catalog = await (this.options.catalog ?? (p => readFanqieCatalogPages(p,guard)))(page);
       if (catalog.source !== 'browser') throw Error('FANQIE_CATALOG_SOURCE_REQUIRED');
       return { catalog, artists: withArtists ? await this.readArtists(page, go) : [] };
     });

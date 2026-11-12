@@ -31,6 +31,14 @@ export function safeMusicUrl(value: string) {
     throw Error("DOWNLOAD_URL_REJECTED");
   return u;
 }
+function safeCoverUrl(value:string){
+  const u=new URL(value);
+  if(u.hostname==='oss.yourmusic.fun')return safeMusicUrl(value);
+  if(u.hostname!=='cdn2.suno.ai'||u.protocol!=='https:'||u.username||u.password||
+      (u.port&&u.port!=='443')||u.hash||!/^\/image_[a-z0-9_-]+\.(jpe?g|png|webp)$/i.test(u.pathname))
+    throw Error('COVER_DOWNLOAD_REJECTED');
+  return u;
+}
 export function publicIpv4(value: string) {
   if (isIP(value) !== 4) return false;
   const [a, b, c] = value.split(".").map(Number);
@@ -56,7 +64,7 @@ export const nodeHttpsTransport: HttpTransport = async (input) => {
   const u = new URL(input.url);
   if (
     u.protocol !== "https:" ||
-    !["api.yourmusic.fun", "oss.yourmusic.fun", "api.deepseek.com", "ark.cn-beijing.volces.com"].includes(u.hostname) ||
+    !["api.yourmusic.fun", "oss.yourmusic.fun", "api.deepseek.com", "ark.cn-beijing.volces.com", "cdn2.suno.ai"].includes(u.hostname) ||
     u.username ||
     u.password ||
     (u.port && u.port !== "443")
@@ -65,8 +73,12 @@ export const nodeHttpsTransport: HttpTransport = async (input) => {
   if(u.hostname==='api.deepseek.com' && (u.search || u.hash || !((input.method==='GET' && u.pathname==='/models') || (input.method==='POST' && u.pathname==='/chat/completions'))))
     throw Error('HTTP_HOST_REJECTED');
   if(u.hostname==='ark.cn-beijing.volces.com'&&(u.search||u.hash||input.method!=='POST'||u.pathname!=='/api/v3/chat/completions'))throw Error('HTTP_HOST_REJECTED');
+  if(u.hostname==='cdn2.suno.ai'){
+    if(input.method!=='GET'||!input.binary)throw Error('HTTP_HOST_REJECTED');
+    safeCoverUrl(input.url);
+  }
   if (
-    u.hostname === "oss.yourmusic.fun" &&
+    ["oss.yourmusic.fun","cdn2.suno.ai"].includes(u.hostname) &&
     input.headers &&
     Object.keys(input.headers).some((k) => k.toLowerCase() === "authorization")
   )
@@ -130,7 +142,9 @@ export const nodeHttpsTransport: HttpTransport = async (input) => {
         });
       },
     );
-    req.setTimeout(30000, () => req.destroy(Error("HTTP_TIMEOUT")));
+    // Prompt mode first composes the lyrics. Keep the original request open.
+    const timeout = input.method==='POST'&&u.hostname==='api.yourmusic.fun'&&u.pathname==='/v1/suno/generate/prompt'?120000:30000;
+    req.setTimeout(timeout, () => req.destroy(Error("HTTP_TIMEOUT")));
     req.on("error", (cause: NodeJS.ErrnoException) => {
       const failure = Object.assign(Error(cause.message === "HTTP_TIMEOUT" ? "HTTP_TIMEOUT" : "HTTP_REQUEST_FAILED"), { code: cause.code });
       reject(failure);
@@ -143,6 +157,9 @@ const SongSchema = z.object({
   id: z.string().min(1).max(200),
   status: z.enum(["pending", "processing", "succeeded", "failed"]),
   audio_url: z.string().max(5000).optional(),
+  audio_delivery_status: z.string().max(100).nullish(),
+  has_watermark: z.boolean().nullish(),
+  image_url: z.string().max(5000).nullish(),
   title:z.string().max(1000).optional(),duration:z.number().nonnegative().max(10000).optional(),lyric:z.string().max(100000).optional(),model_name:z.string().max(200).optional(),created_at:z.string().max(200).optional(),
 });
 export interface MusicAdapter {
@@ -180,7 +197,7 @@ export class YourMusicAdapter implements MusicAdapter {
   ) {
     this.source = options.source;
   }
-  private async api(method: "GET" | "POST", endpoint: string, body?: unknown) {
+  private async api(method: "GET" | "POST", endpoint: string, body?: unknown, assertDispatch?:()=>Promise<void>) {
     const secret = await this.options.credential();
     return this.options.request({
       method,
@@ -190,7 +207,42 @@ export class YourMusicAdapter implements MusicAdapter {
         "Content-Type": "application/json",
       },
       ...(body ? { body } : {}),
+      assertDispatch,
     });
+  }
+  async submitPrompt(input:{prompt:string;modelId:string},assertDispatch:()=>Promise<void>){
+    const prompt=input.prompt.trim();
+    if(!prompt||Array.from(prompt).length>500)throw Error('PROVIDER_LIMIT');
+    if(!['chirp-v6','chirp-v6-wild','chirp-v6-mini'].includes(input.modelId))throw Error('MODEL_CAPABILITY_UNVERIFIED');
+    let dispatched=false;
+    try{
+      const response=await this.api('POST','/v1/suno/generate/prompt',{prompt,model:input.modelId,instrumental:false},async()=>{
+        await assertDispatch();dispatched=true;
+      });
+      if(response.status<200||response.status>=300){
+        const reasons:Record<number,string>={400:'MUSIC_PROMPT_REJECTED',401:'CREDENTIAL_REQUIRED',402:'MUSIC_CREDITS_INSUFFICIENT',429:'MUSIC_RATE_LIMITED'};
+        const reason=reasons[response.status];
+        return reason?{state:'failed' as const,reason}:{state:'unknown' as const,reason:'MUSIC_HTTP_'+response.status};
+      }
+      const receipt=z.object({task_id:z.string().min(1).max(200),status:z.enum(['pending','processing','succeeded']),
+        songs:z.array(SongSchema.pick({id:true})).length(2)}).safeParse(response.body);
+      if(!receipt.success)return {state:'unknown' as const,reason:'MUSIC_RECEIPT_INVALID_'+response.status};
+      const songIds=receipt.data.songs.map(song=>song.id);
+      if(new Set(songIds).size!==2)return {state:'unknown' as const,reason:'DUPLICATE_REMOTE_ID'};
+      return {state:'accepted' as const,trackingId:receipt.data.task_id,songIds};
+    }catch(error){
+      const reason=error instanceof Error&&/^[A-Z0-9_]+$/.test(error.message)?error.message:'MUSIC_REQUEST_FAILED';
+      return {state:dispatched?'unknown' as const:'failed' as const,reason};
+    }
+  }
+  async downloadCover(url:string){
+    const address=safeCoverUrl(url);
+    if(!/\.(jpe?g|png|webp)$/i.test(address.pathname))throw Error('COVER_DOWNLOAD_REJECTED');
+    const response=await this.options.request({method:'GET',url,binary:true});
+    const mime=(response.headers?.['content-type']??'').split(';')[0].trim().toLowerCase();
+    if(response.status!==200||!['image/jpeg','image/png','image/webp','application/octet-stream'].includes(mime)||
+       !Buffer.isBuffer(response.body)||!response.body.length||response.body.length>10*1024*1024)throw Error('COVER_DOWNLOAD_REJECTED');
+    return response.body as Buffer;
   }
   async submit(input: {
     draft: CreativeDraft;

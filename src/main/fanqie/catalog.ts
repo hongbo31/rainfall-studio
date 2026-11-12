@@ -1,4 +1,5 @@
 import {assertFanqieCatalogUrl, parseFanqieCatalog, type FanqieCatalog} from '../../shared/fanqie-catalog';
+import type {Page} from 'playwright-core';
 export * from '../../shared/fanqie-catalog';
 type CatalogLocator = {
   evaluate<T>(fn: (el: Element) => T): Promise<T>;
@@ -37,4 +38,43 @@ export async function readFanqieCatalog(page: FanqieCatalogPage): Promise<Fanqie
   // Until an official empty-state completion signal is calibrated, it cannot authorize a new upload.
   return {source: 'browser', url, observedAt: new Date().toISOString(), ...parsed, complete: parsed.complete && parsed.total > 0};
   }
+}
+
+/** Page through a fresh, application-owned catalog while retaining the all-works filter. */
+export async function readFanqieCatalogPages(page:Page, guard:()=>void, untilId?:string):Promise<FanqieCatalog> {
+  const read=()=>readFanqieCatalog({url:async()=>page.url(),playwright:page});
+  guard();
+  const first=await read();
+  guard();
+  const rows=[...first.rows],seen=new Set(rows.map(row=>row.id));
+  const pager=page.getByRole('tabpanel').locator('.arco-table-pagination');
+  const current=pager.locator('.arco-pagination-item-active[aria-current="true"]').filter({visible:true});
+  const next=pager.getByRole('listitem',{name:'下一页',exact:true})
+    .and(pager.locator('.arco-pagination-item-next:not(.arco-pagination-item-disabled)')).filter({visible:true});
+  for(let number=1;seen.size<first.total&&(!untilId||!seen.has(untilId));number++){
+    await current.waitFor({state:'visible',timeout:5000});
+    if(await current.count()!==1||Number((await current.innerText()).trim())!==number||
+       await next.count()!==1||!(await next.isEnabled()))break;
+    guard();
+    if(page.url()!==first.url)throw Error('FANQIE_CATALOG_PAGE_CHANGED');
+    await next.click({timeout:5000});
+    const deadline=Date.now()+15000;
+    let advanced=false;
+    while(Date.now()<deadline){
+      guard();
+      const result=await read();
+      guard();
+      if(result.total!==first.total||result.url!==first.url)throw Error('FANQIE_CATALOG_COUNT_INVALID');
+      if(await current.count()===1&&Number((await current.innerText()).trim())===number+1&&
+        result.rows.length&&result.rows.every(row=>!seen.has(row.id))){
+        for(const row of result.rows){seen.add(row.id);rows.push(row);}
+        advanced=true;
+        break;
+      }
+      await new Promise(resolve=>setTimeout(resolve,250));
+    }
+    if(!advanced)break;
+    if(seen.size>first.total)throw Error('FANQIE_CATALOG_COUNT_INVALID');
+  }
+  return {...first,rows,complete:first.total>0&&seen.size===first.total,observedAt:new Date().toISOString()};
 }

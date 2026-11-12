@@ -49,6 +49,7 @@ import {FanqieAccountSessions, splitFanqieAccountInput} from './fanqie/account-s
 import {PlatformBrowserSessions} from './browser-accounts';
 import {PlatformAccountIdSchema, type PlatformAccount} from '../shared/platform-accounts';
 import {createPlanFanqiePublisher} from './fanqie/plan-publisher';
+import {createPlanPuleRunner} from './plan-pule';
 import {createUnifiedPublishBroker,createTmeAiTransportProvider} from './tme/unified-publish';
 import {externalReceiptBarrier,persistExternalReceiptBarrier,persistExternalReceiptStop} from './tme/external-receipt-barrier';
 import {installNativeDiagnostics} from './native-diagnostics';
@@ -187,6 +188,14 @@ async function fanqieAccount(accountId?:string){
 }
 const planFanqiePublisher=createPlanFanqiePublisher({
   rpc,upload:fanqieAccounts.get().upload,forAccount:async id=>(await fanqieAccount(id)).upload,
+  readAuthorization:async id=>{
+    const {catalog,upload}=await fanqieAccount(id);
+    if(!catalog.status().connected||upload.status().busy)return;
+    return catalog.run(async(context,guard)=>(await catalog.inspect(context,guard)).report);
+  },
+  available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,
+});
+const planPuleRunner=createPlanPuleRunner({rpc,credentials:apiCredentials,
   available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,
 });
 tmeAiCloud.onIdentityInvalidated(()=>{try{child?.postMessage({kind:'account-identity-invalidated'})}catch{/* Old worker already stopped. */}});
@@ -214,7 +223,7 @@ const planAlbums=createPlanAlbumBroker({rpc:(method,input)=>rpc(method,input),av
 const providerText=createProviderTextBroker({credentials:apiCredentials,rpc,available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration});
 const materialWorkbench=createMaterialWorkbenchBroker({credentials:apiCredentials,rpc,available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,chooseDirectory:()=>dialog.showOpenDialog(window,{title:'选择只读素材目录',properties:['openDirectory']})});
 app.on('before-quit',()=>providerText.stop());
-setInterval(()=>{if(offlineAcceptance)return;void productionFlow.pump();void unifiedPublish.pump();void providerText.pump().catch(()=>undefined);void materialWorkbench.pump().catch(()=>undefined);void planFanqiePublisher.pump().catch(()=>undefined);},2000).unref();
+setInterval(()=>{if(offlineAcceptance)return;void productionFlow.pump();void unifiedPublish.pump();void providerText.pump().catch(()=>undefined);void materialWorkbench.pump().catch(()=>undefined);void planPuleRunner.pump().catch(()=>undefined);void planFanqiePublisher.pump().catch(()=>undefined);},2000).unref();
 const pending = new Map<
   string,
   { resolve: (v: any) => void; reject: (e: any) => void; timer: NodeJS.Timeout }

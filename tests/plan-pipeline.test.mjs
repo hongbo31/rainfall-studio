@@ -979,10 +979,24 @@ test('Fanqie plan automatically binds A and materials then waits for durable off
  let uploads=0;
  const publisher=api.createPlanFanqiePublisher({available:()=>true,generation:()=>1,
  rpc:async(method,input)=>({ok:true,value:api.planFanqieAction(x.s,method.split('.').at(-1),input)}),
- upload:{status:()=>({busy:false}),publishScheduled:async(input,check)=>{await check();assert.equal(input.variant,'A');uploads++;return{result:{uploaded:true,officialRecord:{id:'999888777666555',stage:'contract_pending'}}};}}
+ upload:{
+  status:()=>({busy:false}),
+  publishScheduled:()=>assert.fail('New plans use the scoped batch uploader'),
+  publishScheduledBatch:async(input,check)=>{
+   assert.equal(input.items.length,1);
+   const work=input.items[0];
+   await check(work.workId);
+   assert.equal(work.variant,'A');
+   uploads++;
+   const record={id:'999888777666555',stage:'contract_pending'};
+   return {batch:{state:'complete',items:[{workId:work.workId,result:{result:{officialRecord:record}}}],
+     authorization:[{id:record.id,phase:'awaiting_signature'}]}};
+  },
+ }
  });
  await publisher.pump();await publisher.pump();
  assert.equal(uploads,1);assert.equal(api.planFanqieJobs(x.s)[0].state,'uploaded');
+ assert.equal(api.planFanqieJobs(x.s)[0].authorization,'awaiting_signature');
  assert.equal(x.center.list().runs[0].state,'completed');
  assert.equal(x.events.filter(e=>e.kind==='music-submit').length,1);
  assert.equal(x.s.get('works',item.workId).lyricsConfirmation??null,null,'automatic checks must not fabricate a human audition');

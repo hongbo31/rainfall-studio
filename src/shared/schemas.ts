@@ -49,7 +49,6 @@ export const methodSchemas: Record<string, z.ZodType> = {
   'cover.request': CoverRequestSchema,
   'cover.list': z.strictObject({workId:z.uuid().optional()}),
   'cover.watch': z.strictObject({requestId:z.uuid()}),
-  'planCenter.fanqieStatus':z.strictObject({}),
   'cover.inboxStatus': z.strictObject({workId:z.uuid().optional()}),
   'tme.preview': TmeInputSchema,
   'tme.prepare': TmeInputSchema,
@@ -247,6 +246,7 @@ export function validate(method: string, input: unknown) {
   const planSchemas:Record<string,z.ZodType>={
     'planCenter.list':z.strictObject({}),'planCenter.catalog':z.strictObject({}),
     'planCenter.status':z.strictObject({}),'planCenter.dotStatus':z.strictObject({}),'planCenter.exportDotRequests':z.strictObject({}),
+    'planCenter.fanqieStatus':z.strictObject({}),'planCenter.retryFanqie':z.strictObject({runId:z.uuid()}),
     'planCenter.musicStatus':z.strictObject({}),'planCenter.publicationStatus':z.strictObject({}),
     'planCenter.bindWork':PlanCenterBindWorkSchema,'planCenter.prepareCoverWork':PlanCenterPrepareCoverWorkSchema,'planCenter.selectVersion':PlanCenterSelectVersionSchema,
     'planCenter.confirmMaterials':PlanCenterConfirmMaterialsSchema,'planCenter.materialPreview':PlanCenterIdSchema,

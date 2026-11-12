@@ -31,7 +31,7 @@ function fixture(){
   const props={
     item:{id:'fixture-item-1',ordinal:1,workId:'fixture-work-1',selectedVersion:'A',
       versions:[{version:'A',assetId:'fixture-audio-a'},{version:'B',assetId:'fixture-audio-b'}]},
-    run:{stopRequested:false,snapshot:{artistId:'fixture-artist',music:{route:'manual',versionPolicy:'manual'},outputs:{music:true}}},
+    run:{stopRequested:false,snapshot:{artistId:'fixture-artist',material:{source:'manual'},authorization:{publish:false},music:{route:'manual',versionPolicy:'manual'},outputs:{music:true}}},
     catalog:{works:[]},busy:false,
     status:{materials:[{itemId:'fixture-item-1',workId:'fixture-work-1',workRevision:1,title:'Fixture song',selectedVersion:'A',
       audio:{assetId:'fixture-audio-a',sha256:'audio-a-hash'},
@@ -51,7 +51,7 @@ function fixture(){
   const check=()=>{checkbox().props.onChange({target:{checked:true}});render();};
   const fillRights=()=>{find(n=>n.type==='textarea').props.onChange({target:{value:'Synthetic original lyrics, recording and cover are authorized for these exact materials.'}});render();};
   render();
-  return{props,calls,render,checkbox,confirm,check,fillRights,materials:()=>props.status.materials[0],
+  return{props,calls,render,checkbox,confirm,check,fillRights,nodes:()=>nodes(tree),materials:()=>props.status.materials[0],
     async submit(){assert.equal(confirm().props.disabled,false,'current declaration enables confirmation');confirm().props.onClick();await Promise.all(pending.splice(0));},
   };
 }
@@ -103,4 +103,14 @@ test('unchanged material identity survives polling but a user uncheck disables s
   assert.equal(f.confirm().props.disabled,false);
   f.checkbox().props.onChange({target:{checked:false}});f.render();
   assert.equal(f.checkbox().props.checked,false);assert.equal(f.confirm().props.disabled,true);assert.equal(f.calls.length,0);
+});
+
+test('automatic Fanqie plans show the selected materials without a per-song declaration',()=>{
+  const f=fixture();
+  Object.assign(f.props.run.snapshot,{material:{source:'pule_prompt'},authorization:{publish:true},fanqie:{materialsConsent:true}});
+  Object.assign(f.props.item,{selectedVersion:'B',materials:{selectedVersion:'B'}});
+  f.render();
+  assert.equal(f.nodes().some(node=>node.type==='input'&&node.props.type==='checkbox'),false);
+  assert.ok(f.nodes().some(node=>node.props.role==='status'&&node.props.children.includes('B')));
+  assert.equal(f.calls.length,0);
 });

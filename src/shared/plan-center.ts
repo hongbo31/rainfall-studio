@@ -26,7 +26,7 @@ export const PlanCenterPlanSchema = z.strictObject({
   schedule: PlanCenterScheduleSchema, count: z.number().int().min(1).max(20).default(1),
   theme: z.string().max(2000).default(''), styleTemplate: z.string().max(4000).default(''),
   outputs: z.strictObject({ lyrics: z.boolean(), cover: z.boolean(), music: z.boolean() }).refine(v=>v.lyrics||v.cover||v.music, 'OUTPUT_REQUIRED').default({ lyrics: true, cover: false, music: false }),
-  material: z.strictObject({ source: z.enum(['dot','manual','provider']).default('dot'), channel: z.string().max(500).default(''), identity: z.string().max(500).default(''), expectedExternalItemIds: z.array(InboxId).max(20).optional() }),
+  material: z.strictObject({ source: z.enum(['dot','manual','provider','pule_prompt']).default('dot'), channel: z.string().max(500).default(''), identity: z.string().max(500).default(''), expectedExternalItemIds: z.array(InboxId).max(20).optional() }),
   text: z.strictObject({ profileId: id.optional(), profileRevision: revision.optional(), modelId: id.optional(), maxOutputTokens: z.number().int().min(256).max(16384).optional(), budgetMicros: z.number().int().positive().max(100_000_000).optional(), consent: z.boolean().default(false), threshold: z.number().min(0).max(100).default(75), maxRewrites: z.number().int().min(0).max(2).default(2), maxScoreRetries: z.number().int().min(0).max(2).default(2) }),
   music: z.strictObject({ route: z.enum(['suno_official','pule','yourmusic','manual']), profileId: id.optional(), profileRevision: revision.optional(), modelId: id.optional(), budgetCredits: z.number().int().positive().optional(), maxCostPerRequestCredits: z.number().int().positive().optional(), pricingEvidence: z.string().max(1000).optional(), creditPolicy: FlowMusicCreditPolicySchema.optional(), consent: z.boolean().default(false), versionPolicy: z.enum(['first','manual']).default('first') }),
   publishTargets: z.array(PlanCenterPublishTargetSchema).max(20).refine(v => new Set(v.map(t=>`${t.platform}\0${t.accountId}`)).size===v.length,'DUPLICATE_TARGET').default([]),
@@ -39,6 +39,8 @@ export const PlanCenterPlanSchema = z.strictObject({
   const ids=p.material.expectedExternalItemIds;
   if(ids&&ids.length!==p.count)ctx.addIssue({code:'custom',message:'EXTERNAL_ITEM_COUNT',path:['material','expectedExternalItemIds']});
   if(ids&&new Set(ids).size!==ids.length)ctx.addIssue({code:'custom',message:'DUPLICATE_EXTERNAL_ITEM',path:['material','expectedExternalItemIds']});
+  if(p.material.source==='pule_prompt'&&(!p.outputs.lyrics||!p.outputs.music||p.music.route!=='pule'||p.music.versionPolicy!=='first'))
+    ctx.addIssue({code:'custom',message:'PULE_PROMPT_REQUIRES_LYRICS_MUSIC_AND_FIRST_VERSION',path:['material','source']});
 });
 export type PlanCenterPlan = z.infer<typeof PlanCenterPlanSchema>;
 export type PlanCenterPlanInput = z.input<typeof PlanCenterPlanSchema>;

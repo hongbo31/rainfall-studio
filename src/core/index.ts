@@ -24,6 +24,7 @@ import {executeTmeAiPrepare} from './tme-ai-prepare-integration';
 import {resolveFanqieWork} from './fanqie-work';
 import { AccountProviderSchema, PlatformAccountIdSchema } from "../shared/platform-accounts";
 import {planFanqieAction,recoverPlanFanqie} from './plan-fanqie';
+import {planPuleAction} from './plan-pule';
 import {executeTmeAiSubmission} from './tme-ai-submission-integration';
 import {createAccountIdentityBridge} from './account-identity-channel';
 export { Studio };
@@ -146,6 +147,7 @@ if (port) {
   recoverPlanFanqie(studio);
   const execute = async (method: string, input: any) => {
     if(method.startsWith('internal.planFanqie.'))return planFanqieAction(studio,method.slice('internal.planFanqie.'.length),input);
+    if(method.startsWith('internal.planPule.'))return planPuleAction(studio,method.slice('internal.planPule.'.length),input);
     if(method.startsWith('internal.materials.')){
       const action=method.slice('internal.materials.'.length),service=studio.materialWorkbench();
       if(action==='prepareWork')return prepareMaterialWork(studio,input);

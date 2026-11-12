@@ -5,6 +5,7 @@ import type {BrowserContext,Page} from 'playwright-core';
 import {fanqieOrigin,type FanqieAuthorizationPreference,type FanqieAuthorizationResult} from '../../shared/fanqie';
 import {assertFanqieCatalogUrl,fanqieCatalogPath,type FanqieCatalogRow} from '../../shared/fanqie-catalog';
 import {FanqieCatalogSession} from './catalog-session';
+import {readFanqieCatalogPages} from './catalog';
 import {assertFanqieAuthorizationLocation,prepareFanqieAuthorization} from './authorization';
 
 type Work = Pick<FanqieCatalogRow,'id'|'title'>;
@@ -22,14 +23,15 @@ const preparedPages=new WeakMap<BrowserContext,Map<string,Page>>();
 
 export async function authorizeFanqieRecords(
   root:string,session:FanqieCatalogSession,accountKey:string,ids:string[],
-  preference:FanqieAuthorizationPreference,outerGuard:()=>void,
+  preference:FanqieAuthorizationPreference,outerGuard:()=>void|Promise<void>,
   stateDirectory=path.join(root,'production','fanqie'),
+  wholeBatch=false,
 ):Promise<FanqieAuthorizationResult[]> {
   return session.run(async(context,guard)=>{
     const inspect=async()=>{
-      guard();outerGuard();
+      guard();await outerGuard();guard();
       const current=await session.inspect(context,guard);
-      outerGuard();
+      await outerGuard();guard();
       if(!current.catalog.complete||current.report.accountKey!==accountKey)throw Error('FANQIE_BATCH_SCOPE_CHANGED');
       return current.catalog.rows;
     };
@@ -40,6 +42,7 @@ export async function authorizeFanqieRecords(
       return row;
     });
     const pending=rows.filter(row=>row.stage==='contract_pending');
+    if(wholeBatch&&pending.length&&pending.length!==rows.length)throw Error('FANQIE_AUTHORIZATION_WORK_MISMATCH');
     const results=():FanqieAuthorizationResult[]=>rows.map(row=>({
       id:row.id,title:row.title,
       status:row.stage==='contract_pending'?'等待合同确认':row.officialStatus,
@@ -87,7 +90,7 @@ export async function authorizeFanqieRecords(
     }
 
     const page=await context.newPage();
-    const anchor=pending[0];
+    const anchor=catalog.find(row=>pendingIds.has(row.id))!;
     let step='open-catalog';
     try{
       save('preparing',step);
@@ -95,6 +98,8 @@ export async function authorizeFanqieRecords(
       await page.goto(fanqieOrigin+fanqieCatalogPath,{waitUntil:'domcontentloaded',timeout:20000});
       const idText=new RegExp('^作品ID[：:]\\s*'+anchor.id+'$','u');
       const target=page.getByRole('row').filter({has:page.getByText(idText)});
+      if(!await target.count()&&catalog.length>1)
+        await readFanqieCatalogPages(page,guard,anchor.id);
       await target.waitFor({state:'visible',timeout:20000});
       const beforeWrite=async(next:string)=>{
         verifyPending(await inspect());
@@ -109,7 +114,7 @@ export async function authorizeFanqieRecords(
         throw Error('FANQIE_AUTHORIZATION_WORK_MISMATCH');
       await target.locator('svg.serial-fm-icon-general_edit').click();
       await page.getByRole('heading',{name:'选择签约模式',exact:true}).waitFor({state:'visible',timeout:20000});
-      await prepareFanqieAuthorization(page,pending.map(row=>row.title),preference,beforeWrite);
+      await prepareFanqieAuthorization(page,[anchor.title,...pending.filter(row=>row.id!==anchor.id).map(row=>row.title)],preference,beforeWrite);
       save('awaiting_signature',step);
       let pages=preparedPages.get(context);
       if(!pages){pages=new Map();preparedPages.set(context,pages);}

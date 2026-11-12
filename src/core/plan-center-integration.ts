@@ -8,7 +8,7 @@ import {syncPlanPublications,planPublicationStatus,planPublicationCapabilities} 
 import {bindPlanWork,selectPlanVersion,confirmPlanMaterials,planAssetsCatalog,planMaterialPreview,syncPlanMaterials,adoptPlanIncomingCover} from './plan-center-assets';
 import {syncPlanMusic,stopPlanMusic,planMusicExternalOutcome} from './plan-center-music';
 import {tickPlanMusic} from './plan-center-music-stages';
-import {syncPlanFanqie,planFanqieJobs} from './plan-fanqie';
+import {syncPlanFanqie,planFanqieJobs,retryPlanFanqieBatch} from './plan-fanqie';
 import {preparePlanCoverInbox} from './cover-inbox';
 import {tickProviderPlanText,stopProviderPlanText,providerTextService,materializeProviderTextFinal} from './provider-plan-text';
 import {PlanCenterSaveSchema,PlanCenterToggleSchema,PlanCenterIdSchema,PlanCenterRunSchema,PlanCenterStopSchema,PlanCenterRetrySchema} from '../shared/plan-center';
@@ -55,6 +55,7 @@ export function executePlanCenter(s:Studio,method:string,raw:unknown){
    return{providerText:providerTextService(s).list().map(({id,runId,itemId,phase,state,reason,currency,spentMicros,reservedMicros})=>({id,runId,itemId,phase,state,reason,currency,spentMicros,reservedMicros})),dot:planDotStatus(s),publication:planPublicationStatus(s),music:rows.items.flatMap<Record<string,unknown>>(item=>{try{const run=rows.runs.find(r=>r.id===item.runId)!;const state=syncPlanMusic(s,run,item);return state?[{itemId:item.id,...state}]:[];}catch(e){return[{itemId:item.id,reason:e instanceof Error?e.message:'MUSIC_SCOPE_INVALID'}];}}),materials:rows.items.flatMap<Record<string,unknown>>(item=>{if(!item.workId)return[];try{return[{itemId:item.id,...planMaterialPreview(s,item.id)}]}catch(e){return[{itemId:item.id,reason:e instanceof Error?e.message:'MATERIALS_INVALID'}]}})};
   }
   case 'planCenter.fanqieStatus':empty.parse(raw);return planFanqieJobs(s);
+  case 'planCenter.retryFanqie':return retryPlanFanqieBatch(s,raw);
   case 'planCenter.dotStatus':empty.parse(raw);return planDotStatus(s);
   case 'planCenter.exportDotRequests':empty.parse(raw);return exportPlanDotRequests(s);
   case 'planCenter.publicationStatus':empty.parse(raw);return planPublicationStatus(s);
@@ -121,7 +122,10 @@ export function tickPlanCenter(s:Studio){
    const outstandingScore=rows.stageAttempts.filter(a=>a.itemId===item.id&&a.stage==='text_score'&&['dispatching','waiting','unknown'].includes(a.state)).at(-1);
    const next=service.next({runId:run.id,itemId:item.id})??(run.stopRequested&&outstandingScore?{stage:'text_score' as const,state:outstandingScore.state}:null);
    if(!next)continue;
-   if(['music_submit','music_assets'].includes(next.stage)){tickPlanMusic(s,run,boundItem);continue;}
+   if(['music_submit','music_assets'].includes(next.stage)){
+    if(run.snapshot.material.source!=='pule_prompt')tickPlanMusic(s,run,boundItem);
+    continue;
+   }
    if(next.stage==='text_score'){
     const existing=service.list().stageAttempts.filter(a=>a.itemId===item.id&&a.stage==='text_score').at(-1);
     if(run.stopRequested&&!existing)continue;
@@ -172,7 +176,7 @@ export function tickPlanCenter(s:Studio){
      }
      service.record({attemptId:attempt.id,status:'succeeded',evidenceId:proof.receipt.id,result:{assetId:proof.asset.id,sha256:proof.asset.sha256,requestId:proof.request.id,receiptId:proof.receipt.id,contextHash:proof.request.contextHash,finalPairHash:binding.finalPairHash,source:'user-import-final-cover',generationVerified:false}});return;
     }
-    if(boundCover){try{s.locate(boundCover.id);service.record({attemptId:attempt.id,status:'succeeded',evidenceId:boundCover.id,result:{assetId:boundCover.id,sha256:boundCover.sha256,source:'user-bound-existing-work'}});return;}catch{service.record({attemptId:attempt.id,status:'failed',reason:'COVER_MISSING_OR_CORRUPT'});return;}}
+    if(boundCover){try{s.locate(boundCover.id);service.record({attemptId:attempt.id,status:'succeeded',evidenceId:boundCover.id,result:{assetId:boundCover.id,sha256:boundCover.sha256,source:run.snapshot.material.source==='pule_prompt'?latestItem.material?.coverSource:'user-bound-existing-work'}});return;}catch{service.record({attemptId:attempt.id,status:'failed',reason:'COVER_MISSING_OR_CORRUPT'});return;}}
     const asset=imported?.cover?.assetId?s.repo.maybe('assets',imported.cover.assetId):null;
     if(score?.result?.rewriteCount)service.record({attemptId:attempt.id,status:'failed',reason:'COVER_REFRESH_REQUIRED'});
     else if(asset&&asset.sha256===imported?.cover?.sha256){

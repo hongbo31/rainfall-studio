@@ -164,7 +164,7 @@ export function planRouteIssue(
   if (!plan.routing || !plan.routeSnapshot) return;
   const roles: GenerationRole[] = [
     ...(plan.material.source === "provider" ? ["text" as const] : []),
-    ...(plan.outputs.cover ? ["image" as const] : []),
+    ...(plan.outputs.cover && plan.material.source !== "pule_prompt" ? ["image" as const] : []),
     ...(plan.outputs.music ? ["music" as const] : []),
   ];
   for (const role of roles) {
@@ -241,7 +241,7 @@ export function frozenRouteIssue(
   if (!plan.routeSnapshot) return;
   const roles: GenerationRole[] = [
     ...(plan.material.source === "provider" ? ["text" as const] : []),
-    ...(plan.outputs.cover ? ["image" as const] : []),
+    ...(plan.outputs.cover && plan.material.source !== "pule_prompt" ? ["image" as const] : []),
     ...(plan.outputs.music ? ["music" as const] : []),
   ];
   for (const role of roles) {

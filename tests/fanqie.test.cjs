@@ -250,6 +250,9 @@ test('material readback accepts the displayed precision while requiring the exac
  const actual={...visibleForm(),lyricsText:'测试歌词.txt\n上传完成 ｜ 1.25 KB'};
  assert.doesNotThrow(()=>assertFanqieFirstStepReadback(actual,expected));
  assert.doesNotThrow(()=>assertFanqieFirstStepReadback({...actual,lyricsText:'测试歌词.txt\n上传完成｜1.3KB'},expected));
+ const short={...expected,lyrics:{fileName:'测试歌词.txt',displaySize:'983.0B',bytes:983}};
+ assert.doesNotThrow(()=>assertFanqieFirstStepReadback({...actual,lyricsText:'测试歌词.txt\n上传完成｜986.0B'},short));
+ assert.throws(()=>assertFanqieFirstStepReadback({...actual,lyricsText:'测试歌词.txt\n上传完成｜987.0B'},short),/FANQIE_UPLOAD_READBACK_REQUIRED/);
  for(const lyricsText of ['测试歌词.txt\n上传完成｜1.27 KB','另一个文件.txt\n上传完成｜1.25 KB','测试歌词.txt\n上传中｜1.25 KB']){
   assert.throws(()=>assertFanqieFirstStepReadback({...actual,lyricsText},expected),/FANQIE_UPLOAD_READBACK_REQUIRED/);
  }

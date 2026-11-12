@@ -13,8 +13,41 @@ const require=createRequire(import.meta.url);
 const {nativeFanqiePage}=require('../output/fanqie-tests/upload.cjs');
 const {probeFanqieForm}=require('../output/fanqie-tests/core.cjs');
 const {readFanqieArtists}=require('../output/fanqie-tests/core.cjs');
+const {readFanqieCatalog,readFanqieCatalogPages,checkFanqieNewUpload}=require('../output/fanqie-tests/core.cjs');
 const {FanqieUploadBroker}=require('../output/fanqie-tests/upload.cjs');
 const {FanqieCatalogSession}=require('../output/fanqie-tests/session.cjs');
+
+test('a duplicate on a later catalog page remains visible to preflight',async t=>{
+ const browser=await chromium.launch({channel:'chrome',headless:true,chromiumSandbox:true});
+ t.after(()=>browser.close());
+ const context=await browser.newContext({serviceWorkers:'block'});
+ await context.route('**/*',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:`
+  <meta charset="utf-8"><div role="tab" aria-selected="true">全部·2</div>
+  <input placeholder="请输入作品名称"><section role="tabpanel">
+   <table><thead><tr><th>作品信息</th><th>作品状态</th><th>创建时间</th><th>上架时间</th><th>操作</th></tr></thead>
+   <tbody><tr><td><div>第一页</div><div>作品ID：9876543210987654321</div></td><td>审核中</td><td>今天</td><td>-</td><td></td></tr></tbody></table>
+   <div class="arco-table-pagination"><ul>
+    <li aria-current="true" class="arco-pagination-item-active">1</li>
+    <li aria-label="下一页" class="arco-pagination-item-next">›</li>
+   </ul></div>
+  </section><script>
+   document.querySelector('.arco-pagination-item-next').onclick=()=>{
+    document.querySelector('.arco-pagination-item-active').textContent='2';
+    setTimeout(()=>{
+     const cells=document.querySelector('tbody tr').cells;
+     cells[0].innerHTML='<div>第二页重复作品</div><div>作品ID：9876543210987654322</div>';
+    },300);
+   };
+  </script>`}));
+ const page=await context.newPage();
+ await page.goto('https://www.novelfm.com/creator/music/finished/ugc');
+ const first=await readFanqieCatalog({url:async()=>page.url(),playwright:page});
+ assert.equal(first.complete,false);
+ const full=await readFanqieCatalogPages(page,()=>{});
+ assert.equal(full.complete,true);
+ assert.deepEqual(full.rows.map(row=>row.id),['9876543210987654321','9876543210987654322']);
+ assert.equal(checkFanqieNewUpload(full,'第二页重复作品').reason,'FANQIE_OFFICIAL_RECORD_ALREADY_EXISTS');
+});
 
 test('artist reader waits for the roster after its search field has already mounted',async()=>{
  const browser=await chromium.launch({channel:'chrome',headless:true,chromiumSandbox:true});

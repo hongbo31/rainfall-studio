@@ -29,7 +29,11 @@ export function nativeFanqiePage(page: Page): any {
     waitForEvent: (event: 'filechooser', options: {timeoutMs: number}) => page.waitForEvent(event, {timeout: options.timeoutMs}),
   }};
 }
-const sizeText = (bytes: number) => bytes >= 1024 * 1024 ? (bytes / 1024 / 1024).toFixed(1)+'MB' : (bytes / 1024).toFixed(1)+'KB';
+const sizeText = (bytes: number) => {
+  if(bytes>=1024*1024)return (bytes/1024/1024).toFixed(1)+'MB';
+  if(bytes>=1024)return (bytes/1024).toFixed(1)+'KB';
+  return bytes.toFixed(1)+'B';
+};
 export function expectedFanqieForm(input: FanqieInput): FanqieExpectedForm {
   return {title: input.title, authors: input.authors, ai: input.ai, musicType: input.musicType,
     audio: {displayName: input.title, format: path.extname(input.assets.audio.file).toLowerCase() === '.wav' ? 'WAV' : 'MP3', displaySize: sizeText(input.assets.audio.bytes), bytes: input.assets.audio.bytes},

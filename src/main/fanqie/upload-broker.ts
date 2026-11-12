@@ -11,7 +11,7 @@ import {FanqieCatalogSession, fanqieCatalogError} from './catalog-session';
 import {executeFanqieNativeUpload} from './native-upload';
 import {FanqieWorkSelection,type FanqieWorkSource} from '../../core/fanqie-work';
 import {prepareFanqieWorkMaterials} from './materials';
-import {FanqieBatch} from './batch';
+import {FanqieBatch,type BatchItem} from './batch';
 import {authorizeFanqieRecords} from './authorize-records';
 
 const name = z.string().trim().min(1).max(40);
@@ -36,6 +36,11 @@ type Bundle = Omit<z.infer<typeof FanqieBundleSchema>, 'files'> & {assets: Recor
 type Job = {id:string;title:string;phase:'uploading'|'unknown'|'contract_pending'|'recorded';accountKey:string;recordingSha256:string;
   pending:string|null;updatedAt:string;reason?:string;officialRecord?:FanqieCatalogRow;input:FanqieInput;baselineIds:string[]};
 type BatchUploadResult={result?:{uploaded?:boolean;officialRecord?:FanqieCatalogRow}};
+const scopedHash=z.string().regex(/^[a-f0-9]{64}$/);
+const scheduledBatchInput=z.strictObject({runId:z.uuid(),accountKey:scopedHash,configurationHash:scopedHash,
+  items:z.array(FanqieWorkSelection.extend({fingerprint:scopedHash})).min(1).max(20)
+    .refine(items=>new Set(items.map(item=>item.workId)).size===items.length)});
+type ScheduledBatch=z.infer<typeof scheduledBatchInput>;
 type Options = {root:string;stateDirectory?:string;session:FanqieCatalogSession;available:()=>boolean;generation:()=>number;pickBundle:()=>Promise<string|null>;
   work?:(selection:{workId:string;variant:'A'|'B'})=>Promise<FanqieWorkSource>;
   materials?:typeof prepareFanqieWorkMaterials;verify?:typeof verifyFanqieMaterials;execute?:typeof executeFanqieNativeUpload};
@@ -87,6 +92,12 @@ export class FanqieUploadBroker {
     this.batchBusy=true;this.scheduledScope=input;this.scheduledCheck=check;
     try{return await this.publishConfigured({workId:input.workId,variant:input.variant});}
     finally{this.batchBusy=false;this.scheduledScope=undefined;this.scheduledCheck=undefined;}
+  }
+  async publishScheduledBatch(raw:unknown,check:(workId?:string)=>Promise<void>){
+    const input=scheduledBatchInput.parse(raw);
+    const queue=new FanqieBatch(this.options.root,path.join(this.stateDirectory(),'scheduled',input.runId));
+    const items=input.items.map(({workId,variant})=>({workId,variant}));
+    return this.runBatch(queue,items,!!queue.read(),{...input,check});
   }
   private jobs(): Job[] {
     if (!fs.existsSync(this.folder())) return [];
@@ -151,39 +162,60 @@ export class FanqieUploadBroker {
       result:this.result,jobs:this.jobs().map(publicJob),batch,batchError:batchError?fanqieCatalogError(Error(batchError)).message:null,
       busy:this.localBusy||this.batchBusy||this.pipelineBusy};
   }
+  private async runBatch(queue:FanqieBatch,items:BatchItem[],resume?:boolean,
+    scheduled?:ScheduledBatch&{check:(workId?:string)=>Promise<void>}){
+    if(this.batchBusy||this.localBusy||this.pipelineBusy)throw Error('FANQIE_BROWSER_BUSY');
+    this.batchBusy=true;
+    const generation=this.options.generation();
+    try{
+      const config=this.configuration(),preference=config?.authorizationPreference;
+      if(scheduled&&(!preference||sha(config)!==scheduled.configurationHash))throw Error('FANQIE_CONFIGURATION_CHANGED');
+      const guard=()=>this.guard(generation);
+      guard();
+      await scheduled?.check();
+      if(!this.options.session.status().connected)await this.options.session.ui('open');
+      const initial=await this.options.session.run((context,sessionGuard)=>this.options.session.inspect(context,sessionGuard));
+      guard();
+      const accountKey=initial.report.accountKey;
+      if(scheduled&&accountKey!==scheduled.accountKey)throw Error('FANQIE_BATCH_SCOPE_CHANGED');
+      this.batchAccountKey=accountKey;
+      const batch=await queue.run(items,accountKey,async item=>{
+        if(scheduled){
+          const selection=scheduled.items.find(record=>record.workId===item.workId)!;
+          this.scheduledScope={accountKey,fingerprint:selection.fingerprint};
+          this.scheduledCheck=()=>scheduled.check(item.workId);
+        }
+        try{
+          const state=await this.publishConfigured(item,false);
+          if(scheduled&&!state.result?.uploaded)
+            throw Error(state.result?.reason??'FANQIE_RECONCILIATION_REQUIRED');
+          if(!state.result?.uploaded&&!state.result?.matches?.length)throw Error('FANQIE_RECONCILIATION_REQUIRED');
+          return {result:state.result};
+        }finally{this.scheduledScope=undefined;this.scheduledCheck=undefined;}
+      },guard,resume,preference?async completed=>{
+        const jobs=this.jobs(),ids:string[]=[];
+        for(const item of completed){
+          const outcome=(item.result as BatchUploadResult|undefined)?.result;
+          if(!outcome?.uploaded)continue;
+          const id=outcome.officialRecord?.id;
+          if(!id||!jobs.some(job=>job.accountKey===accountKey&&job.input.workId===item.workId&&job.officialRecord?.id===id))
+            throw Error('FANQIE_RECONCILIATION_REQUIRED');
+          ids.push(id);
+        }
+        if(new Set(ids).size!==ids.length||scheduled&&ids.length!==items.length)
+          throw Error('FANQIE_AUTHORIZATION_WORK_MISMATCH');
+        const verify=async()=>{guard();await scheduled?.check();guard();};
+        return ids.length?authorizeFanqieRecords(this.options.root,this.options.session,accountKey,ids,preference,
+          verify,this.stateDirectory(),!!scheduled):[];
+      }:undefined);
+      return {...this.status(),batch};
+    }finally{this.batchAccountKey=undefined;this.batchBusy=false;}
+  }
   async ui(action: unknown, input: unknown = {}):Promise<any> {
     if(this.batchBusy&&action!=='status')throw Error('FANQIE_BROWSER_BUSY');
     if(action==='publishBatch'){
       const request=z.strictObject({items:z.array(FanqieWorkSelection).min(1).max(50).refine(items=>new Set(items.map(i=>i.workId)).size===items.length),resume:z.boolean().optional()}).parse(input);
-      if(this.localBusy||this.pipelineBusy)throw Error('FANQIE_BROWSER_BUSY');
-      this.batchBusy=true;const generation=this.options.generation();
-      try{
-        const preference=this.configuration()?.authorizationPreference;
-        this.guard(generation);if(!this.options.session.status().connected)await this.options.session.ui('open');
-        const initial=await this.options.session.run((context,guard)=>this.options.session.inspect(context,guard));this.guard(generation);
-        const accountKey=initial.report.accountKey;
-        this.batchAccountKey=accountKey;
-        const batch=await this.batch.run(request.items,accountKey,async item=>{
-          const state=await this.publishConfigured(item,false);
-          if(!state.result?.uploaded&&!state.result?.matches?.length)throw Error('FANQIE_RECONCILIATION_REQUIRED');
-          return {result:state.result};
-        },()=>this.guard(generation),request.resume,preference?async items=>{
-          const jobs=this.jobs();
-          const ids:string[]=[];
-          for(const item of items){
-            const outcome=(item.result as BatchUploadResult|undefined)?.result;
-            if(!outcome?.uploaded)continue;
-            const id=outcome.officialRecord?.id;
-            if(!id||!jobs.some(job=>job.accountKey===accountKey&&job.input.workId===item.workId&&job.officialRecord?.id===id))
-              throw Error('FANQIE_RECONCILIATION_REQUIRED');
-            ids.push(id);
-          }
-          if(new Set(ids).size!==ids.length)throw Error('FANQIE_AUTHORIZATION_WORK_MISMATCH');
-          return ids.length?authorizeFanqieRecords(this.options.root,this.options.session,accountKey,ids,preference,
-            ()=>this.guard(generation),this.stateDirectory()):[];
-        }:undefined);
-        return {...this.status(),batch};
-      }finally{this.batchAccountKey=undefined;this.batchBusy=false;}
+      return this.runBatch(this.batch,request.items,request.resume);
     }
     if(action==='authorizeExisting'){
       const request=z.strictObject({accountKey:z.string().regex(/^[a-f0-9]{64}$/),ids:z.array(z.string().regex(/^[1-9]\d{4,24}$/)).min(1).max(50).refine(ids=>new Set(ids).size===ids.length)}).parse(input);

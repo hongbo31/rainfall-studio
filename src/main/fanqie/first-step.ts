@@ -64,7 +64,7 @@ export async function readFanqieVisibleForm(page: FanqieFirstStepPage): Promise<
   return state;
 }
 
-function matchesSize(displayed: string, expected: {displaySize: string; bytes?: number}) {
+function matchesSize(displayed: string, expected: {displaySize: string; bytes?: number}, lyrics = false) {
   if (displayed === expected.displaySize) return true;
   const size = /^(\d{1,9})(?:\.(\d{1,3}))?\s*(B|KB|MB)$/i.exec(displayed);
   if (!size || expected.bytes === undefined) return false;
@@ -72,8 +72,11 @@ function matchesSize(displayed: string, expected: {displaySize: string; bytes?: 
   const [, whole, decimals = '', unit] = size;
   const bytes = expected.bytes, power = units[unit.toUpperCase()];
   const amount = Number(whole + '.' + decimals);
-  // Fanqie can show decimal KB for lyrics and binary units for audio.
-  return [1000, 1024].some(base => amount === Number((bytes / base ** power).toFixed(decimals.length)));
+  // Fanqie can show decimal or binary units. The UTF-8 lyrics acknowledgement
+  // can also include the three-byte BOM even when the verified source omits it.
+  const acceptedBytes = lyrics ? [bytes, bytes + 3] : [bytes];
+  return acceptedBytes.some(count => [1000, 1024].some(base =>
+    amount === Number((count / base ** power).toFixed(decimals.length))));
 }
 
 export function fanqieTransferVerified(text: string, expected: FanqieExpectedForm['audio'] | FanqieExpectedForm['lyrics']) {
@@ -82,7 +85,7 @@ export function fanqieTransferVerified(text: string, expected: FanqieExpectedFor
   const parts = acknowledgement.split(/[|｜]/).map(part => part.trim());
   if ('format' in expected && (label !== expected.displayName || parts.shift() !== expected.format)) return false;
   if ('fileName' in expected && label !== expected.fileName) return false;
-  return parts.length === 2 && parts[0] === '上传完成' && matchesSize(parts[1], expected);
+  return parts.length === 2 && parts[0] === '上传完成' && matchesSize(parts[1], expected, 'fileName' in expected);
 }
 
 /** These are visible transfer acknowledgements, not remote file hashes or a saved official work ID. */
