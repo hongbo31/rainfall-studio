@@ -16,7 +16,7 @@ test("configuration categories and independent target form expose real defaults 
     format: "cjs",
     packages: "external",
   });
-  const { renderConfiguration, renderPlatform } = createRequire(
+  const { renderConfiguration, renderPlatform, renderAccountManagement } = createRequire(
     import.meta.url,
   )("../build/configuration-ui.cjs");
   const html = renderConfiguration();
@@ -32,7 +32,6 @@ test("configuration categories and independent target form expose real defaults 
   const platform = renderPlatform();
   for (const text of [
     "QQ 音乐配置",
-    "默认账号",
     "默认艺人",
     "词作者",
     "曲作者",
@@ -42,24 +41,28 @@ test("configuration categories and independent target form expose real defaults 
     "AI 标注",
     "翻唱偏好",
     "保存配置",
-    "腾讯本地备注",
-    "QQ本地备注",
   ])
     assert.ok(platform.includes(text), text);
   for (const text of [
     "云音乐账号",
+    "腾讯本地备注",
+    "QQ本地备注",
+    "默认账号",
+    "管理账号",
     "生成平台不应出现",
     "同意协议",
     "自动接受",
     'type="checkbox"',
   ])
     assert.ok(!platform.includes(text), text);
-  assert.match(
-    platform,
-    /aria-label="默认账号"[\s\S]*?aria-pressed="true"[^>]*>未指定<\/button>/,
-  );
+  const accounts = renderAccountManagement();
+  for (const text of ["默认发布账号", 'aria-label="QQ 音乐默认账号"', 'aria-label="酷狗音乐默认账号"', "打开专属登录窗口"])
+    assert.ok(accounts.includes(text), text);
+  const fanqie = renderConfiguration("fanqie");
+  assert.ok(fanqie.includes("番茄发布规则"));
+  assert.ok(!fanqie.includes("打开番茄工作窗口"));
   const netease = renderPlatform("netease");
-  assert.ok(netease.includes("云音乐账号"));
+  assert.ok(!netease.includes("云音乐账号"));
   assert.ok(!netease.includes("腾讯本地备注"));
   const { configurationCategoryCycle } = createRequire(import.meta.url)(
     "../build/configuration-ui.cjs",

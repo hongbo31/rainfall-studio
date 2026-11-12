@@ -37,7 +37,7 @@ export default function PlanFanqieFields({
     : "";
   const accountId = plan.fanqie
     ? (plan.fanqie.accountId ?? legacy)
-    : selected || defaultFanqieChoice(choices);
+    : selected || defaultFanqieChoice(choices, data.platformConfigurations);
   const accountRequired = choices.length > 1 && !accountId;
   const clear = () =>
     patch({

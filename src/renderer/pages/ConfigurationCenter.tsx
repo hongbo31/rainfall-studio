@@ -123,11 +123,11 @@ export default function ConfigurationCenter({
               id="platform-configuration-panel"
               aria-labelledby={"platform-" + target}
             >
-              {target==='fanqie'?<FanqieConfigurationPanel key={initialAccountId} initialAccountId={initialAccountId}/>:<PlatformConfigurationPanel
-                key={target}
-                target={target}
-                onManageAccounts={() => go("platform-accounts", target)}
-              />}
+              {target === "fanqie" ? (
+                <FanqieConfigurationPanel key={initialAccountId} initialAccountId={initialAccountId} />
+              ) : (
+                <PlatformConfigurationPanel key={target} target={target} />
+              )}
             </div>
           </>
         ) : category === "models" ? (

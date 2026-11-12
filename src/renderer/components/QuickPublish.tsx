@@ -52,7 +52,7 @@ export default function QuickPublish({onBatch}:{onBatch:(id:string)=>void}) {
           <HelpNote label="账号选择说明">唯一有效艺人绑定自动带入。账号登录状态须核实，昵称不能替代账号身份。</HelpNote>
           {targets.map(target=><label key={target}>{names[target]}账号<select value={overrides[target]||''} onChange={e=>{const next={...overrides};if(e.target.value)next[target]=e.target.value;else delete next[target];setOverrides(next);setMessage('');}}><option value="">自动选择唯一有效账号</option>{(resolved.options[target]||[]).map(o=><option key={o.account.id} value={o.account.id}>{o.account.name} · {label(o.account.authStatus)}</option>)}</select></label>)}
           {works.map((w:any)=><div className="quick-defaults" key={w.id}><b>{w.title}</b><small>曲风 {w.config?.genre||'待填'} · 语言 {w.config?.language||'待填'}</small><small>权益依据：{w.rights||'待确认'}</small><small>作者与协议待核对</small><button onClick={()=>go('track',w.id)}>查看素材与授权依据</button></div>)}
-          <button onClick={()=>go('accounts')}>管理账号与艺人绑定</button>
+          <button onClick={()=>go('platform-accounts')}>账号管理</button>
         </details>
       </div>
     </div>

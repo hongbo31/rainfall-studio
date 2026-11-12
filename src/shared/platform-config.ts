@@ -161,6 +161,11 @@ export const SimplePublishingSchemas = {
     config: PlatformConfigurationInputSchema,
     expectedRevision: z.number().int().nonnegative(),
   }),
+  "platformConfig.setAccount": z.strictObject({
+    target: PlatformTargetSchema,
+    accountId: z.uuid().nullable(),
+    expectedRevision: z.number().int().nonnegative(),
+  }),
   "publish.selection.save": PublishSelectionSchema,
   "publish.metadata.save": z.strictObject({workId:z.uuid(),expectedRevision:z.number().int().positive(),metadata:TmeAiPrepareMetadataSchema.omit({title:true})}),
   "publish.reconcile": z.strictObject({id:z.uuid()}),

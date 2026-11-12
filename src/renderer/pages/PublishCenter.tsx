@@ -53,7 +53,7 @@ export default function PublishCenter() {
     [message, setMessage] = useState("");
   const inFlight = useRef(false);
   const fanqieAccounts = fanqieChoices(data.accounts ?? []);
-  const fanqieAccountId = selection.accountOverrides.fanqie ?? defaultFanqieChoice(fanqieAccounts);
+  const fanqieAccountId = selection.accountOverrides.fanqie ?? defaultFanqieChoice(fanqieAccounts, data.platformConfigurations);
   const fanqieAccountRequired = fanqieAccounts.length > 1 && !fanqieAccountId;
   const fanqieInput = fanqieScope(fanqieAccountId);
   const [accountState, setAccountState] = useState<{ accountId: string; value: any }>();

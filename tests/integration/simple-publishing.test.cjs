@@ -214,6 +214,26 @@ test("strict configs enforce CAS, platform account refs and known artists withou
       }),
       /ACCOUNT_NOT_FOUND/,
     );
+    const unset = await f.s.call("platformConfig.setAccount", {
+      target: c.target,
+      accountId: null,
+      expectedRevision: revision,
+    });
+    assert.deepEqual(unset, { ...c, accountId: null, revision: revision + 1 });
+    await assert.rejects(
+      f.s.call("platformConfig.setAccount", {
+        target: c.target,
+        accountId: account.id,
+        expectedRevision: revision,
+      }),
+      /REVISION_CONFLICT/,
+    );
+    const restored = await f.s.call("platformConfig.setAccount", {
+      target: c.target,
+      accountId: account.id,
+      expectedRevision: unset.revision,
+    });
+    assert.deepEqual(restored, { ...c, accountId: account.id, revision: revision + 2 });
     assert.equal(f.s.get("accounts", account.id).authStatus, "not_connected");
   } finally {
     f.s.close();

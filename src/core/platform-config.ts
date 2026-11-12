@@ -124,3 +124,14 @@ export function savePlatformConfiguration(
     return value;
   });
 }
+
+export function setPlatformDefaultAccount(
+  repo: Repository,
+  target: PlatformTarget,
+  accountId: string | null,
+  expectedRevision: number,
+): PlatformConfiguration {
+  const { version, revision, ...config } =
+    repo.maybe("settings", key(target))?.value ?? emptyPlatformConfiguration(target);
+  return savePlatformConfiguration(repo, { ...config, accountId }, expectedRevision);
+}

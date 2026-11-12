@@ -83,7 +83,7 @@ export default function ChatCreation() {
       <HelpNote label="创作模式说明">
         {data.mode === "simulation"
           ? "离线原创 fixture：固定样本与模拟评分，不使用模型或网络；fixture credit 不是货币。"
-          : "手动准备本次文字或音乐创作，每次调用按当前确认的范围执行。账号、API与收件管理请前往配置中心。"}
+          : "手动准备本次文字或音乐创作。模型 API 和收件目录可在配置中心设置。"}
       </HelpNote>
       <div className="split">
         <section className="panel">

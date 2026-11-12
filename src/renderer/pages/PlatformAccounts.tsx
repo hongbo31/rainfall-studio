@@ -2,9 +2,11 @@ import React, { useEffect, useState } from "react";
 import {
   AccountProviderSchema,
   accountProviders,
+  accountSupportsTarget,
   type AccountProvider,
   type PlatformAccount,
 } from "../../shared/platform-accounts";
+import { platformTargets, type PlatformConfiguration, type PlatformTarget } from "../../shared/platform-config";
 import { Badge, names, PageHead, useStudio } from "../context";
 import AccountBinding from "../components/AccountBinding";
 import ChoiceButtons from "../components/ChoiceButtons";
@@ -47,6 +49,8 @@ function AccountDetails({ account }: { account: PlatformAccount }) {
   const scoped = { accountId: account.id };
   const fanqie = account.provider === "fanqie";
   const production = data.mode === "production";
+  const supportedTargets = platformTargets.filter((target) => accountSupportsTarget(account.provider, target));
+  const configurations: PlatformConfiguration[] = data.platformConfigurations ?? [];
 
   useEffect(() => {
     if (!production) return;
@@ -113,6 +117,15 @@ function AccountDetails({ account }: { account: PlatformAccount }) {
         });
       }
     });
+  const toggleDefaultAccount = (target: PlatformTarget, config?: PlatformConfiguration) =>
+    act(
+      () => call("platformConfig.setAccount", {
+        target,
+        accountId: config?.accountId === account.id ? null : account.id,
+        expectedRevision: config?.revision ?? 0,
+      }),
+      "默认发布账号已更新",
+    );
   const profile = status?.profile;
   const identity =
     linkedArtists.find((artist) => artist.id === identityArtist) ??
@@ -163,6 +176,28 @@ function AccountDetails({ account }: { account: PlatformAccount }) {
             </button>
           )}
         </div>
+        {!!supportedTargets.length && (
+          <fieldset className="artist-links" disabled={busy}>
+            <legend>默认发布账号</legend>
+            <div className="choice-buttons">
+              {supportedTargets.map((target) => {
+                const config = configurations.find((item) => item.target === target);
+                return (
+                  <button
+                    key={target}
+                    type="button"
+                    className="choice-button"
+                    aria-label={names[target] + "默认账号"}
+                    aria-pressed={config?.accountId === account.id}
+                    onClick={() => void toggleDefaultAccount(target, config)}
+                  >
+                    {names[target]}
+                  </button>
+                );
+              })}
+            </div>
+          </fieldset>
+        )}
         {profile && (
           <>
             <p className="muted">

@@ -317,7 +317,7 @@ export default function Library() {
                       ) : (
                         <span className="muted">
                           {!live || currentHistory?.complete
-                            ? "暂无发布记录"
+                            ? "暂无关联回执"
                             : currentHistory
                               ? "发布记录待核对"
                               : "读取中…"}

@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { Context } from "../../src/renderer/context";
 import ConfigurationCenter from "../../src/renderer/pages/ConfigurationCenter";
 import PlatformConfigurationPanel from "../../src/renderer/components/PlatformConfigurationPanel";
+import PlatformAccounts from "../../src/renderer/pages/PlatformAccounts";
 import PublicationDiagnostics from "../../src/renderer/pages/PublicationDiagnostics";
 const data = {
   mode: "production",
@@ -59,6 +60,13 @@ export function renderPlatform(target = "qqmusic") {
   return renderToStaticMarkup(
     <Context.Provider value={value}>
       <PlatformConfigurationPanel target={target as any} />
+    </Context.Provider>,
+  );
+}
+export function renderAccountManagement() {
+  return renderToStaticMarkup(
+    <Context.Provider value={value}>
+      <PlatformAccounts initialProvider="tme" />
     </Context.Provider>,
   );
 }

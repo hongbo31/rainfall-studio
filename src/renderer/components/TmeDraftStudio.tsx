@@ -246,7 +246,7 @@ export default function TmeDraftStudio() {
         </div>
         <div className="button-row">
           <button onClick={() => go("library")}>管理作品与素材</button>
-          <button onClick={() => go("accounts")}>管理本地账号备注</button>
+          <button onClick={() => go("platform-accounts", "tme")}>账号管理</button>
         </div>
         {work && (
           <>

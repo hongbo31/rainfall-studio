@@ -56,7 +56,7 @@ import {createProductionFlowService} from './production-integration';
 import type {ProductionFlowService} from './production-flow';
 import {createTmeAiPrepareService} from './tme-ai-prepare-integration';
 import type {TmeAiPrepareService} from './tme-ai-prepare';
-import {initializePlatformConfigurations,listPlatformConfigurations,savePlatformConfiguration} from './platform-config';
+import {initializePlatformConfigurations,listPlatformConfigurations,savePlatformConfiguration,setPlatformDefaultAccount} from './platform-config';
 import {publishSelection,savePublishSelection,publishSimple,listSimplePublicationRequests,listPublicationPendingTerms} from './simple-publication';
 export const baseDefaults = {
   genre: "流行 / 民谣",
@@ -415,6 +415,7 @@ export class Studio {
       case 'manualCreation.list': return listManualCreations(this);
       case 'platformConfig.list': return listPlatformConfigurations(this.repo);
       case 'platformConfig.save': return savePlatformConfiguration(this.repo,v.config,v.expectedRevision);
+      case 'platformConfig.setAccount': return setPlatformDefaultAccount(this.repo,v.target,v.accountId,v.expectedRevision);
       case 'publish.selection.save': return savePublishSelection(this,v);
       case 'publish.metadata.save': return savePublicationMetadata(this,v);
       case 'publish.simple': return publishSimple(this,v);

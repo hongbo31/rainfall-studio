@@ -1,7 +1,6 @@
 import React, { useRef, useState } from "react";
-import { useStudio, names, label, Badge } from "../context";
+import { useStudio, names } from "../context";
 import ChoiceButtons from "./ChoiceButtons";
-import { accountSupportsTarget } from "../../shared/platform-accounts";
 import HelpHint from "./HelpHint";
 import type {
   PlatformTarget,
@@ -11,10 +10,8 @@ import type {
 
 export default function PlatformConfigurationPanel({
   target,
-  onManageAccounts,
 }: {
   target: PlatformTarget;
-  onManageAccounts?: () => void;
 }) {
   const { data, call, notify } = useStudio();
   const saved: PlatformConfiguration | undefined = (
@@ -38,9 +35,6 @@ export default function PlatformConfigurationPanel({
     [error, setError] = useState(""),
     [status, setStatus] = useState("");
   const saving = useRef(false);
-  const accounts = data.accounts.filter(
-    (account: any) => accountSupportsTarget(account.provider, target),
-  );
   const edit = (patch: Partial<PlatformConfigurationInput>) => {
     setDraft({ ...draft, ...patch });
     setError("");
@@ -75,26 +69,13 @@ export default function PlatformConfigurationPanel({
     >
       <div className="section-title">
         <h2>{names[target]}配置</h2>
-        <div className="button-row">
-          <Badge>未接通</Badge>
-          <HelpHint label="平台说明">
-            仅保存本平台默认资料。本地账号备注、官方页面观察和实际授权分别核验；默认配置不代表发布权限、协议同意或版权证明。
-          </HelpHint>
-        </div>
+        <HelpHint label="平台说明">
+          发布时自动带入此处保存的默认资料。
+        </HelpHint>
       </div>
       <form onSubmit={(event) => void save(event)}>
         <fieldset disabled={busy} className="platform-fields">
           <div className="form-grid">
-            <div>
-              <span>默认账号</span>
-              <ChoiceButtons label="默认账号" value={draft.accountId ?? ""} onChange={value => edit({ accountId: value || null })}
-                choices={[
-                  { value: "", label: "未指定" },
-                  ...accounts.map((account: any) => ({
-                    value: account.id, label: account.name + " · " + label(account.authStatus ?? "not_connected"),
-                  })),
-                ]}/>
-            </div>
             <div>
               <span>默认艺人</span>
               <ChoiceButtons label="默认艺人" value={draft.artistId ?? ""} onChange={value => edit({ artistId: value || null })}
@@ -167,11 +148,6 @@ export default function PlatformConfigurationPanel({
           <button type="submit" className="primary" disabled={busy}>
             {busy ? "保存中…" : "保存配置"}
           </button>
-          {onManageAccounts && (
-            <button type="button" onClick={onManageAccounts}>
-              管理账号
-            </button>
-          )}
           {status && <span role="status">{status}</span>}
         </div>
         {error && (

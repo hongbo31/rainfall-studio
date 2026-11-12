@@ -6,7 +6,6 @@ import {
   fanqieScope,
 } from "../fanqie-accounts";
 import ChoiceButtons from "./ChoiceButtons";
-import FanqieCatalogPanel from "./FanqieCatalogPanel";
 import type { FanqieAuthorizationPreference } from "../../shared/fanqie";
 
 const blank = { lyricist: "", composer: "", singer: "" };
@@ -20,7 +19,6 @@ const defaultPreference: FanqieAuthorizationPreference = {
 function FanqieSettings({ accountId }: { accountId: string }) {
   const { data } = useStudio();
   const [profile, setProfile] = useState<{
-    maskedAccount: string;
     artists: { artistId: string; name: string }[];
   } | null>(null);
   const [authors, setAuthors] = useState<Authors>(blank);
@@ -110,12 +108,6 @@ function FanqieSettings({ accountId }: { accountId: string }) {
   };
   return (
     <>
-      {profile && (
-        <p className="muted">
-          账号 {profile.maskedAccount} · 已同步 {profile.artists.length}{" "}
-          位音乐人
-        </p>
-      )}
       <form onSubmit={(event) => void save(event)}>
         <fieldset className="platform-fields" disabled={busy || loading}>
           {!!linkedArtists.length && (
@@ -257,10 +249,6 @@ function FanqieSettings({ accountId }: { accountId: string }) {
       </form>
       {message && <p role="status">{message}</p>}
       {error && <p role="alert">{error}</p>}
-      <details className="platform-connection">
-        <summary>官网作品</summary>
-        <FanqieCatalogPanel mode={data.mode} accountId={accountId} />
-      </details>
     </>
   );
 }
@@ -270,30 +258,27 @@ export default function FanqieConfigurationPanel({
 }: {
   initialAccountId?: string;
 }) {
-  const { data, go } = useStudio();
+  const { data } = useStudio();
   const [selected, setSelected] = useState(initialAccountId);
   const choices = fanqieChoices(data.accounts ?? []);
   const accountId = choices.some((choice) => choice.value === selected)
     ? selected
-    : defaultFanqieChoice(choices) || choices[0]?.value || "";
+    : defaultFanqieChoice(choices, data.platformConfigurations) || choices[0]?.value || "";
   if (data.mode !== "production") return <p>请在真实本地库中配置番茄音乐。</p>;
   return (
     <section className="panel platform-configuration" aria-label="番茄音乐配置">
-      <div className="section-title">
-        <h2>番茄音乐</h2>
-        <button type="button" onClick={() => go("platform-accounts", "fanqie")}>
-          管理账号
-        </button>
-      </div>
-      {!!choices.length && (
+      <h2>番茄发布规则</h2>
+      {choices.length > 1 && (
         <ChoiceButtons
-          label="番茄账号"
+          label="规则适用账号"
           choices={choices}
           value={accountId}
           onChange={setSelected}
         />
       )}
-      <FanqieSettings key={accountId} accountId={accountId} />
+      {accountId
+        ? <FanqieSettings key={accountId} accountId={accountId} />
+        : <p className="muted">请在账号管理添加番茄账号。</p>}
     </section>
   );
 }
