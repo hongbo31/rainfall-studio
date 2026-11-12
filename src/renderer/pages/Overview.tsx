@@ -1,16 +1,38 @@
 import HelpNote from "../components/HelpNote";
 import React from "react";
 import { useStudio, PageHead, WorkCard, Badge, label } from "../context";
+import { accountSupportsTarget, type PlatformAccount } from "../../shared/platform-accounts";
+import { platformTargets } from "../../shared/platform-config";
 export default function Overview() {
   const { data, go } = useStudio();
   const r = data.resources;
+  const needsPublicationAccount =
+    data.mode === "production" &&
+    !(data.accounts ?? []).some((account: PlatformAccount) =>
+      platformTargets.some((target) => accountSupportsTarget(account.provider, target)),
+    );
+  const createButtonClass = needsPublicationAccount ? undefined : "primary";
   return (
     <>
       <PageHead
         title="总览"
         action={
           <div className="button-row">
-            {data.works.length ? <><button className="primary" onClick={() => go("chat")}>聊聊新想法</button><button onClick={() => go("create")}>用本地模板起草</button><button onClick={() => go("library")}>整理已有作品</button></> : <><button className="primary" onClick={() => go("create")}>创建第一首作品</button><button onClick={() => go("chat")}>先聊聊想法</button></>}
+            {needsPublicationAccount && (
+              <button className="primary" onClick={() => go("platform-accounts")}>绑定平台账号</button>
+            )}
+            {data.works.length ? (
+              <>
+                <button className={createButtonClass} onClick={() => go("chat")}>聊聊新想法</button>
+                <button onClick={() => go("create")}>用本地模板起草</button>
+                <button onClick={() => go("library")}>整理已有作品</button>
+              </>
+            ) : (
+              <>
+                <button className={createButtonClass} onClick={() => go("create")}>创建第一首作品</button>
+                <button onClick={() => go("chat")}>先聊聊想法</button>
+              </>
+            )}
           </div>
         }
       />
