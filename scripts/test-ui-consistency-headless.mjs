@@ -155,7 +155,9 @@ try {
           if (method === "platformConfig.list")
             return ok(fixture.platformConfigurations);
           if (method === "publish.selection.save") return ok(input);
-          if (method.endsWith(".list") || method === "conversation.list")
+          if (["planCenter.fanqieStatus", "manualCreation.list"].includes(method)) return ok([]);
+          if (method === "generationConfig.read") return ok({ roles: {} });
+          if (method.endsWith(".list"))
             return ok(structuredClone(empty));
           return ok(structuredClone(empty));
         },
@@ -166,6 +168,7 @@ try {
         liveMusic: async () => ok(structuredClone(empty)),
         tmeAiPrepare: async () => ok(structuredClone(empty)),
         tmeLive: async () => ok(structuredClone(empty)),
+        fanqieUpload: async () => ok({ jobs: [] }),
         setMode: async () => ({
           ok: false,
           error: { message: "视觉样本禁止切换真实库" },
@@ -205,7 +208,7 @@ try {
     versionStyle,
     fixtureBridge: true,
   });
-  const header = await page.locator(".header-right > *").evaluateAll((nodes) =>
+  const header = await page.locator(".header-right > :not(.theme-toggle)").evaluateAll((nodes) =>
     nodes.map((n) => {
       const s = getComputedStyle(n),
         r = n.getBoundingClientRect();
@@ -238,7 +241,7 @@ try {
   checks.push({
     name: "Library uses compact title and no decorative English heading",
   });
-  const toolbar = await page.locator(".toolbar > *").evaluateAll((nodes) =>
+  const toolbar = await page.locator(".library-toolbar :is(input, select, button)").evaluateAll((nodes) =>
     nodes.map((n) => ({
       height: n.getBoundingClientRect().height,
       font: getComputedStyle(n).fontSize,
@@ -249,7 +252,7 @@ try {
     JSON.stringify(toolbar),
   );
   checks.push({
-    name: "Library filters and selection button share 40px/14px",
+    name: "Library filters and publish button share 40px/14px",
     measurements: toolbar,
   });
   async function shot(name) {
@@ -278,14 +281,16 @@ try {
   await page
     .getByRole("textbox", { name: "搜索作品", exact: true })
     .fill("那天刚好下雨");
-  await expect(page.locator(".work-card")).toHaveCount(1);
+  const libraryRows = page.locator(".library-table tbody tr[data-work-id]");
+  await expect(libraryRows).toHaveCount(1);
   await page.getByRole("textbox", { name: "搜索作品", exact: true }).fill("");
-  await expect(page.locator(".work-card")).toHaveCount(fixture.works.length);
+  await expect(libraryRows).toHaveCount(fixture.works.length);
   checks.push({
     name: "Library filtering preserves actual page behavior on fixture data",
   });
+  await page.locator(".library-series summary").click();
   const libraryControls = await page
-    .locator(".work-card button,.page-head button.primary,.form-grid input")
+    .locator(".page-head button.primary,.library-series .form-grid input")
     .evaluateAll((ns) =>
       ns.map((n) => ({
         height: n.getBoundingClientRect().height,
@@ -306,11 +311,11 @@ try {
     ),
   );
   checks.push({
-    name: "Create, card playback and series fields share sizing and font while headings retain hierarchy",
+    name: "Create and series fields share sizing and font while headings retain hierarchy",
     libraryControls,
     hierarchy,
   });
-  await page.locator('.work-card [role="button"]').first().click();
+  await libraryRows.first().locator(".library-title").click();
   await expect(page.locator(".page-head h1")).toHaveText(
     fixture.works[0].title,
   );
@@ -327,12 +332,12 @@ try {
   });
   for (const [nav, title] of [
     ["总览", "总览"],
-    ["本地模板", "本地模板"],
+    ["手动模板", "本地模板"],
     ["封面工作室", "封面工作室"],
     ["发布中心", "发布中心"],
     ["数据看板", "数据看板"],
     ["配置中心", "配置中心"],
-    ["AI 聊天创作", "AI 聊天创作"],
+    ["创作中心", "AI 聊天创作"],
   ]) {
     await page.getByRole("button", { name: nav, exact: true }).first().click();
     await expect(page.locator(".page-head h1").first()).toHaveText(title);
@@ -346,6 +351,7 @@ try {
     await shot(nav + "-headless");
     checks.push({ name: nav + " renders without horizontal overflow" });
   }
+  await page.getByText("历史创作与旧任务（保留原路线）", { exact: true }).click();
   const feeHelp = page.getByRole("button", { name: "费率参考", exact: true });
   await feeHelp.scrollIntoViewIfNeeded();
   await feeHelp.focus();

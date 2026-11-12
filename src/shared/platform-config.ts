@@ -30,8 +30,9 @@ export type PlatformConfiguration = PlatformConfigurationInput & {
   version: 1;
   revision: number;
 };
+export const maxPublicationWorks = 100;
 export const PublishSelectionSchema = z.strictObject({
-  workIds: z.array(z.uuid()).max(100),
+  workIds: z.array(z.uuid()).max(maxPublicationWorks),
   targets: z.array(PlatformTargetSchema).max(100),
   accountOverrides: z.partialRecord(PlatformTargetSchema, z.uuid()).default({}),
 });

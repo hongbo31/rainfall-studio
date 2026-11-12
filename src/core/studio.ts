@@ -47,6 +47,7 @@ import {assertPlanCoverWork} from './plan-cover-work';
 import {LyricService,candidateLyricOrigin,type LyricOrigin} from './lyrics';
 import {publicationPayload} from './publication-payload';
 import {listTmeObservations, recordTmeObservation} from './tme-observations';
+import {externalTmeReceipts} from './external-tme-receipt';
 import type {MusicAdapter} from './workflow/yourmusic';
 import {liveMusicGrantKey} from '../shared/live-music';
 import { defaultFanqieAccountId } from "../shared/platform-accounts";
@@ -831,6 +832,9 @@ export class Studio {
       bindings: this.all("bindings"),
       works: this.all("works"),
       tmeObservations: listTmeObservations(this),
+      externalTmePublications: this.mode === "production"
+        ? Array.from(externalTmeReceipts(this.repo), ({workId, state, observedAt}) => ({workId, state, observedAt}))
+        : [],
       revisions: this.all("revisions"),
       assets: this.all("assets").map((a) => ({
         ...a,

@@ -5,45 +5,9 @@ import {
   type PublishSelection,
 } from "../../shared/platform-config";
 import type { MaterialWorkbenchSnapshot } from "../../shared/material-workbench";
+import { publicationState, publicationStates } from "../publication-status";
 import "../publication-workbench.css";
-export const publicationStates = {
-  unpublished: "未发布",
-  reviewing: "审核中",
-  published: "已发布",
-  rejected: "已拒绝",
-  unknown: "待核对",
-};
-export function publicationState(
-  data: any,
-  workId: string,
-  target: string,
-): keyof typeof publicationStates {
-  const jobs = (data.publicationPipelineJobs ?? []).filter(
-    (j: any) =>
-      j.workId === workId && (j.targets ?? [j.target]).includes(target),
-  );
-  const job = jobs.at(-1);
-  if (!job) return "unpublished";
-  const task = job.task ?? job;
-  if (
-    ["reviewing", "published", "rejected"].includes(job.state) &&
-    ["official", "official-tencent-review-record"].includes(
-      task.receipt?.source,
-    )
-  )
-    return job.state;
-  if (
-    [
-      "reviewing",
-      "published",
-      "rejected",
-      "reconcile_required",
-      "unknown",
-    ].includes(job.state)
-  )
-    return "unknown";
-  return "unpublished";
-}
+export { publicationState, publicationStates } from "../publication-status";
 export function readyVersions(data: any, work: any) {
   return (["A", "B"] as const).flatMap((version) => {
     const asset = (data.assets ?? []).find(
@@ -69,7 +33,7 @@ export default function PublicationMusicList({
 }) {
   const { data, call, refresh, go } = useStudio();
   const [target, setTarget] = useState("qqmusic"),
-    [state, setState] = useState("unpublished"),
+    [state, setState] = useState(selection.workIds.length ? "all" : "unpublished"),
     [error, setError] = useState(""),
     [saving, setSaving] = useState("");
   const [materials, setMaterials] = useState<
@@ -94,7 +58,8 @@ export default function PublicationMusicList({
     (w: any) =>
       (state === "needs_attention"
         ? !readyVersions(data, w).length
-        : readyVersions(data, w).length > 0) &&
+        : readyVersions(data, w).length > 0 ||
+          (state === "all" && selection.workIds.includes(w.id))) &&
       w.title.toLocaleLowerCase().includes(query.toLocaleLowerCase()) &&
       (state === "all" ||
         state === "needs_attention" ||

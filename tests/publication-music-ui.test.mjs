@@ -58,9 +58,9 @@ test("existing publish center ready list, explicit version, selection and unavai
     });
     assert.equal(
       await page.locator(".simple-target input:disabled").count(),
-      4,
+      3,
     );
-    assert.equal(await page.getByLabel("发布到 番茄音乐").isDisabled(), true);
+    assert.equal(await page.getByLabel("发布到 番茄音乐").isEnabled(), true);
     await page.getByLabel("歌曲状态平台").selectOption("netease");
     assert.equal(await page.locator('[data-work-id="work-ready"]').count(), 1);
     await page.getByLabel("歌曲发布状态").selectOption("published");

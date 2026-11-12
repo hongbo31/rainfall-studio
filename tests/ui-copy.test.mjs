@@ -42,7 +42,9 @@ test("page names are concise while series stories and library controls remain", 
     "筛选艺人",
     "筛选素材",
     "按当前选择顺序建立系列",
-    "新建作品（本地模板）",
+    "新建作品",
+    "平台发布状态",
+    "批量发布",
   ])
     assert.ok(library.includes(label), label);
   assert.ok(

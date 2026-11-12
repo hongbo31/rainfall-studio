@@ -62,6 +62,18 @@ npm.cmd run desktop:dev
 
 ## 构建独立客户端
 
+在 Windows 上用 PowerShell 7 运行项目根目录的一键脚本：
+
+```powershell
+pwsh -NoProfile -File .\Build-Latest.ps1
+```
+
+需要 Git for Windows、网络和本私有仓库的读取权限。脚本独立检出 GitHub `main`，安装锁定依赖并下载、校验所需运行组件。`out` 下生成 Windows x64 免安装 ZIP 和 SHA-256 文件，解压后打开 `RainfallStudio.exe`。
+
+如需打包当前仓库已提交的版本，可加 `-Local`。用 `-OutputDirectory` 可指定输出目录。
+
+需要 Forge 安装器时可单独使用：
+
 ```powershell
 npm.cmd run desktop:package
 # 可选：生成 Windows 安装器

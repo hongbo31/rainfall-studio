@@ -64,7 +64,7 @@ function publicBundle(bundle?: Bundle) {
   return {...metadata,files:Object.fromEntries(Object.entries(assets).map(([role,asset])=>[role,{name:path.basename(asset.file),bytes:asset.bytes}]))};
 }
 function publicJob(job: Job) {
-  const {input,baselineIds,...visible} = job; return visible;
+  const {input,baselineIds,...visible} = job; return {...visible,workId:input?.workId};
 }
 /** Main owns paths, checked account/artist IDs, one-use grants and durable operation intents. */
 export class FanqieUploadBroker {

@@ -240,7 +240,7 @@ try {
   await page.getByRole("button", { name: "作品库", exact: true }).click();
   const search = page.getByRole("textbox", { name: "搜索作品", exact: true });
   await search.fill("不存在的验收关键词");
-  await expect(page.locator(".work-grid .work-card")).toHaveCount(0);
+  await expect(page.locator(".library-table tbody tr[data-work-id]")).toHaveCount(0);
   await search.fill("");
   await page
     .getByRole("button", { name: new RegExp("示例作品A.*温柔恋爱流行") })

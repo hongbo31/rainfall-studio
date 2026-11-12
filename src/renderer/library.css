@@ -1,0 +1,171 @@
+.library-list {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.library-list .library-toolbar {
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0;
+  padding: 14px 16px;
+}
+
+.library-toolbar input {
+  flex: 1 1 180px;
+}
+.library-toolbar select {
+  width: auto;
+}
+
+.library-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.library-actions button {
+  min-height: 40px;
+  padding: 9px 14px;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.library-table {
+  min-width: 550px;
+  font-size: 13px;
+}
+.library-table th {
+  padding: 11px 14px;
+  background: var(--surface-raised);
+  border-block: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.library-table td {
+  padding: 9px 14px;
+  vertical-align: middle;
+}
+.library-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.library-table tbody tr:hover,
+.library-table tbody tr.is-selected {
+  background: var(--accent-soft);
+}
+.library-table .library-check {
+  width: 54px;
+  text-align: center;
+}
+.library-check input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  vertical-align: middle;
+}
+
+.library-track {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.library-cover {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  object-fit: cover;
+  border-radius: 7px;
+  color: var(--muted);
+  background: var(--control);
+}
+
+.library-table .library-title {
+  min-height: 22px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 650;
+  text-align: left;
+}
+.library-table .library-title:hover {
+  color: var(--accent);
+}
+.library-track small {
+  font-size: 12px;
+  margin: 1px 0 0;
+}
+
+.library-statuses {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.library-statuses li {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--control);
+  font-size: 12px;
+}
+.library-statuses li b {
+  font-weight: 550;
+}
+.library-statuses li span {
+  color: var(--muted);
+}
+.library-statuses li[data-state="published"] span {
+  color: var(--success);
+}
+.library-statuses li[data-state="reviewing"] span {
+  color: var(--accent);
+}
+.library-statuses li[data-state="contract_pending"] span {
+  color: var(--warning);
+}
+.library-statuses li[data-state="rejected"] span {
+  color: var(--danger);
+}
+
+.library-table .library-play {
+  width: 95px;
+  white-space: nowrap;
+}
+.library-play button {
+  min-height: 32px;
+  padding: 4px 9px;
+  font-size: 12px;
+}
+.library-play button span {
+  margin-right: 3px;
+  font-size: 10px;
+}
+.library-table .library-empty {
+  padding: 30px 14px;
+  text-align: center;
+}
+.library-series {
+  margin-top: 18px;
+}
+.library-series summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.library-series .form-grid {
+  margin-top: 14px;
+}

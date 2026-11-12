@@ -149,9 +149,9 @@ try {
     .locator("aside nav")
     .getByRole("button", { name: "作品库", exact: true })
     .click();
-  await page.getByRole("button", { name: "选择当前筛选", exact: true }).click();
+  await page.getByRole("checkbox", { name: "选择当前筛选的作品", exact: true }).check();
   await page
-    .getByRole("button", { name: "准备批量发布 →", exact: true })
+    .getByRole("button", { name: "批量发布", exact: true })
     .click();
   await page
     .getByRole("button", { name: "腾讯音乐人上传工作台 →", exact: true })

@@ -244,7 +244,7 @@ try {
   await nav("作品库");
   await page.getByLabel("选择 " + title, { exact: true }).check();
   await page
-    .getByRole("button", { name: "准备批量发布 →", exact: true })
+    .getByRole("button", { name: "批量发布", exact: true })
     .click();
   await page
     .locator(".destination")
