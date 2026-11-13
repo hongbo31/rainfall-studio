@@ -31,14 +31,6 @@ export function safeMusicUrl(value: string) {
     throw Error("DOWNLOAD_URL_REJECTED");
   return u;
 }
-function safeCoverUrl(value:string){
-  const u=new URL(value);
-  if(u.hostname==='oss.yourmusic.fun')return safeMusicUrl(value);
-  if(u.hostname!=='cdn2.suno.ai'||u.protocol!=='https:'||u.username||u.password||
-      (u.port&&u.port!=='443')||u.hash||!/^\/image_[a-z0-9_-]+\.(jpe?g|png|webp)$/i.test(u.pathname))
-    throw Error('COVER_DOWNLOAD_REJECTED');
-  return u;
-}
 export function publicIpv4(value: string) {
   if (isIP(value) !== 4) return false;
   const [a, b, c] = value.split(".").map(Number);
@@ -55,16 +47,15 @@ export function publicIpv4(value: string) {
     (a === 203 && b === 0 && c === 113)
   );
 }
-// Main registers this only for its fixed read-only authentication check.
-// Paid generation remains unregistered.
-// DNS resolves once; the connection is pinned to a public IPv4 address. No redirects/proxies.
+// Resolve once and pin the connection to a public IPv4 address. No redirects or proxies.
 export const nodeHttpsTransport: HttpTransport = async (input) => {
   if(process.env.RAINFALL_OFFLINE_ACCEPTANCE==='1')throw Error('OFFLINE_ACCEPTANCE_NETWORK_DISABLED');
   input.assertActive?.();
   const u = new URL(input.url);
+  const openAiImage = u.hostname === "api.openai.com";
   if (
     u.protocol !== "https:" ||
-    !["api.yourmusic.fun", "oss.yourmusic.fun", "api.deepseek.com", "ark.cn-beijing.volces.com", "cdn2.suno.ai"].includes(u.hostname) ||
+    !["api.yourmusic.fun", "oss.yourmusic.fun", "api.deepseek.com", "ark.cn-beijing.volces.com", "api.openai.com"].includes(u.hostname) ||
     u.username ||
     u.password ||
     (u.port && u.port !== "443")
@@ -73,12 +64,10 @@ export const nodeHttpsTransport: HttpTransport = async (input) => {
   if(u.hostname==='api.deepseek.com' && (u.search || u.hash || !((input.method==='GET' && u.pathname==='/models') || (input.method==='POST' && u.pathname==='/chat/completions'))))
     throw Error('HTTP_HOST_REJECTED');
   if(u.hostname==='ark.cn-beijing.volces.com'&&(u.search||u.hash||input.method!=='POST'||u.pathname!=='/api/v3/chat/completions'))throw Error('HTTP_HOST_REJECTED');
-  if(u.hostname==='cdn2.suno.ai'){
-    if(input.method!=='GET'||!input.binary)throw Error('HTTP_HOST_REJECTED');
-    safeCoverUrl(input.url);
-  }
+  if(openAiImage&&(u.search||u.hash||input.method!=='POST'||input.binary||u.pathname!=='/v1/images/generations'))
+    throw Error('HTTP_HOST_REJECTED');
   if (
-    ["oss.yourmusic.fun","cdn2.suno.ai"].includes(u.hostname) &&
+    u.hostname === "oss.yourmusic.fun" &&
     input.headers &&
     Object.keys(input.headers).some((k) => k.toLowerCase() === "authorization")
   )
@@ -103,7 +92,7 @@ export const nodeHttpsTransport: HttpTransport = async (input) => {
           ])) as any,
       },
       (res) => {
-        const max = input.binary ? 50 * 1024 * 1024 : 2 * 1024 * 1024;
+        const max = (input.binary ? 50 : openAiImage ? 12 : 2) * 1024 * 1024;
         if (Number(res.headers["content-length"] ?? 0) > max) {
           res.destroy();
           reject(Error("HTTP_SIZE_LIMIT"));
@@ -143,7 +132,8 @@ export const nodeHttpsTransport: HttpTransport = async (input) => {
       },
     );
     // Prompt mode first composes the lyrics. Keep the original request open.
-    const timeout = input.method==='POST'&&u.hostname==='api.yourmusic.fun'&&u.pathname==='/v1/suno/generate/prompt'?120000:30000;
+    const timeout = openAiImage ? 180000 :
+      input.method==='POST'&&u.hostname==='api.yourmusic.fun'&&u.pathname==='/v1/suno/generate/prompt'?120000:30000;
     req.setTimeout(timeout, () => req.destroy(Error("HTTP_TIMEOUT")));
     req.on("error", (cause: NodeJS.ErrnoException) => {
       const failure = Object.assign(Error(cause.message === "HTTP_TIMEOUT" ? "HTTP_TIMEOUT" : "HTTP_REQUEST_FAILED"), { code: cause.code });
@@ -234,15 +224,6 @@ export class YourMusicAdapter implements MusicAdapter {
       const reason=error instanceof Error&&/^[A-Z0-9_]+$/.test(error.message)?error.message:'MUSIC_REQUEST_FAILED';
       return {state:dispatched?'unknown' as const:'failed' as const,reason};
     }
-  }
-  async downloadCover(url:string){
-    const address=safeCoverUrl(url);
-    if(!/\.(jpe?g|png|webp)$/i.test(address.pathname))throw Error('COVER_DOWNLOAD_REJECTED');
-    const response=await this.options.request({method:'GET',url,binary:true});
-    const mime=(response.headers?.['content-type']??'').split(';')[0].trim().toLowerCase();
-    if(response.status!==200||!['image/jpeg','image/png','image/webp','application/octet-stream'].includes(mime)||
-       !Buffer.isBuffer(response.body)||!response.body.length||response.body.length>10*1024*1024)throw Error('COVER_DOWNLOAD_REJECTED');
-    return response.body as Buffer;
   }
   async submit(input: {
     draft: CreativeDraft;

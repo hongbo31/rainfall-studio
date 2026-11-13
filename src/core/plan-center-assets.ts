@@ -103,6 +103,7 @@ export function syncPlanMaterials(s:Studio,run:PlanCenterRun,item:PlanCenterItem
  if((work.selectedAudioVariant??'A')!==version)return{ready:false,reasons:['AUDIO_SELECTION_MISMATCH']};
  const payload=publicationPayload(s,work),consent=s.repo.maybe('settings',consentKey(item.id))?.value;
  if(run.snapshot.fanqie?.materialsConsent&&run.snapshot.authorization.publish&&!run.snapshot.publishTargets.some(t=>t.enabled)){
+  if(!payload.cover)return{ready:false,reasons:['COVER_REQUIRED'],payload};
   const source=resolveFanqieWork(s,{workId:work.id,variant:version});
   if(!['generated','assisted','none'].includes(source.ai))return{ready:false,reasons:['FANQIE_AI_DISCLOSURE_REQUIRED']};
   const evidenceId='plan-fanqie-materials:'+item.id;

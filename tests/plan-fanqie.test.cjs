@@ -1,5 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict');
-const {createPlanFanqiePublisher,recoverPlanFanqie,planFanqieAction,YourMusicAdapter,renderPlanArtwork}=require('../output/plan-fanqie/index.cjs');
+const fs=require('node:fs'),path=require('node:path'),{randomUUID}=require('node:crypto'),sharp=require('sharp');
+const {createPlanFanqiePublisher,recoverPlanFanqie,planFanqieAction,YourMusicAdapter,Studio,planPuleAction,
+ tickPlanCenter,planCoverImage,scanCoverInbox,recoverCoverImages,createPlanCoverImageRunner,ApiCredentials,openAiCoverModel}=require('../output/plan-fanqie/index.cjs');
 function harness(){
  const jobs=[1,2].map(i=>({id:'item'+i,workId:'work'+i,variant:'A',accountKey:'a'.repeat(64),configurationHash:'b'.repeat(64),fingerprint:'c'.repeat(64),state:'ready'}));
  const calls=[];let writes=0,fail=false,stopped=false,epoch=1;
@@ -128,10 +130,118 @@ test('prompt submissions accept a verified 2xx receipt and preserve uncertain ou
  assert.equal(requests,2);
  assert.equal(scoped,2);
 });
-test('local artwork is a deterministic square release image with per-song variation',async()=>{
- const first=await renderPlanArtwork('恋爱','first');
- const metadata=await require('sharp')(first).metadata();
- assert.deepEqual([metadata.format,metadata.width,metadata.height],['jpeg',1440,1440]);
- assert.deepEqual(await renderPlanArtwork('恋爱','first'),first);
- assert.notDeepEqual(await renderPlanArtwork('恋爱','second'),first);
+function audioFixture(){
+ const rate=8000,samples=rate*2,data=Buffer.alloc(44+samples*2);
+ data.write('RIFF');data.writeUInt32LE(data.length-8,4);data.write('WAVEfmt ',8);
+ data.writeUInt32LE(16,16);data.writeUInt16LE(1,20);data.writeUInt16LE(1,22);
+ data.writeUInt32LE(rate,24);data.writeUInt32LE(rate*2,28);data.writeUInt16LE(2,32);data.writeUInt16LE(16,34);
+ data.write('data',36);data.writeUInt32LE(samples*2,40);
+ return data;
+}
+async function coverPlan(t,{generate=false,count=2}={}){
+ const root=path.resolve('output/test-runs/plan-cover-'+randomUUID()),s=new Studio(root,'production');
+ t.after(()=>s.close());
+ const music=await s.call('apiProfile.save',{profile:{id:randomUUID(),kind:'music',providerId:'yourmusic',label:'Fixture music',modelId:'chirp-v6',executionEnabled:false},expectedRevision:null});
+ const image=generate?await s.call('apiProfile.save',{profile:{id:randomUUID(),kind:'image',providerId:'openai_image',label:'Fixture image',modelId:openAiCoverModel,executionEnabled:false},expectedRevision:null}):null;
+ const center=s.planCenterService(),artistId=s.all('artists')[0].id;
+ const plan=center.save({plan:{
+  id:randomUUID(),artistId,title:'Fixture release',theme:'恋爱',count,schedule:{kind:'daily',localTime:'09:00'},
+  material:{source:'pule_prompt'},text:{},music:{route:'pule',profileId:music.id,profileRevision:music.revision,modelId:music.modelId,budgetCredits:100,maxCostPerRequestCredits:20,consent:true,creditPolicy:{mode:'uncapped_existing_credits',noRecharge:true,actualCostUnknown:true,consent:true}},
+  routing:{text:{source:'default'},music:{source:'override',profileId:music.id},image:image?{source:'override',profileId:image.id}:{source:'default'}},
+  outputs:{lyrics:true,music:true,cover:false},
+  authorization:{text:false,music:true,publish:true},fanqie:{accountKey:'a'.repeat(64),configurationHash:'b'.repeat(64),materialsConsent:true},
+ },expectedRevision:null});
+ assert.equal(plan.outputs.cover,true);
+ const preview=center.preview({id:plan.id}),run=center.run({id:plan.id,expectedRevision:plan.revision,summaryHash:preview.summaryHash,requestId:randomUUID(),source:'manual'});
+ for(const item of center.list().items){
+  const scope={runId:run.id,itemId:item.id,stage:'music_submit'},submit=planPuleAction(s,'claim',scope);
+  const songIds=[`song-${item.ordinal}-A`,`song-${item.ordinal}-B`];
+  planPuleAction(s,'record',{...scope,attemptId:submit.attemptId,status:'succeeded',receipt:{trackingId:'job-'+item.ordinal,songIds}});
+  const stage={...scope,stage:'music_assets'},assets=planPuleAction(s,'claim',stage);
+  await planPuleAction(s,'assets',{...stage,attemptId:assets.attemptId,songs:[{
+   id:songIds[0],title:'街角 '+item.ordinal,lyrics:'这一首独立歌词 '+item.ordinal+'\n在街角等候回音\n今天把约定写下',mime:'audio/wav',bytes:audioFixture(),
+  },null]});
+ }
+ tickPlanCenter(s);
+ assert.equal(planFanqieAction(s,'list',{}).length,0);
+ assert(center.list().items.every(item=>!s.get('works',item.workId).assets.cover));
+ const entries=await s.call('cover.inboxStatus',{});
+ assert.equal(entries.length,count);
+ return {s,center,entries,image};
+}
+function settleFile(file){
+ const past=new Date(Date.now()-3000);fs.utimesSync(file,past,past);
+}
+function fixtureCover(background){
+ return sharp({create:{width:512,height:512,channels:3,background}}).jpeg().toBuffer();
+}
+test('prompt releases wait for song-specific covers and reject reuse across songs',async t=>{
+ const {s,center,entries}=await coverPlan(t);
+ const briefs=entries.map(entry=>JSON.parse(fs.readFileSync(path.join(entry.directory,'request.json'),'utf8')));
+ assert.equal(new Set(briefs.map(brief=>brief.workId)).size,2);
+ for(const brief of briefs){
+  assert(brief.prompt.includes(brief.context.title));
+  assert(brief.prompt.includes(brief.context.lyrics));
+ }
+ assert.deepEqual(planCoverImage(s,'list',{}),[]);
+ const first=await fixtureCover('#87ab99'),second=await fixtureCover('#ecbc8a');
+ const files=entries.map(entry=>path.join(entry.directory,'cover.jpg'));
+ for(const file of files){fs.writeFileSync(file,first);settleFile(file);}
+ await scanCoverInbox(s);tickPlanCenter(s);tickPlanCenter(s);
+ assert.equal(planFanqieAction(s,'list',{}).length,1);
+ assert.equal((await s.call('cover.inboxStatus',{}))[1].reason,'COVER_INBOX_DUPLICATE_IMAGE');
+ fs.writeFileSync(files[1],second);settleFile(files[1]);
+ await scanCoverInbox(s);tickPlanCenter(s);tickPlanCenter(s);
+ assert.equal(planFanqieAction(s,'list',{}).length,2);
+ assert.equal(new Set(center.list().items.map(item=>item.materials.coverAssetId)).size,2);
+ assert.equal(s.all('works').length,2);
+});
+test('configured image service sends each final song brief once and persists the generated cover',async t=>{
+ const {s,center,entries,image}=await coverPlan(t,{generate:true});
+ const prompts=[],images=[await fixtureCover('#99aa87'),await fixtureCover('#cd9c77')];
+ const credentials=new ApiCredentials({
+  vault:{isAvailable:()=>true,has:()=>true,get:()=>'offline-test-key'},
+  context:()=>({mode:'production',generation:1}),getProfile:async()=>image,
+  connectionRequest:async input=>{
+   assert.equal(input.url,'https://api.openai.com/v1/images/generations');
+   assert.equal(input.body.model,openAiCoverModel);
+   assert.equal(input.body.n,1);
+   await input.assertDispatch();
+   input.assertActive();
+   prompts.push(input.body.prompt);
+   return {status:200,body:{data:[{b64_json:images.shift().toString('base64')}]}};
+  },
+ });
+ const rpc=async(method,raw)=>{
+  try{return {ok:true,value:planCoverImage(s,method.split('.').at(-1),raw)};}
+  catch(error){return {ok:false,error:{code:error.message}};}
+ };
+ const runner=createPlanCoverImageRunner({rpc,credentials,available:()=>true,generation:()=>1});
+ await Promise.all([runner.pump(),runner.pump()]);
+ assert.equal(prompts.length,1);
+ recoverCoverImages(s);
+ settleFile(path.join(entries[0].directory,'generated.jpg'));
+ await scanCoverInbox(s);tickPlanCenter(s);tickPlanCenter(s);
+ await runner.pump();
+ assert.equal(prompts.length,2);
+ assert.notEqual(prompts[0],prompts[1]);
+ for(const [index,prompt] of prompts.entries())assert(prompt.includes('这一首独立歌词 '+(index+1)));
+ settleFile(path.join(entries[1].directory,'generated.jpg'));
+ await scanCoverInbox(s);tickPlanCenter(s);tickPlanCenter(s);await runner.pump();
+ assert.equal(planFanqieAction(s,'list',{}).length,2);
+ assert.equal(prompts.length,2);
+ assert(center.list().stageAttempts.filter(row=>row.stage==='cover').every(row=>row.result.generationVerified));
+});
+test('an interrupted image request is not sent again and can be resolved by importing a cover',async t=>{
+ const {s,entries}=await coverPlan(t,{generate:true,count:1});
+ const request={requestId:entries[0].requestId};
+ planCoverImage(s,'dispatch',request);
+ recoverCoverImages(s);
+ assert.deepEqual(planCoverImage(s,'list',{}),[]);
+ const [waiting]=await s.call('cover.inboxStatus',{});
+ assert.equal(waiting.generation.state,'unknown');
+ const file=path.join(waiting.directory,'cover.jpg');
+ fs.writeFileSync(file,await fixtureCover('#88ad77'));settleFile(file);
+ await scanCoverInbox(s);tickPlanCenter(s);tickPlanCenter(s);
+ assert.equal(planFanqieAction(s,'list',{}).length,1);
 });

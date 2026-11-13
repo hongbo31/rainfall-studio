@@ -68,9 +68,9 @@ npm.cmd run desktop:dev
 pwsh -NoProfile -File .\Build-Latest.ps1
 ```
 
-需要 Git for Windows、网络和本私有仓库的读取权限。脚本独立检出 GitHub `main`，安装锁定依赖并下载、校验所需运行组件。`out` 下生成 Windows x64 免安装 ZIP 和 SHA-256 文件，解压后打开 `RainfallStudio.exe`。
+需要 Git for Windows、网络和本私有仓库的读取权限。脚本独立检出 GitHub `main`，安装锁定依赖并校验随包文件和运行组件。生成的 Windows x64 免安装 ZIP 带 SHA-256 文件，解压后打开 `RainfallStudio.exe`。
 
-如需打包当前仓库已提交的版本，可加 `-Local`。用 `-OutputDirectory` 可指定输出目录。
+本机使用 `H:\CodexData\Workspace\Rainfall-Studio\build`，成品放在其 `out` 子目录。可用 `-BuildRoot` 指定构建、验证与缓存目录，用 `-OutputDirectory` 单独指定成品目录。`-Local` 用于打包当前仓库已提交的版本。更新桌面客户端时先加 `-DeferCleanup`，切换入口后运行 `./Build-Latest.ps1 -CleanupInstalled`。脚本验证已安装版本后清理被替代的托管包、已结束的验证目录和可重建的构建缓存，保留在用版、回退版和正式数据。
 
 需要 Forge 安装器时可单独使用：
 
@@ -123,7 +123,7 @@ node --test tests/local-upgrade.test.mjs tests/production-upgrade.test.mjs tests
 
 DeepSeek 目前提供配置和本机加密 Key 管理，真实文本传输/模型评分未启用。Suno、谱乐真实音乐调用、真实平台上传、OAuth 和自动统计抓取均未在本快照中启用。Codex/Claude Code 为独立待配置选项，不读取登录凭据或把订阅当作 API。
 
-封面工作室导出人工协作任务，再导入生成图像和排版；没有内置免费 Codex 图像 API。网易云/汽水/QQ/酷狗音频发行材料与抖音视频发布材料分别准备，不承诺无人值守跨平台发布。
+谱乐计划按每首歌的定稿歌词创建专属封面请求。在「配置中心 → 封面图片」可添加 OpenAI 封面生成、保存 API Key 并选为默认来源，再保存使用该来源的计划。每首使用一次图片 API 调用。也可按计划显示的目录导入图片，客户端匹配成功后继续发布。封面工作室支持外部出图、导入和排版。
 
 - [架构阅读入口](docs/architecture/README.md)
 - [本地收件箱数据合同](docs/integrations/dot-inbox-delivery-contract.md)

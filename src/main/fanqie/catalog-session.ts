@@ -6,6 +6,7 @@ import {z} from 'zod';
 import {readFanqieAccountUid, readFanqieArtists} from './identity';
 import {readFanqieCatalogPages} from './catalog';
 import {launchAccountBrowser} from '../browser-accounts';
+import {openBackgroundOfficialPage} from '../background-page';
 import type {FanqieCatalog, FanqieCatalogReport} from '../../shared/fanqie-catalog';
 type Options = {
   root: string; available: () => boolean; generation: () => number;
@@ -84,7 +85,9 @@ export class FanqieCatalogSession {
   ) {
     this.verifiedAccountKey = undefined;
     this.mark('正在读取番茄账号'); guard();
-    const page = await context.newPage();
+    const primary = context.pages().find(page => !page.isClosed());
+    if (!primary) throw Error('FANQIE_BROWSER_CONNECTION_REQUIRED');
+    const page = await openBackgroundOfficialPage(primary);
     const go = async (url: string) => {guard(); await page.goto(url, {waitUntil: 'domcontentloaded', timeout: 20000}); guard();};
     const accountPage = 'https://www.novelfm.com/creator/music/account/profile';
     const readAccount = this.options.account ?? (p => readFanqieAccountUid(readPage(p)));
@@ -209,6 +212,7 @@ export function fanqieCatalogError(error: unknown) {
     FANQIE_MUSIC_TYPE_UNSUPPORTED: '此番茄上传流程暂只支持原创作品，请核对作品类型。',
     WORKSPACE_CHANGED: '作品库已切换，请重新读取。',
     FANQIE_BROWSER_CONNECTION_REQUIRED: '请先打开番茄工作窗口并登录。',
+    BROWSER_BACKGROUND_PAGE_REQUIRED: '未能打开番茄核对页面，请重新打开番茄工作窗口。',
     FANQIE_BROWSER_BUSY: '番茄窗口仍在处理中，请稍候。',
     FANQIE_CONTROL_AMBIGUOUS: '页面出现多个同名控件，已停止操作并保留页面。',
     FANQIE_RELEASE_ENTRY_AMBIGUOUS: '首页发布入口不唯一，已停止操作并保留页面。',

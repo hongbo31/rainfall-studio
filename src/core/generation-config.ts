@@ -75,6 +75,11 @@ export function freezeRoute(
     };
   if (
     role === "image" &&
+    profile.providerId === "openai_image"
+  )
+    return { ...base, capability: "image_api", reason: null };
+  if (
+    role === "image" &&
     ["local_image", "dot_image"].includes(profile.providerId)
   )
     return {

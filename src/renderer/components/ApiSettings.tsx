@@ -6,6 +6,7 @@ import HelpHint from "./HelpHint";
 import {
   apiProviders,
   canStoreApiCredential,
+  openAiCoverModel,
   type ApiProfile,
   type CredentialStatus,
   type ApiConnectionCheck,
@@ -54,7 +55,7 @@ function ProfileCard({
   const textApi=profile.kind==='text'&&['deepseek','doubao'].includes(profile.providerId);
   const currency=profile.providerId==='doubao'?'CNY':'USD';
   useEffect(() => {
-    if(profile.kind==='image')return;
+    if(!eligible)return;
     let active = true;
     void window.rainfall
       .apiCredentialStatus({ profileId: profile.id })
@@ -153,8 +154,8 @@ function ProfileCard({
             (status?.state === "stored_unverified" ? "stored" : "")
           }
         >
-          {profile.kind==='image'
-            ? profile.providerId==='image_pending'?'图片 API 未接入':'外部导入 · 无需 API Key'
+          {profile.kind==='image'&&!eligible
+            ? provider.state
             : simulation
             ? "模拟工作区 · Key 已禁用"
             : status
@@ -195,7 +196,7 @@ function ProfileCard({
         {profile.providerId==='doubao'&&<HelpHint label="豆包连接说明">使用火山方舟 API Key，与 DeepSeek、图片服务分别配置。未提供免费认证探测；保存后保持未验证，真实生成仅按已授权计划执行。</HelpHint>}
       </div>}
       {profile.kind==='music'&&<div className="api-profile-fields"><label>底层音乐模型 ID<input aria-label="底层音乐模型 ID" value={modelId} maxLength={200} disabled={busy} onChange={e=>setModelId(e.target.value)} placeholder="填写渠道实际支持的模型 ID"/></label><button disabled={busy||!modelId.trim()} onClick={()=>void action('model')}>保存音乐模型</button><p className="muted">渠道：{provider.name}。模型可用性、价格和生成授权仍需核实；配置默认值不触发请求。</p></div>}
-      {profile.kind==='image'&&<p className="notice">{profile.providerId==='image_pending'?'图片 API 尚未实现，执行保持关闭。':'外部出图 / 本地图片导入；客户端不直接调用图片模型。'} Codex 辅助出图通过外部会话完成，没有免费直连图像 API。</p>}
+      {profile.providerId==='openai_image'&&<small>定时计划按首出图，使用 OpenAI API 额度。</small>}
       {eligible && !simulation ? (
         <>
           <div className="api-profile-fields api-secret-row">
@@ -277,13 +278,13 @@ function ProfileCard({
   );
 }
 
-const groups=[{id:'text',label:'歌词与提示词',hint:'DeepSeek / 豆包。每个配置独立保存模型、价格与 Key 引用。'},{id:'image',label:'封面图片',hint:'选择外部出图后导入；未接入的图片 API 保持关闭。'},{id:'music',label:'音乐生成',hint:'生成渠道与底层音乐模型分别配置，执行前检查真实可用性。'}] as const;
+const groups=[{id:'text',label:'歌词与提示词',hint:'DeepSeek / 豆包。每个配置独立保存模型、价格与 Key 引用。'},{id:'image',label:'封面图片',hint:'可选按首生成或导入图片。'},{id:'music',label:'音乐生成',hint:'生成渠道与底层音乐模型分别配置，执行前检查真实可用性。'}] as const;
 export default function ApiSettings({compact=false}:{compact?:boolean}={}){
  const {runtime,call}=useStudio();const[profiles,setProfiles]=useState<ApiProfile[]>([]),[role,setRole]=useState<'text'|'image'|'music'>('text'),[providerId,setProviderId]=useState('deepseek'),[label,setLabel]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState(''),[defaults,setDefaults]=useState<any>(null);const simulation=runtime.mode==='simulation';
  const refresh=async()=>{const[p,d]=await Promise.all([call('apiProfile.list'),call('generationConfig.read')]);setProfiles(p);setDefaults(d)};
  useEffect(()=>{void refresh().catch(e=>setError(e.code??e.message))},[runtime.mode]);
  const act=async(fn:()=>Promise<unknown>)=>{setBusy(true);setError('');try{await fn();await refresh()}catch(e:any){setError(e.code??e.message)}finally{setBusy(false)}};
- const create=(e:React.FormEvent)=>{e.preventDefault();void act(async()=>{await call('apiProfile.save',{profile:{id:crypto.randomUUID(),kind:role,providerId,label:label.trim(),modelId:null,executionEnabled:false},expectedRevision:null});setLabel('')})};
+ const create=(e:React.FormEvent)=>{e.preventDefault();void act(async()=>{await call('apiProfile.save',{profile:{id:crypto.randomUUID(),kind:role,providerId,label:label.trim(),modelId:providerId==='openai_image'?openAiCoverModel:null,executionEnabled:false},expectedRevision:null});setLabel('')})};
  const visible=profiles.filter(p=>p.kind===role),group=groups.find(g=>g.id===role)!;
  return <section className="panel api-settings" aria-label="生成 API 配置"><div className="section-title"><h2>{role==='image'?'封面来源配置':'生成 API 配置'}</h2><span className="api-status">配置不触发生成</span></div>
  <div className="button-row" role="tablist" aria-label="生成类型">{groups.map(g=><button key={g.id} role="tab" aria-selected={role===g.id} className={role===g.id?'primary':''} onClick={()=>{setRole(g.id);setProviderId(apiProviders.find(p=>p.kind===g.id)!.id);setLabel('');setError('')}}>{g.label}</button>)}</div>

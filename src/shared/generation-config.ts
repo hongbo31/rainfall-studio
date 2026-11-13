@@ -25,6 +25,7 @@ export const FrozenRouteSchema = z.strictObject({
   capability: z.enum([
     "text_api",
     "music_api",
+    "image_api",
     "external_import",
     "unavailable",
   ]),

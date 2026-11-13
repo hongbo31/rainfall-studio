@@ -107,9 +107,17 @@ export class CoverHandoff {
       const planRows=this.s.planCenterService().list(),owner=planRows.items.find(item=>item.workId===i.workId);
       const planRun=planRows.runs.find(r=>r.id===(planBinding?.runId??owner?.runId));
       if(planRun&&planRun.snapshot.artistId!==this.s.get('works',i.workId).artistId)throw Error('ARTIST_MISMATCH');
-      const generationRoute=planRun?.snapshot.routeSnapshot?.image??(readGenerationConfig(this.s.repo).roles.image?freezeRoute(this.s.repo,'image',{source:'default'}):undefined);
-      if(generationRoute?.capability==='unavailable')throw Error(generationRoute.reason??'IMAGE_ADAPTER_UNAVAILABLE');
-      if(generationRoute){const p=this.s.repo.maybe('settings','api-profile:'+generationRoute.profileId);if(!p||p.kind!=='image'||p.revision!==generationRoute.profileRevision||p.providerId!==generationRoute.providerId)throw Error('ROUTE_PROFILE_CHANGED');}
+      const frozenImage=planRun?.snapshot.routeSnapshot?.image;
+      let generationRoute=frozenImage??(readGenerationConfig(this.s.repo).roles.image?freezeRoute(this.s.repo,'image',{source:'default'}):undefined);
+      if(generationRoute){
+        const p=this.s.repo.maybe('settings','api-profile:'+generationRoute.profileId);
+        const reason=generationRoute.capability==='unavailable'?generationRoute.reason??'IMAGE_ADAPTER_UNAVAILABLE':
+          !p||p.kind!=='image'||p.revision!==generationRoute.profileRevision||p.providerId!==generationRoute.providerId?'ROUTE_PROFILE_CHANGED':null;
+        if(reason){
+          if(planRun?.snapshot.material.source!=='pule_prompt')throw Error(reason);
+          generationRoute=undefined;
+        }
+      }
       let workspace = this.s.repo.maybe("settings", "cover-workspace");
       if (!workspace)
         workspace = this.s.save("settings", {
@@ -118,7 +126,7 @@ export class CoverHandoff {
         });
       const prompt = i.prompt?.trim()
         ? i.prompt
-        : `为歌曲《${context.title}》生成无字方形封面母版。\n艺名：${context.artist}\n故事：${context.story}\n歌词原文：\n${context.lyrics}\n曲风：${context.genre}\n情绪：${context.mood}\n封面风格：${context.coverStyle}\n补充：${i.brief}\n目标3000×3000，保留排版留白。输出真实PNG/JPEG/WebP文件。`;
+        : `为歌曲《${context.title}》独立创作一张无字方形封面。取材于歌词里的具体场景、动作或道具，按本首情绪决定构图、色彩和媒介，避免通用渐变和套版。无文字、标志或水印。\n艺名：${context.artist}\n故事：${context.story}\n曲风：${context.genre}\n情绪：${context.mood}\n封面风格：${context.coverStyle}\n补充：${i.brief}\n歌词原文：\n${context.lyrics}`;
       const request = {
         id: i.requestId,
         workId: i.workId,
@@ -130,10 +138,10 @@ export class CoverHandoff {
         brief: i.brief,
         imagePolicy: COVER_IMAGE_POLICY,
         ...(generationRoute?{generationRoute}:{}),
-        provider: "dot_handoff",
+        provider: generationRoute?.capability==='image_api'&&frozenImage ? "openai_image" : "dot_handoff",
         state: "awaiting_result",
         createdAt: this.s.now().toISOString(),
-        notice: "文件交接请求；未调用当前 dot 聊天或图像接口，等待真实结果",
+        notice: generationRoute?.capability==='image_api'&&frozenImage ? "等待图像服务出图" : "等待外部出图或导入",
       };
       this.s.save("settings", {
         id: "cover-request:" + request.id,
@@ -176,6 +184,7 @@ export class CoverHandoff {
     workId: string,
     requestId: string,
     kind: "manifest" | "image",
+    generated?: { model: string; sha256: string },
   ) {
     assertPlanCoverWork(this.s,workId);
     const request = this.get(requestId);
@@ -247,6 +256,7 @@ export class CoverHandoff {
       throw Error("IMAGE_RECEIPT_MISMATCH");
     if (kind === "image" && sha256 !== receiptHash)
       throw Error("SOURCE_CHANGED");
+    if (generated && sha256 !== generated.sha256) throw Error("SOURCE_CHANGED");
     this.assertContext(request);
     if (old) {
       this.s.locate(old.receipt.assetId);
@@ -274,13 +284,13 @@ export class CoverHandoff {
         receiptHash,
         resultId,
         state: "received",
-        source: kind === "manifest" ? "external-manifest" : "user-import",
-        provenance: manifest?.provenance ?? {
+        source: generated ? "image-api" : kind === "manifest" ? "external-manifest" : "user-import",
+        provenance: generated ? { producer: "openai_image", model: generated.model, generatedAt: null } : manifest?.provenance ?? {
           producer: "user-import",
           model: null,
           generatedAt: null,
         },
-        generationVerified: false,
+        generationVerified: !!generated,
         image: {
           sha256,
           mime,

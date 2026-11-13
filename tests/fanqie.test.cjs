@@ -12,9 +12,28 @@ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'rainfall-fanqie-test-'));
 function catalogSessionFixture() {
  const root=fs.mkdtempSync(path.join(dir,'session-'));let generation=1,available=true,uid='123456789012345',closed;
  const visits=[],editor={url:()=>catalogUrl+'/uploadProduct',isClosed:()=>false,bringToFront:async()=>{}};
- const probes=[];const context={setDefaultTimeout:n=>assert.equal(n,15000),setDefaultNavigationTimeout:n=>assert.equal(n,20000),pages:()=>[editor],on:(event,fn)=>{assert.equal(event,'close');closed=fn},newPage:async()=>{
-  const page={goto:async url=>visits.push(url),close:async()=>{page.closed=true},accountUid:()=>uid};probes.push(page);return page;
- }};
+ const probes=[];
+ const context={
+  setDefaultTimeout:n=>assert.equal(n,15000),
+  setDefaultNavigationTimeout:n=>assert.equal(n,20000),
+  pages:()=>[editor,...probes.filter(page=>!page.closed)],
+  on:(event,fn)=>{assert.equal(event,'close');closed=fn},
+  newCDPSession:async page=>({
+   send:async()=>({targetInfo:{targetId:page.targetId,browserContextId:'fixture'}}),
+   detach:async()=>{},
+  }),
+  browser:()=>({newBrowserCDPSession:async()=>({
+   send:async(method,params)=>{
+    assert.equal(method,'Target.createTarget');
+    assert.deepEqual(params,{url:'about:blank',background:true,browserContextId:'fixture'});
+    const targetId='probe-'+probes.length;
+    const page={targetId,goto:async url=>visits.push(url),close:async()=>{page.closed=true},accountUid:()=>uid};
+    probes.push(page);return {targetId};
+   },
+   detach:async()=>{},
+  })}),
+ };
+ editor.context=()=>context;
  const catalog={source:'browser',url:catalogUrl,observedAt:new Date().toISOString(),total:1,complete:true,rows:[{id:'1234567890123456789',title:'已有作品',stage:'contract_pending',officialStatus:'待授权',createdAtText:'测试时间',publishedAtText:'-'}]};
  const options={root,available:()=>available,generation:()=>generation,launch:async()=>context,account:async()=>({accountId:uid}),catalog:async()=>structuredClone(catalog)};
  return{root,options,visits,probes,editor,catalog,context,setUid:value=>{uid=value},changeGeneration:()=>{generation++},setAvailable:value=>{available=value},close:()=>closed()};

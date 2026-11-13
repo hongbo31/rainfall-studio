@@ -96,14 +96,14 @@ export default function GenerationRoutes({
               <small>
                 {p
                   ? `${apiProviders.find((v) => v.id === p.providerId)?.name} · ${p.modelId ?? (role === "image" ? "外部出图后导入" : "模型待配置")} · 配置 v${p.revision}${p.kind === "text" ? " · " + (p.textPricing?.currency ?? "价格未配置") : ""}`
-                  : "尚未配置；需要该能力时会阻塞"}
+                  : role==='image'?"未配置 · 可导入图片":"尚未配置"}
               </small>
             </label>
           );
         })}
       </div>
       <p className="muted">
-        任务创建后固定渠道、模型及配置版本。外部图片导入不代表图片 API 已接入。
+        任务创建后使用已保存的配置。
       </p>
       <button
         type="button"

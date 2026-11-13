@@ -3,7 +3,7 @@ import {planPuleReleaseIndex,type PlanPuleReceipt,type PlanPuleTask} from '../sh
 
 type ClaimedTask=PlanPuleTask&{
   attemptId:string;profileId:string;profileRevision:number;modelId:string;
-  prompt:string;cover:boolean;receipt?:PlanPuleReceipt;
+  prompt:string;receipt?:PlanPuleReceipt;
 };
 type Options={
   rpc:(method:string,input?:unknown)=>Promise<any>;
@@ -73,14 +73,7 @@ export function createPlanPuleRunner(options:Options){
               assets.push({id:song.id,title:song.title??'',lyrics:song.lyrics,bytes:new Uint8Array(audio.bytes),mime:audio.mime});
             }
             await check();
-            const coverUrl=selected.image_url;
-            let cover:Uint8Array|undefined;
-            if(task.cover&&coverUrl){
-              try{cover=new Uint8Array(await adapter.downloadCover(coverUrl));}
-              catch{await check();/* Core renders original local artwork. */}
-            }
-            await check();
-            await rpc('assets',{...scope,songs:assets,cover});
+            await rpc('assets',{...scope,songs:assets});
           },guard);
         }catch(error){
           if(!current())return;

@@ -55,7 +55,15 @@ export class PlanCenterService {
       if((old?.revision??null)!==parsed.expectedRevision)throw Error('REVISION_CONFLICT');
       if(parsed.plan.fanqie?.accountId&&this.repo.maybe('accounts',parsed.plan.fanqie.accountId)?.provider!=='fanqie')
         throw Error('ACCOUNT_PROVIDER_MISMATCH');
-      let inputPlan=freezePlanIdentities(this.repo,freezeArtist(this.repo,freezePlanRoutes(this.repo,parsed.plan)));
+      const promptPlan=parsed.plan.material.source==='pule_prompt';
+      const planInput=promptPlan?{
+        ...parsed.plan,outputs:{...parsed.plan.outputs,cover:true},
+        ...(parsed.plan.routing||!parsed.plan.music.profileId?{}:{routing:{
+          text:{source:'default' as const},image:{source:'default' as const},
+          music:{source:'override' as const,profileId:parsed.plan.music.profileId},
+        }}),
+      }:parsed.plan;
+      let inputPlan=freezePlanIdentities(this.repo,freezeArtist(this.repo,freezePlanRoutes(this.repo,planInput)));
       if(old?.routeSnapshot&&digest(old.routeSnapshot)!==digest(inputPlan.routeSnapshot)){inputPlan={...inputPlan,text:{...inputPlan.text,consent:false},music:{...inputPlan.music,consent:false},authorization:{...inputPlan.authorization,text:false,music:false}};}
       if(inputPlan.material.source==='provider'&&inputPlan.text.profileId){
         const profile=this.repo.maybe('settings','api-profile:'+inputPlan.text.profileId);
@@ -149,7 +157,7 @@ export class PlanCenterService {
     });
   }
   private stages(plan:PlanCenterPlan):PlanCenterStage[] {
-    if(plan.material.source==='pule_prompt')return ['music_submit','music_assets',...(plan.outputs.cover?['cover' as const]:[]),'materials'];
+    if(plan.material.source==='pule_prompt')return ['music_submit','music_assets','cover','materials'];
     return [...(plan.material.source==='provider'?['text_generate' as const]:['dot' as const]),'text_score',...(plan.outputs.music?['music_submit' as const,'music_assets' as const]:[]),...(plan.outputs.cover?['cover' as const]:[]),'materials'];
   }
   private stageGate(run:PlanCenterRun,item:PlanCenterItem,stage:PlanCenterStage):{state:string;reason?:string} {

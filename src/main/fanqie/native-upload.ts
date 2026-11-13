@@ -1,6 +1,7 @@
 import path from 'node:path';
 import type {BrowserContext, Page, Locator} from 'playwright-core';
 import type {FanqieInput} from '../../shared/fanqie';
+import {openBackgroundOfficialPage} from '../background-page';
 import {readFanqieAccountUid} from './identity';
 import {chooseFanqieFile, fanqieFileControl} from './form';
 import {readFanqieVisibleForm, selectFanqieCredit, confirmFanqieFirstStep, assertFanqieFirstStepReadback, fanqieTransferVerified, type FanqieExpectedForm} from './first-step';
@@ -51,7 +52,7 @@ export async function executeFanqieNativeUpload(context: BrowserContext, input: 
   const account = async () => {
     const read = async () => {
       callbacks.guard();
-      const probe = accountProbe ??= await context.newPage();
+      const probe = accountProbe ??= await openBackgroundOfficialPage(page);
       await probe.goto('https://www.novelfm.com/creator/music/account/profile', {waitUntil:'commit', timeout:20000});
       return readFanqieAccountUid(nativeFanqiePage(probe));
     };

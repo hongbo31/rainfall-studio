@@ -4,6 +4,7 @@ import {
   credentialIdentitySchema,
   credentialInputSchema,
   credentialStatusInputSchema,
+  openAiCoverModel,
   type ApiProfile,
   type CredentialStatus,
   type ApiConnectionCheck,
@@ -258,6 +259,37 @@ export class ApiCredentials {
       const adapter=new ProviderTextAdapter({providerId:profile.providerId as 'deepseek'|'doubao',profileId,profileRevision:expectedRevision,modelId:profile.modelId,
         request:input=>{guard();return request({...input,assertActive:guard})},assertActive:guard,credential:async()=>{guard();return this.options.vault.get(this.binding(profile))}});
       const result=await callback(adapter);guard();return result;
+    });
+  }
+  async generatePlanCover(input:unknown,prompt:string,beforeSend:()=>Promise<void>,assertActive:()=>void) {
+    const {profileId,expectedRevision}=credentialIdentitySchema.parse(input),scope={...this.options.context()};
+    if(scope.mode!=='production')throw Error('PRODUCTION_REQUIRED');
+    return this.runExclusive(async()=>{
+      assertActive();
+      const profile=await this.lookup(profileId,scope,expectedRevision);
+      if(profile.kind!=='image'||profile.providerId!=='openai_image'||profile.modelId!==openAiCoverModel)
+        throw Error('IMAGE_PROFILE_REQUIRED');
+      const request=this.options.connectionRequest;
+      if(!request)throw Error('IMAGE_TRANSPORT_UNAVAILABLE');
+      const credential=this.options.vault.get(this.binding(profile));
+      const guard=()=>{assertActive();this.assertScope(scope);};
+      const response=await request({
+        method:'POST',url:'https://api.openai.com/v1/images/generations',
+        headers:{Authorization:'Bearer '+credential,'Content-Type':'application/json',Accept:'application/json'},
+        body:{model:profile.modelId,prompt:prompt.slice(0,24000),size:'2048x2048',quality:'medium',n:1,output_format:'jpeg'},
+        assertActive:guard,assertDispatch:beforeSend,
+      });
+      guard();
+      if(response.status>=400&&response.status<500)throw Error('IMAGE_HTTP_'+response.status);
+      if(response.status!==200)throw Error('IMAGE_OUTCOME_UNKNOWN');
+      const results=response.body?.data;
+      const encoded=Array.isArray(results)&&results.length===1?results[0]?.b64_json:undefined;
+      const maxImageBytes=8*1024**2;
+      if(typeof encoded!=='string'||!encoded.length||encoded.length>Math.ceil(maxImageBytes/3)*4||encoded.length%4||!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded))
+        throw Error('IMAGE_RESPONSE_INVALID');
+      const bytes=Buffer.from(encoded,'base64');
+      if(bytes.length>maxImageBytes||bytes[0]!==0xff||bytes[1]!==0xd8)throw Error('IMAGE_RESPONSE_INVALID');
+      return bytes;
     });
   }
   async withDeepSeekAdapter<T>(input:unknown,callback:(adapter:DeepSeekAdapter)=>Promise<T>,assertActive:()=>void=()=>{}):Promise<T>{

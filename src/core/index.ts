@@ -4,6 +4,7 @@ import {prepareMaterialWork,importMaterialAudio,completeMaterialJob} from './mat
 export {prepareMaterialWork,importMaterialAudio,completeMaterialJob};
 export {materialDraft} from './material-integration';
 export {offlineAcceptanceEnabled} from '../shared/offline-acceptance';
+import {planCoverImage,recoverCoverImages} from './cover-inbox';
 export {MaterialWorkbenchService} from './material-workbench';
 import {executeUnifiedPublication} from "./unified-publication-integration";
 import { materialEntries } from "./materials";
@@ -145,9 +146,11 @@ if (port) {
   );
   let chain = Promise.resolve().then(() => studio.scanInbox());
   recoverPlanFanqie(studio);
+  recoverCoverImages(studio);
   const execute = async (method: string, input: any) => {
     if(method.startsWith('internal.planFanqie.'))return planFanqieAction(studio,method.slice('internal.planFanqie.'.length),input);
     if(method.startsWith('internal.planPule.'))return planPuleAction(studio,method.slice('internal.planPule.'.length),input);
+    if(method.startsWith('internal.planCoverImage.'))return planCoverImage(studio,method.slice('internal.planCoverImage.'.length),input);
     if(method.startsWith('internal.materials.')){
       const action=method.slice('internal.materials.'.length),service=studio.materialWorkbench();
       if(action==='prepareWork')return prepareMaterialWork(studio,input);

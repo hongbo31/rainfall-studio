@@ -1,27 +1,8 @@
 import type {Page,Response} from 'playwright-core';
+export {openBackgroundOfficialPage} from '../background-page';
 export type OfficialSourceCoverage={source:'official-album-directory'|'official-pending-song-reference';pagesRead:number;rowCount:number;complete:boolean;reasons:string[]};
 export type OfficialVisibleRow={cells:string[];cellTitles?:string[][];columnLabels?:string[]};
 const timeout=15_000;
-
-/** A newly created background target in the primary page's existing context. Never activates a tab. */
-export async function openBackgroundOfficialPage(primary:Page):Promise<Page>{
- const context=primary.context(),browser=context.browser();if(!browser)throw Error('BROWSER_BACKGROUND_PAGE_REQUIRED');
- const source=await context.newCDPSession(primary);let browserSession:Awaited<ReturnType<typeof browser.newBrowserCDPSession>>|undefined,targetId:string|undefined;
- try{
-  const {targetInfo}=await source.send('Target.getTargetInfo');browserSession=await browser.newBrowserCDPSession();
-  ({targetId}=await browserSession.send('Target.createTarget',{url:'about:blank',background:true,...(targetInfo.browserContextId?{browserContextId:targetInfo.browserContextId}:{})}));
-  const deadline=Date.now()+timeout;
-  while(Date.now()<deadline){
-   for(const page of context.pages()){
-    if(page===primary)continue;const candidate=await context.newCDPSession(page);
-    try{if((await candidate.send('Target.getTargetInfo')).targetInfo.targetId===targetId)return page;}finally{await candidate.detach();}
-   }
-   await new Promise(resolve=>setTimeout(resolve,50));
-  }
-  throw Error('BROWSER_BACKGROUND_PAGE_REQUIRED');
- }catch(error){if(targetId&&browserSession)await browserSession.send('Target.closeTarget',{targetId}).catch(()=>{});throw error;}
- finally{await source.detach();await browserSession?.detach();}
-}
 
 export async function visibleRows(page:Page,root:string):Promise<OfficialVisibleRow[]>{
  return page.evaluate(root=>{

@@ -2,6 +2,7 @@ import { z } from "zod";
 import type {CredentialFailureCode} from './credential-errors';
 
 export const textProviderBaseUrls = Object.freeze({deepseek:'https://api.deepseek.com',doubao:'https://ark.cn-beijing.volces.com/api/v3'});
+export const openAiCoverModel = "gpt-image-2.6-flare";
 export const TextPricingSchema = z.strictObject({
   currency:z.enum(['USD','CNY']), modelId:z.string().trim().min(1).max(200),
   inputMicrosPerMillionTokens:z.number().int().nonnegative().max(1_000_000_000_000),
@@ -24,7 +25,7 @@ const apiProfileMetadataSchema = z
       "yourmusic",
       "suno",
       "miaoxiang",
-      "image_pending", "dot_image", "local_image",
+      "image_pending", "dot_image", "local_image", "openai_image",
     ]),
     label: z.string().trim().min(1).max(100),
     modelId: z.string().trim().min(1).max(200).nullable(),
@@ -33,12 +34,14 @@ const apiProfileMetadataSchema = z
     executionEnabled: z.literal(false),
   })
   .refine(
-    (p) => p.kind === (["text_pending","deepseek","doubao","codex_cli","claude_code"].includes(p.providerId)?'text':['image_pending','dot_image','local_image'].includes(p.providerId)?'image':'music'),
+    (p) => p.kind === (["text_pending","deepseek","doubao","codex_cli","claude_code"].includes(p.providerId)?'text':['image_pending','dot_image','local_image','openai_image'].includes(p.providerId)?'image':'music'),
     {
       message: "PROFILE_KIND_MISMATCH",
     },
   ).superRefine((p,ctx)=>{
     const fixed=textProviderBaseUrls[p.providerId as keyof typeof textProviderBaseUrls]??null;
+    if(p.providerId==='openai_image'&&p.modelId!==openAiCoverModel)
+      ctx.addIssue({code:'custom',message:'IMAGE_MODEL_REQUIRED',path:['modelId']});
     if(p.baseUrl!==undefined&&p.baseUrl!==fixed)ctx.addIssue({code:'custom',message:'TEXT_ENDPOINT_REJECTED',path:['baseUrl']});
     if(p.textPricing&&(p.kind!=='text'||!fixed||p.textPricing.modelId!==p.modelId||p.textPricing.currency!==(p.providerId==='doubao'?'CNY':'USD')))
       ctx.addIssue({code:'custom',message:'TEXT_PRICE_SCOPE',path:['textPricing']});
@@ -102,6 +105,7 @@ export const apiProviders = Object.freeze([
     credentialInput: false,
     hosts: [],
   },
+  {id:'openai_image',kind:'image',name:'OpenAI 封面生成',state:'按首生成 · 使用 API 额度',credentialInput:true,hosts:['api.openai.com']},
   {id:'local_image',kind:'image',name:'本地图片导入',state:'真实图片导入 · 不调用模型',credentialInput:false,hosts:[]},
   {id:'dot_image',kind:'image',name:'dot 外部出图后导入',state:'外部会话生成 · 客户端不直接调用',credentialInput:false,hosts:[]},
   {id:'image_pending',kind:'image',name:'图片 API（待接入）',state:'图像适配器未接入',credentialInput:false,hosts:[]},

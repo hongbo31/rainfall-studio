@@ -1,5 +1,6 @@
 import React,{useState} from 'react';
 import {useStudio} from '../context';
+import CoverInbox from './CoverInbox';
 import type {PlanCenterItem,PlanCenterRun} from '../../shared/plan-center';
 const labels:Record<string,string>={local_queue:'本地队列',blocked:'需处理',preparing:'准备中',prepared:'已准备',awaiting_authorization:'待账号授权',awaiting_confirmation:'待提交确认',unknown:'结果未知，核对原任务',reviewing:'审核中',published:'已发布',rejected:'已驳回',stopped:'已停止',received:'已接收',attached:'已关联本项',late:'迟到结果，已留存',expired:'已过期，已留存',projected:'已导出至授权桥目录',unchanged:'桥文件已是最新',not_configured:'尚未配置桥目录',disabled:'桥已停用',ALBUM_CREATE_UNAVAILABLE:'新建专辑尚无可信执行能力',ALBUM_APPEND_UNAVAILABLE:'追加专辑尚未验证',RIGHTS_ATTESTATION_REQUIRED:'请确认本版材料和授权依据'};
 const label=(v?:string)=>v?(labels[v]??v):'';
@@ -16,6 +17,8 @@ export default function PlanRunAssets({item,run,catalog,status,busy,act}:{item:P
  const automatic=run.snapshot.material?.source==='pule_prompt'&&!!run.snapshot.fanqie&&run.snapshot.authorization.publish;
  const locked=run.stopRequested||!!item.materials||links.some((x:any)=>x.publicationTaskId);
  return <div className="plan-linked-assets">
+  {item.workId&&item.reason==='COVER_REQUIRED'&&run.snapshot.material.source==='pule_prompt'&&
+   <details><summary>导入专属封面</summary><CoverInbox workId={item.workId} disabled={locked} showDirectory/></details>}
   {!item.workId&&run.snapshot.outputs.cover&&!run.snapshot.outputs.music&&['COVER_REFRESH_REQUIRED','COVER_REQUIRED'].includes(item.reason??'')&&!!item.material?.finalRevision&&<button disabled={busy||run.stopRequested||['completed','stopped','failed'].includes(run.state)} title={run.stopRequested?'本次执行已停止，无法保存或更新计划封面':undefined} onClick={()=>void act(async()=>{const final=item.material!.finalRevision as any;const result=await call('planCenter.prepareCoverWork',{itemId:item.id,expectedFinalDraftId:final.draftId,expectedFinalPairHash:final.pairHash});go('cover',result.workId)})}>保存最终歌词并更新封面</button>}
   {item.workId&&run.snapshot.outputs.cover&&!run.snapshot.outputs.music&&<button disabled={run.stopRequested} title={run.stopRequested?'本次执行已停止，计划封面更新已锁定':undefined} onClick={()=>go('cover',item.workId)}>更新最终歌词封面</button>}
   {requests.map((r:any)=><details key={r.requestId}><summary>dot 请求 · v{r.revision} · {r.requestId}</summary><p>准确请求与身份已持久化；外部 dot 应回传完整 requestEcho。</p><pre>{JSON.stringify(r,null,2)}</pre></details>)}

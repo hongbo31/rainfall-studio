@@ -1,13 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {DateTime} from 'luxon';
-import sharp from 'sharp';
 import {z} from 'zod';
 import type {Studio} from './studio';
 import {CenterStore,digest} from './plan-center/storage';
 import type {PlanCenterItem,PlanCenterRun} from '../shared/plan-center';
 import {planPuleAttempt,planPuleReceipt,planPuleReleaseIndex,planPuleScope,type PlanPuleTask} from '../shared/plan-pule';
-import {renderPlanArtwork} from './plan-artwork';
 
 const scenes=[
   '小雨停后的街角', '清晨刚开门的花店', '轮渡末班船的甲板', '旧影院门口的海报',
@@ -69,7 +67,7 @@ const planSong=z.strictObject({
 const extensions={'audio/mpeg':'mp3','audio/mp3':'mp3','audio/wav':'wav','audio/x-wav':'wav','audio/flac':'flac','audio/ogg':'ogg','audio/mp4':'m4a'} as const;
 const planSongs=z.tuple([planSong.nullable(),planSong.nullable()]);
 
-async function saveSong(s:Studio,input:z.infer<typeof planPuleAttempt>&{songs:z.infer<typeof planSongs>;cover?:Uint8Array}) {
+async function saveSong(s:Studio,input:z.infer<typeof planPuleAttempt>&{songs:z.infer<typeof planSongs>}) {
   const verify=()=>{
     const task=planTask(s,input);
     if(input.stage!=='music_assets'||task.run.stopRequested||task.next?.stage!=='music_assets'||
@@ -101,36 +99,19 @@ async function saveSong(s:Studio,input:z.infer<typeof planPuleAttempt>&{songs:z.
       const asset=await s.importFile(file,role,undefined,()=>{verify();});
       audio.push({version,assetId:asset.id,sha256:asset.sha256,externalId:song.id,lyrics:song.lyrics});
     }
-    let cover:{id:string;source:'yourmusic-result'|'local-artwork'}|undefined;
-    if(run.snapshot.outputs.cover){
-      let bytes:Buffer|undefined;
-      if(input.cover){
-        try{
-          const image=sharp(input.cover,{limitInputPixels:20_000_000}),metadata=await image.metadata();
-          if(['jpeg','png','webp'].includes(metadata.format??'')&&(metadata.pages??1)===1)
-            bytes=await image.rotate().resize(1440,1440,{fit:'cover'}).jpeg({quality:94}).toBuffer();
-        }catch{/* A failed provider image is replaced by original local artwork. */}
-      }
-      const source=bytes?'yourmusic-result':'local-artwork';
-      bytes??=await renderPlanArtwork(brief.theme,chosen.id);
-      const file=path.join(folder,'cover.jpg');files.push(file);
-      fs.writeFileSync(file,bytes,{flag:'wx'});
-      const asset=await s.importFile(file,'cover',undefined,()=>{verify();});
-      cover={id:asset.id,source};
-    }
     return s.repo.transaction(()=>{
       verify();
       assertNewTitle();
       const work=s.saveWork({title,artistId:run.snapshot.artistId,story:brief.theme+' · '+brief.scene,lyrics:chosen.lyrics,
         prompt:brief.prompt,parameters:{},rights:'歌词和音乐由谱乐生成，按计划已保存的发行授权设置使用。',ai:'generated',
         source:'external',provider:'yourmusic',providerSongIds:receipt!.songIds,model:modelId,
-        coverSource:cover?.source,selectedAudioVariant:selectedVersion},{kind:'generation_input'});
+        selectedAudioVariant:selectedVersion},{kind:'generation_input'});
       const versions=audio.map(({lyrics,...version})=>version);
-      const assets={...Object.fromEntries(versions.map(({version,assetId})=>['audio_'+version,assetId])),...(cover?{cover:cover.id}:{})};
+      const assets=Object.fromEntries(versions.map(({version,assetId})=>['audio_'+version,assetId]));
       s.save('works',{...work,assets,assetHistory:Object.values(assets),
         audioVersions:audio.map(({lyrics,...version})=>({...version,providerSongId:version.externalId,actualLyrics:lyrics?{text:lyrics,version:null}:null}))});
       new CenterStore(s.repo).put('item',{...item,workId:work.id,selectedVersion,versions,
-        material:{source:'yourmusic',title,lyrics:chosen.lyrics,theme:brief.theme,scene:brief.scene,coverSource:cover?.source},updatedAt:s.now().toISOString()});
+        material:{source:'yourmusic',title,lyrics:chosen.lyrics,theme:brief.theme,scene:brief.scene},updatedAt:s.now().toISOString()});
       return service.record({attemptId:input.attemptId,status:'succeeded',evidenceId:work.id,result:{versions,workId:work.id}});
     });
   }finally{
@@ -179,7 +160,7 @@ export function planPuleAction(s:Studio,action:string,raw:unknown) {
     if(scope.stage==='music_assets'&&attempt.state==='dispatching')
       attempt=service.record({attemptId:attempt.id,status:'waiting',reason:'ORIGINAL_ASSETS_PENDING'});
     return {...scope,attemptId:attempt.id,prompt:task.brief.prompt,receipt:task.receipt,
-      profileId:task.profileId,profileRevision:task.profileRevision,modelId:task.modelId,cover:task.run.snapshot.outputs.cover};
+      profileId:task.profileId,profileRevision:task.profileRevision,modelId:task.modelId};
   }
   if(action==='current'){
     const input=planPuleAttempt.parse(raw),task=planTask(s,input);
@@ -188,7 +169,7 @@ export function planPuleAction(s:Studio,action:string,raw:unknown) {
     return true;
   }
   if(action==='assets'){
-    const input=planPuleAttempt.extend({songs:planSongs,cover:content.optional()}).parse(raw);
+    const input=planPuleAttempt.extend({songs:planSongs}).parse(raw);
     return saveSong(s,input);
   }
   if(action==='record'){

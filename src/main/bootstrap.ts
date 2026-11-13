@@ -57,6 +57,7 @@ import {chooseInboxBridgeProject} from './inbox-bridge';
 import {chooseDirectoryTaskSource} from './directory-tasks';
 import {createProviderTextBroker} from './provider-text';
 import {createMaterialWorkbenchBroker} from './material-workbench';
+import {createPlanCoverImageRunner} from './plan-cover-image';
 import {pathToFileURL} from 'node:url';
 import {offlineAcceptanceEnabled,offlineAcceptanceInvocationAllowed} from '../shared/offline-acceptance';
 const offlineAcceptance=offlineAcceptanceEnabled();
@@ -198,6 +199,9 @@ const planFanqiePublisher=createPlanFanqiePublisher({
 const planPuleRunner=createPlanPuleRunner({rpc,credentials:apiCredentials,
   available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,
 });
+const planCoverImageRunner=createPlanCoverImageRunner({rpc,credentials:apiCredentials,
+  available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,
+});
 tmeAiCloud.onIdentityInvalidated(()=>{try{child?.postMessage({kind:'account-identity-invalidated'})}catch{/* Old worker already stopped. */}});
 // Cloud sessions and calibrated browser contracts must be supplied by Main, never renderer flags.
 const tmeAiTransport=createTmeAiTransportProvider({platform:process.platform,cloudSession:()=>tmeAiCloud.submissionSession(),cloudExistingAlbumSession:()=>tmeAiCloud.existingAlbumSession(),readExternalReceipt:async(context)=>{const receipt=await tmeAiCloud.readExternalReceipt(context);persistExternalReceiptBarrier(root,receipt);return receipt},cloudPreparationSession:()=>tmeAiCloud.preparationSession(),native:tmeAiNative,nativeObserve:async(context)=>{
@@ -223,7 +227,7 @@ const planAlbums=createPlanAlbumBroker({rpc:(method,input)=>rpc(method,input),av
 const providerText=createProviderTextBroker({credentials:apiCredentials,rpc,available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration});
 const materialWorkbench=createMaterialWorkbenchBroker({credentials:apiCredentials,rpc,available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,chooseDirectory:()=>dialog.showOpenDialog(window,{title:'选择只读素材目录',properties:['openDirectory']})});
 app.on('before-quit',()=>providerText.stop());
-setInterval(()=>{if(offlineAcceptance)return;void productionFlow.pump();void unifiedPublish.pump();void providerText.pump().catch(()=>undefined);void materialWorkbench.pump().catch(()=>undefined);void planPuleRunner.pump().catch(()=>undefined);void planFanqiePublisher.pump().catch(()=>undefined);},2000).unref();
+setInterval(()=>{if(offlineAcceptance)return;void productionFlow.pump();void unifiedPublish.pump();void providerText.pump().catch(()=>undefined);void materialWorkbench.pump().catch(()=>undefined);void planPuleRunner.pump().catch(()=>undefined);void planCoverImageRunner.pump().catch(()=>undefined);void planFanqiePublisher.pump().catch(()=>undefined);},2000).unref();
 const pending = new Map<
   string,
   { resolve: (v: any) => void; reject: (e: any) => void; timer: NodeJS.Timeout }

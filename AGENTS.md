@@ -4,6 +4,10 @@ The user has explicitly resumed development and desktop acceptance on their Wind
 
 # Rainfall Studio 项目约定
 
+- 本机 Rainfall Studio 的日常源码和 Git 操作统一在 `H:\CodexData\Workspace\Rainfall-Studio\source` 管理。
+- 本机新增的构建、解包、验证库、测试日志和依赖下载缓存统一放到 H 盘的 `H:\CodexData\Workspace\Rainfall-Studio`。正式打包用 `Build-Latest.ps1`，本机默认使用其中的 `build` 目录。执行前核对成品、临时目录和各工具缓存的实际路径；仍写相对输出路径的工具须在 H 盘的隔离检出中执行。H 盘不可用时停在构建前。不要在两个已迁移项目的 C 盘原路径重新创建 `out`。
+- 只有新包通过压缩包清单、文件哈希和随包运行组件的隔离验证，且成品及校验文件写入成功，才清理被替代的工具管理产物。更新桌面版时先用 `-DeferCleanup`，验收并切换桌面入口后用 `-CleanupInstalled`。清理范围为有构建记录的旧包、已结束的隔离运行目录（临时解包、测试数据、日志）和可重建的工具缓存（依赖、运行时下载）。构建或验证失败时保留最近可用包。
+- 清理前核对绝对路径、目录归属、桌面与回退指针、在用进程。保护源码、未提交改动、正式作品、素材、账号库、在用版本和回退版本。归属不明、有外部链接或真实账号数据的历史目录保留。2026-10-15 目录不在本任务清理范围内。
 - Windows 命令使用 PowerShell 7，不切换旧版 Windows PowerShell。
 - 遵守用户的长期桌面交付要求：后续新版验收通过后，更新同一个 `Rainfall Studio 音乐客户端.lnk`，保留作品、音频、封面、配置和可回退旧版；未验收候选不得自动覆盖。
 - 桌面交付的当前版本/数据目录以 `C:\Users\CLOUD_USER\AppData\Local\RainfallStudioLauncher\verified-desktop.json` 为准。新版本必须显式复用其中的 dataRoot，不能落到新包的空 candidate-data。详细流程见 `docs/release/desktop-delivery-policy.md`。

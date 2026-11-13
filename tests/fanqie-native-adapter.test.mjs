@@ -61,9 +61,8 @@ test('artist reader waits for the roster after its search field has already moun
 
 async function nativeFixture(t, options={}) {
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'rainfall-native-flow-'));
- const browser=await chromium.launch({channel:'chrome',headless:true,chromiumSandbox:true});
- t.after(async()=>{await browser.close();fs.rmSync(root,{recursive:true,force:true});});
- const context=await browser.newContext({serviceWorkers:'block',acceptDownloads:false});
+ const context=await chromium.launchPersistentContext(path.join(root,'browser-profile'),{channel:'chrome',headless:true,chromiumSandbox:true,serviceWorkers:'block',acceptDownloads:false});
+ t.after(async()=>{await context.close();fs.rmSync(root,{recursive:true,force:true});});
  const dataSize=44100*4*31,wav=Buffer.alloc(44+dataSize);
  wav.write('RIFF');wav.writeUInt32LE(36+dataSize,4);wav.write('WAVEfmt ',8);wav.writeUInt32LE(16,16);wav.writeUInt16LE(1,20);wav.writeUInt16LE(2,22);wav.writeUInt32LE(44100,24);wav.writeUInt32LE(44100*4,28);wav.writeUInt16LE(4,32);wav.writeUInt16LE(16,34);wav.write('data',36);wav.writeUInt32LE(dataSize,40);
  const cover=await sharp({create:{width:1440,height:1440,channels:3,background:'#123456'}}).png().toBuffer();
@@ -96,11 +95,14 @@ test('native Playwright snapshot recognizes the calibrated single-song form',asy
 
 test('native broker reads delayed catalog, uploads once, verifies saved ID and refuses a duplicate', {timeout:60000},async t=>{
  const f=await nativeFixture(t);
+ const foregroundTabs=t.mock.method(f.context,'newPage');
  const read=await f.session.ui('read');assert.equal(read.report.complete,true);assert.equal(read.report.total,1);
+ assert.equal(foregroundTabs.mock.callCount(),0,'Catalog reads must stay in the background');
  const selection={workId:'00000000-0000-4000-8000-000000000003',variant:'A'};
  await assert.rejects(f.broker.ui('publishConfigured',selection),/FANQIE_CONFIGURATION_REQUIRED/);
  await f.broker.ui('saveConfiguration',{version:1,authors:{lyricist:f.artist,composer:f.artist,singer:f.artist},useWorkMaterials:true,publicationConsent:true});
  const done=await f.broker.ui('publishConfigured',selection);
+ assert.equal(foregroundTabs.mock.callCount(),1,'Only the upload editor may open in the foreground');
  assert.equal(done.jobs[0].phase,'contract_pending');assert.equal(done.jobs[0].officialRecord.id,'9876543210987654321');
  const picked=f.site.events.filter(event=>event.kind==='file');assert.deepEqual(picked.map(event=>event.role),['audio','lyrics','cover']);
  const saved=JSON.parse(fs.readFileSync(path.join(f.root,'production/fanqie/uploads',done.jobs[0].id+'.json'),'utf8'));

@@ -74,17 +74,21 @@ async function fixture(t,rightsDelay=0){
    const anchorRow=[...picker.children].find(row=>row.querySelector('input').value===anchor);
    picker.append(anchorRow.cloneNode(true));
    picker.querySelectorAll('input').forEach(i=>i.checked=i.value===anchor);
-   setTimeout(renderRights,${rightsDelay});
+   window.renderFixtureRights = renderRights;
+   ${rightsDelay ? '' : 'renderRights();'}
   </script>`;
  await context.route('**/*',r=>r.fulfill({
   contentType:'text/html; charset=utf-8',
   body:r.request().url().endsWith('/ugc')?list:editor,
  }));
- await page.goto('https://www.novelfm.com/creator/music/finished/ugc/uploadProduct');return page;
+ await page.goto('https://www.novelfm.com/creator/music/finished/ugc/uploadProduct');
+ if(rightsDelay)await page.getByRole('heading',{name:'授权信息·',exact:true}).waitFor({state:'visible'});
+ return page;
 }
 test('authorization prepares saved options and stops before legal acceptance',async t=>{
  const page=await fixture(t,300),steps=[];
  assert.equal(await page.getByRole('heading',{name:'授权信息·',exact:true}).count(),1);
+ await page.evaluate(()=>{setTimeout(window.renderFixtureRights,300);});
  const result=await prepareFanqieAuthorization(page,['测试歌曲'],pref,async step=>{
   assert.equal(await page.locator('.auth-right-item .song-name').innerText(),'测试歌曲');
   steps.push(step);

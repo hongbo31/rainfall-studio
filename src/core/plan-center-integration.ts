@@ -9,7 +9,7 @@ import {bindPlanWork,selectPlanVersion,confirmPlanMaterials,planAssetsCatalog,pl
 import {syncPlanMusic,stopPlanMusic,planMusicExternalOutcome} from './plan-center-music';
 import {tickPlanMusic} from './plan-center-music-stages';
 import {syncPlanFanqie,planFanqieJobs,retryPlanFanqieBatch} from './plan-fanqie';
-import {preparePlanCoverInbox} from './cover-inbox';
+import {coverInboxStatus,preparePlanCoverInbox} from './cover-inbox';
 import {tickProviderPlanText,stopProviderPlanText,providerTextService,materializeProviderTextFinal} from './provider-plan-text';
 import {PlanCenterSaveSchema,PlanCenterToggleSchema,PlanCenterIdSchema,PlanCenterRunSchema,PlanCenterStopSchema,PlanCenterRetrySchema} from '../shared/plan-center';
 import type {PlanCenterStageAttempt} from '../shared/plan-center';
@@ -166,7 +166,7 @@ export function tickPlanCenter(s:Studio){
     const latestItem=service.list().items.find(i=>i.id===item.id)!;
     const boundWork=latestItem.workId?s.repo.maybe('works',latestItem.workId):null;
     const boundCover=boundWork?.assets?.cover?s.repo.maybe('assets',boundWork.assets.cover):null;
-    if(boundWork&&!boundCover)preparePlanCoverInbox(s,latestItem.id,boundWork.id);
+    if(boundWork&&!boundCover)preparePlanCoverInbox(s,latestItem.id,boundWork.id,['provider','pule_prompt'].includes(run.snapshot.material.source));
     if(latestItem.workId&&s.repo.maybe('settings','plan-cover-work:'+latestItem.id)){
      const binding=assertPlanCoverWork(s,latestItem.workId)!;
      let proof;
@@ -174,16 +174,30 @@ export function tickPlanCenter(s:Studio){
       if(run.snapshot.material.source==='provider'&&!boundWork?.assets?.cover){service.record({attemptId:attempt.id,status:'waiting',reason:'COVER_REQUIRED'});return;}
       throw error;
      }
-     service.record({attemptId:attempt.id,status:'succeeded',evidenceId:proof.receipt.id,result:{assetId:proof.asset.id,sha256:proof.asset.sha256,requestId:proof.request.id,receiptId:proof.receipt.id,contextHash:proof.request.contextHash,finalPairHash:binding.finalPairHash,source:'user-import-final-cover',generationVerified:false}});return;
+     service.record({attemptId:attempt.id,status:'succeeded',evidenceId:proof.receipt.id,result:{assetId:proof.asset.id,sha256:proof.asset.sha256,requestId:proof.request.id,receiptId:proof.receipt.id,contextHash:proof.request.contextHash,finalPairHash:binding.finalPairHash,source:proof.receipt.generationVerified?'image-api':'user-import-final-cover',generationVerified:proof.receipt.generationVerified}});return;
     }
-    if(boundCover){try{s.locate(boundCover.id);service.record({attemptId:attempt.id,status:'succeeded',evidenceId:boundCover.id,result:{assetId:boundCover.id,sha256:boundCover.sha256,source:run.snapshot.material.source==='pule_prompt'?latestItem.material?.coverSource:'user-bound-existing-work'}});return;}catch{service.record({attemptId:attempt.id,status:'failed',reason:'COVER_MISSING_OR_CORRUPT'});return;}}
+    if(boundCover){
+     s.locate(boundCover.id);
+     let source='user-bound-existing-work',generationVerified=false;
+     if(run.snapshot.material.source==='pule_prompt'){
+      source=typeof boundWork?.coverSource==='string'?boundWork.coverSource:'user-import-final-cover';
+      const inbox=coverInboxStatus(s,latestItem.workId).find(entry=>entry.planItemId===latestItem.id&&entry.assetId===boundCover.id);
+      if(inbox){
+       const proof=s.coverHandoff().verifiedSelectedReceipt(latestItem.workId!);
+       generationVerified=proof.receipt.generationVerified;
+       source=generationVerified?'image-api':'user-import-final-cover';
+      }
+     }
+     service.record({attemptId:attempt.id,status:'succeeded',evidenceId:boundCover.id,result:{assetId:boundCover.id,sha256:boundCover.sha256,source,generationVerified}});return;
+    }
     const asset=imported?.cover?.assetId?s.repo.maybe('assets',imported.cover.assetId):null;
     if(score?.result?.rewriteCount)service.record({attemptId:attempt.id,status:'failed',reason:'COVER_REFRESH_REQUIRED'});
     else if(asset&&asset.sha256===imported?.cover?.sha256){
      try{if(boundItem.workId)adoptPlanIncomingCover(s,run,boundItem,Number(score?.result?.rewriteCount??0));else s.locate(asset.id);service.record({attemptId:attempt.id,status:'succeeded',evidenceId:asset.id,result:{assetId:asset.id,sha256:asset.sha256,source:'verified-local-inbox'}});}
      catch(e){service.record({attemptId:attempt.id,status:'failed',reason:e instanceof Error?e.message:'COVER_REQUIRED'});}
     }
-    else service.record({attemptId:attempt.id,status:run.snapshot.material.source==='provider'?'waiting':'failed',reason:'COVER_REQUIRED'});
+    else if(attempt.state!=='waiting'||attempt.reason!=='COVER_REQUIRED')
+     service.record({attemptId:attempt.id,status:['provider','pule_prompt'].includes(run.snapshot.material.source)?'waiting':'failed',reason:'COVER_REQUIRED'});
     });
    }else if(next.stage==='materials'&&['ready','dispatching'].includes(next.state)){
     materializeProviderTextFinal(s,run,service.list().items.find(i=>i.id===item.id)!);
