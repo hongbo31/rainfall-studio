@@ -14,6 +14,10 @@ export const song = {
 export const baseData = {
   mode: "production",
   works: [song],
+  assets: [
+    {id:"audio-a",kind:"audio",bytes:1024,sha256:"a".repeat(64)},
+    {id:"audio-b",kind:"audio",bytes:1024,sha256:"b".repeat(64)},
+  ],
   artists: [{ id: "artist-a", name: "原艺人" }],
   accounts: [],
   bindings: [],

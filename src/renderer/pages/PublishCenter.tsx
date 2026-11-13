@@ -157,6 +157,7 @@ export default function PublishCenter({browser=false}:{browser?:boolean}={}) {
     setError("");
     setMessage("");
     setCurrentResult(null);
+    setChannelStatus({});
     if (setPublishSelection) return setPublishSelection(next);
     setSelected?.(next.workIds);
     return call("publish.selection.save", next);
@@ -342,6 +343,7 @@ export default function PublishCenter({browser=false}:{browser?:boolean}={}) {
               query={query}
               busy={busy}
               onVersionBusy={setBusy}
+              browser={browser}
             />
           </div>
           <div className="target-choice">
@@ -369,8 +371,8 @@ export default function PublishCenter({browser=false}:{browser?:boolean}={}) {
                           aria-label={"发布到 " + names[target]}
                           checked={chosen}
                           disabled={
-                            target==='fanqie'?data.mode!=='production':data.mode !== "simulation" &&
-                            !["qqmusic", "kugou", "qishui"].includes(target)
+                            busy||(target==='fanqie'?data.mode!=='production':data.mode !== "simulation" &&
+                            !["qqmusic", "kugou", "qishui"].includes(target))
                           }
                           onChange={() =>
                             change({
@@ -440,6 +442,7 @@ export default function PublishCenter({browser=false}:{browser?:boolean}={}) {
           <h2>3 · 发布</h2>
           <button
             className="primary"
+            aria-label="发布所选作品"
             disabled={
               busy ||
               !selection.workIds.length ||

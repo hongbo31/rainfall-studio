@@ -1,4 +1,5 @@
 import type {FanqieCatalogReport} from '../../shared/fanqie-catalog';
+import {defaultFanqieAccountId} from '../../shared/platform-accounts';
 
 type Upload={status:()=>{busy:boolean};publishScheduled:(input:unknown,check?:()=>Promise<void>)=>Promise<any>;
  publishScheduledBatch?:(input:unknown,check:(workId?:string)=>Promise<void>)=>Promise<any>};
@@ -20,38 +21,39 @@ export function createPlanFanqiePublisher(o:Options){
    for(const job of jobs.filter((job:any)=>job.batchSize)){
     const group=groups.get(job.runId)??[];group.push(job);groups.set(job.runId,group);
    }
-   const accountGroups=new Map<string|undefined,[string,any[]][]>();
+   const accountGroups=new Map<string,[string,any[]][]>();
    for(const entry of groups){
-    const accountId=entry[1][0].accountId;
+    const accountId=entry[1][0].accountId??defaultFanqieAccountId;
     const queue=accountGroups.get(accountId)??[];
     queue.push(entry);accountGroups.set(accountId,queue);
    }
    await Promise.allSettled([...accountGroups].map(async ([accountId,queue])=>{
-    const upload=accountId?await o.forAccount?.(accountId):o.upload;
+    const upload=accountId===defaultFanqieAccountId
+      ?o.upload:await o.forAccount?.(accountId);
     for(const [runId,group] of queue){
-    if(!current())return;
-    if(group.length!==group[0].batchSize||!group.every(job=>job.state==='ready'))continue;
-    if(!upload?.publishScheduledBatch||upload.status().busy||!current())continue;
-    const claimed=await rpc('claimBatch',{runId});
-    try{
-     const batch=await upload.publishScheduledBatch({
-      runId,accountKey:claimed.accountKey,configurationHash:claimed.configurationHash,items:claimed.items,
-     },async workId=>{
-      if(!current())throw Error('WORKSPACE_CHANGED');
-      await rpc('currentBatch',{runId,workId});
-     });
      if(!current())return;
-     const receipts=batch.batch.items.flatMap((item:any)=>{
-      const record=item.result?.result?.officialRecord;
-      return record?[{workId:item.workId,record,authorization:batch.batch.authorization?.find((entry:any)=>entry.id===record.id)?.phase}]:[];
-     });
-     await rpc('recordBatch',{runId,receipts,reason:batch.batch.state==='complete'?undefined:
-       batch.batch.authorizationError??batch.batch.items.find((item:any)=>item.error)?.error??'FANQIE_PLAN_UPLOAD_UNKNOWN'});
-    }catch(error){
-     if(!current())return;
-     const reason=error instanceof Error&&/^[A-Z0-9_]+$/.test(error.message)?error.message:'FANQIE_PLAN_UPLOAD_UNKNOWN';
-     await rpc('recordBatch',{runId,receipts:[],reason});
-    }
+     if(group.length!==group[0].batchSize||!group.every(job=>job.state==='ready'))continue;
+     if(!upload?.publishScheduledBatch||upload.status().busy)continue;
+     const claimed=await rpc('claimBatch',{runId});
+     try{
+      const batch=await upload.publishScheduledBatch({
+       runId,accountKey:claimed.accountKey,configurationHash:claimed.configurationHash,items:claimed.items,
+      },async workId=>{
+       if(!current())throw Error('WORKSPACE_CHANGED');
+       await rpc('currentBatch',{runId,workId});
+      });
+      if(!current())return;
+      const receipts=batch.batch.items.flatMap((item:any)=>{
+       const record=item.result?.result?.officialRecord;
+       return record?[{workId:item.workId,record,authorization:batch.batch.authorization?.find((entry:any)=>entry.id===record.id)?.phase}]:[];
+      });
+      await rpc('recordBatch',{runId,receipts,reason:batch.batch.state==='complete'?undefined:
+        batch.batch.authorizationError??batch.batch.items.find((item:any)=>item.error)?.error??'FANQIE_PLAN_UPLOAD_UNKNOWN'});
+     }catch(error){
+      if(!current())return;
+      const reason=error instanceof Error&&/^[A-Z0-9_]+$/.test(error.message)?error.message:'FANQIE_PLAN_UPLOAD_UNKNOWN';
+      await rpc('recordBatch',{runId,receipts:[],reason});
+     }
     }
    }));
    for(const next of jobs.filter((j:any)=>j.state==='ready'&&!j.batchSize)){

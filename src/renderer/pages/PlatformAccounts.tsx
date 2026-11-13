@@ -150,7 +150,7 @@ function AccountDetails({ account }: { account: PlatformAccount }) {
         </div>
         {!!linkedArtists.length&&<label>
           窗口艺人
-          <select value={identityArtist||linkedArtists[0]?.id} disabled={busy} onChange={e=>setIdentityArtist(e.target.value)}>
+          <select value={identity?.id??""} disabled={busy} onChange={e=>setIdentityArtist(e.target.value)}>
             {linkedArtists.map(artist=><option key={artist.id} value={artist.id}>{artist.name}</option>)}
           </select>
         </label>}

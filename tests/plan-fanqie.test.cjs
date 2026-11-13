@@ -43,9 +43,9 @@ test('stop check is executed before browser writes',async()=>{
  const h=harness();h.stop();await createPlanFanqiePublisher({rpc:h.rpc,upload:h.upload,available:()=>true,generation:()=>h.epoch}).pump();
  assert.equal(h.writes,0);assert.equal(h.jobs[0].reason,'STOP_REQUESTED');
 });
-test('manual publisher lock prevents scheduled claims',async()=>{
+test('manual publisher lock prevents scheduled claims for the same account',async()=>{
  const h=harness();h.upload.status=()=>({busy:true});await createPlanFanqiePublisher({rpc:h.rpc,upload:h.upload,available:()=>true,generation:()=>h.epoch}).pump();
- assert.equal(h.calls.length,0);assert.equal(h.writes,0);
+ assert(!h.calls.includes('claim'));assert.equal(h.writes,0);
 });
 test('concurrent timer ticks share a single publisher and do not double claim',async()=>{
  const h=harness(),p=createPlanFanqiePublisher({rpc:h.rpc,upload:h.upload,available:()=>true,generation:()=>h.epoch});
@@ -161,7 +161,7 @@ async function coverPlan(t,{generate=false,count=2,instrumental=false}={}){
     assert.match(request.url,/generate\/custom$/);
     assert.equal(request.body.instrumental,true);assert.equal(request.body.lyrics,'');
     assert.match(request.body.tags,/纯器乐演奏/);await request.assertDispatch();
-    return{status:202,body:{task_id:'fixture',status:'pending',songs:[{id:'a'},{id:'b'}]}};
+    return{status:202,body:{task_id:'fixture',status:'pending',songs:[{id:'a',status:'pending'},{id:'b',status:'pending'}]}};
    }});
    const result=await adapter.submit({draft:submit.draft,modelId:submit.modelId,operationId:submit.attemptId},async()=>{});
    assert.equal(result.state,'accepted');

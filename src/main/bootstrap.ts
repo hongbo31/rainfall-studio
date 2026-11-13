@@ -197,9 +197,11 @@ async function platformSession(method:string,input:unknown){
   };
   guard();
   if(account.provider==='fanqie'){
-    const value=await fanqieAccounts.get(accountId).catalog.ui(method.endsWith('.open')?'open':'status');
+    const catalog=fanqieAccounts.get(accountId).catalog,opening=method.endsWith('.open');
+    let value=await catalog.ui(opening?'open':'status');
+    if(opening&&value?.profile&&!value.busy)value=await catalog.verifyRestoredAccount();
     if(!value)throw Error('FANQIE_BROWSER_CONNECTION_REQUIRED');
-    const workWindow=accountBrowsers.workWindow(account,artistId,method.endsWith('.open'));
+    const workWindow=accountBrowsers.workWindow(account,artistId,opening);
     return {...value,opened:value.connected,workWindow};
   }
   return method.endsWith('.open')
@@ -229,7 +231,7 @@ async function workbenchDispatch({channel,method,input}:WorkbenchRequest){
       const {works,artists,assets,accounts,platformConfigurations,publicationRequests,publicationPipelineJobs,
         publicationPendingTerms,publishSelection,targets,externalTmePublications,mode}=result.value;
       return {ok:true,value:{mode,platformConfigurations,publicationRequests,publicationPipelineJobs,publicationPendingTerms,
-        publishSelection,targets,externalTmePublications,materialWorkbench:{materials:[]},
+        publishSelection,targets,externalTmePublications,materialWorkbench:{materials:[],sources:[]},
         works:works.map(({id,title,artistId,assets,selectedAudioVariant,revision}:any)=>({id,title,artistId,assets,selectedAudioVariant,revision})),
         artists:artists.map(({id,name}:any)=>({id,name})),
         assets:assets.map(({id,kind,bytes,sha256}:any)=>({id,kind,bytes,sha256})),

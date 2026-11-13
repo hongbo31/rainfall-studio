@@ -14,11 +14,13 @@ const { renderPublish, renderPageHead } = createRequire(import.meta.url)(
   "../build/simple-publishing-ui.cjs",
 );
 
-test("main page offers exactly song selection, five targets and a local check action, with no legacy execution tools", () => {
+test("main page offers song selection, platform actions and the browser workbench", () => {
   const { html, actions } = renderPublish();
   for (const text of [
     "发布中心",
-    "选择歌曲：原版歌曲",
+    "选择歌曲 原版歌曲",
+    "发布到 番茄音乐",
+    "在浏览器打开",
     "发布到 网易云音乐",
     "发布到 汽水音乐",
     "发布到 QQ 音乐",
@@ -28,7 +30,7 @@ test("main page offers exactly song selection, five targets and a local check ac
     "平台说明",
   ])
     assert.ok(html.includes(text), text);
-  assert.equal((html.match(/type="checkbox"/g) || []).length, 6);
+  assert.equal((html.match(/type="checkbox"/g) || []).length, 7);
   for (const text of [
     "请选择 A、B 或两版",
     "批次记录",

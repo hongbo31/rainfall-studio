@@ -41,7 +41,7 @@ export function launchAccountBrowser(profile: string) {
 export class PlatformBrowserSessions {
   private readonly contexts = new Map<string, Promise<BrowserContext>>();
 
-  constructor(private readonly root: string) {}
+  constructor(private readonly root: string,private readonly launch=launchAccountBrowser) {}
 
   workWindow(account:PlatformAccount,artistId?:string,save=false){
     const file=path.join(scopedDirectory(this.root,'runtime','work-windows'),account.id+'.json');
@@ -75,7 +75,7 @@ export class PlatformBrowserSessions {
     let pending = this.contexts.get(account.id);
     if (!pending) {
       const profile = accountBrowserDirectory(this.root, account.id);
-      const started = launchAccountBrowser(profile)
+      const started = this.launch(profile)
         .then((context) => {
           context.on("close", () => {
             if (this.contexts.get(account.id) === started)

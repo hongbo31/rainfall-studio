@@ -24,12 +24,14 @@ export default function PublicationMusicList({
   query,
   busy,
   onVersionBusy,
+  browser=false,
 }: {
   selection: PublishSelection;
   onChange: (s: PublishSelection) => void;
   query: string;
   busy: boolean;
   onVersionBusy: (value: boolean) => void;
+  browser?: boolean;
 }) {
   const { data, call, refresh, go } = useStudio();
   const [target, setTarget] = useState("qqmusic"),
@@ -146,6 +148,7 @@ export default function PublicationMusicList({
                 <input
                   type="checkbox"
                   aria-label={"选择歌曲 " + work.title}
+                  disabled={busy}
                   checked={selection.workIds.includes(work.id)}
                   onChange={() =>
                     onChange({
@@ -164,7 +167,7 @@ export default function PublicationMusicList({
                 · {names[target]}：
                 {publicationStates[publicationState(data, work.id, target)]}
               </small>
-              {cover?.kind === "image" && (
+              {!browser && cover?.kind === "image" && (
                 <details className="publication-cover">
                   <summary>
                     <img
@@ -205,7 +208,7 @@ export default function PublicationMusicList({
                   ))}
                 </select>
               </label>
-              <details className="publication-audio-details"><summary>试听与素材来源</summary>
+              {!browser&&<details className="publication-audio-details"><summary>试听与素材来源</summary>
               {versions.map(({ version, asset }) => (
                 <div className="publication-audio-version" key={asset.id}>
                   <span>
@@ -243,14 +246,14 @@ export default function PublicationMusicList({
               ) : (
                 <small>来源：现有作品库</small>
               )}
-              </details>
-              <button
+              </details>}
+              {!browser&&<button
                 type="button"
                 className="text-button"
                 onClick={() => go("track", work.id)}
               >
                 查看素材
-              </button>
+              </button>}
             </article>
           );
         })}

@@ -86,7 +86,7 @@ export class PlanCenterService {
   }
   preview(input:z.input<typeof PlanCenterIdSchema>) {
     const {id}=PlanCenterIdSchema.parse(input),plan=this.store.get('plan',id);if(!plan)throw Error('NOT_FOUND');
-    const summary={title:plan.title,artistId:plan.artistId,count:plan.count,outputs:plan.outputs,theme:plan.theme,styleTemplate:plan.styleTemplate,artistSnapshot:plan.artistSnapshot,storyContext:plan.storyContext,material:plan.material,text:plan.text,music:plan.music,routing:plan.routing,routeSnapshot:plan.routeSnapshot,routeIssue:planRouteIssue(this.repo,plan),publishTargets:plan.publishTargets.filter(t=>t.enabled),fanqie:plan.fanqie,authorization:plan.authorization};
+    const summary={title:plan.title,artistId:plan.artistId,count:plan.count,outputs:plan.outputs,theme:plan.theme,styleTemplate:plan.styleTemplate,artistSnapshot:plan.artistSnapshot,storyContext:plan.storyContext,material:plan.material,text:plan.text,music:plan.music,routing:plan.routing,routeSnapshot:plan.routeSnapshot,routeIssue:planRouteIssue(this.repo,plan),publishTargets:plan.publishTargets.filter(t=>t.enabled),fanqie:plan.fanqie,authorization:plan.authorization,...(plan.songType?{songType:plan.songType}:{})};
     return {planRevision:plan.revision,summaryHash:digest({plan,summary}),summary};
   }
   run(input:z.input<typeof PlanCenterRunSchema>) {

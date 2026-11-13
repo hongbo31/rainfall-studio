@@ -68,6 +68,15 @@ export class FanqieCatalogSession {
       progress: this.progress, lastError: this.lastError, uploadAvailable: false as const,
     };
   }
+  async verifyRestoredAccount(){
+    return this.run(async(context,guard)=>{
+      const observed=await this.observeAccount(context,guard,async()=>null);
+      if(observed.accountKey!==this.profile()?.accountKey)throw Error('FANQIE_ACCOUNT_IDENTITY_MISMATCH');
+      this.verifiedAccountKey=observed.accountKey;
+      this.mark('登录已核对');
+      return this.status();
+    });
+  }
   async run<T>(action: (context: BrowserContext, guard: () => void) => Promise<T>): Promise<T> {
     const generation = this.options.generation(); this.assertCurrent(generation);
     if (this.busy) throw Error('FANQIE_BROWSER_BUSY');

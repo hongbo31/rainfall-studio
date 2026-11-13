@@ -39,7 +39,8 @@ test("current single creation renders artist revision, separate story and three 
     assert.ok(html.includes("已带入艺人风格 · v7"));
     assert.ok(html.includes("钢琴、木吉他"));
     assert.ok(html.includes("从相识到熟悉，最后告白"));
-    assert.ok(html.includes('aria-label="本次故事阶段"'));
+    assert.ok(!html.includes('aria-label="本次故事阶段"'));
+    assert.ok(html.includes('aria-label="歌曲类型"'));
     assert.ok(html.includes('aria-label="本次故事"'));
     assert.ok(html.includes('maxLength="10000"'));
     for (const role of ["歌词与提示词", "封面图片", "音乐生成"]) {

@@ -46,6 +46,7 @@ export function startPublishWorkbench(ui:string,dispatch:(request:WorkbenchReque
         res.setHeader('Content-Type','application/json; charset=utf-8');
         return res.end(JSON.stringify(result));
       }
+      if(req.method==='GET'&&req.url==='/favicon.ico')return fail(204);
       if(req.method!=='GET')return fail(405);
       const name=req.url==='/'?'index.html':req.url?.slice(1)??'';
       if(!/^(?:index\.html|assets\/[a-zA-Z0-9_-]+\.(?:js|css))$/.test(name))return fail(404);
