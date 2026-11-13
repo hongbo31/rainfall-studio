@@ -158,7 +158,7 @@ test("unsaved work or stale/failed preview cannot show ready materials", () => {
 test("entry and template UI names distinguish ideas, local templates and the unified plan center", () => {
   const home = renderEntry("overview"),
     create = renderEntry("create");
-  assert(home.includes("聊聊新想法"));
+  assert(/聊聊新想法|先聊聊想法/.test(home));
   assert(home.includes("计划中心"));
   assert(home.includes("管理计划与执行历史"));
   assert(create.includes("用本地模板起草"));

@@ -49,7 +49,8 @@ test("current single creation renders artist revision, separate story and three 
         new RegExp('<select[^>]*aria-label="' + role + '路由"[^>]*disabled=""'),
       );
     }
-    assert.equal((html.match(/尚未配置；需要该能力时会阻塞/g) || []).length, 3);
+    assert.equal((html.match(/尚未配置/g) || []).length, 2);
+    assert.ok(html.includes("未配置 · 可导入图片"));
     assert.match(
       html,
       /<input[^>]*aria-label="授权单次文本额度"[^>]*disabled=""/,

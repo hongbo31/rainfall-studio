@@ -378,7 +378,7 @@ const official: Record<string, string> = {
   suno: "https://suno.com",
   yourmusic: "https://app.yourmusic.fun/create",
   netease: "https://music.163.com/st/musician",
-  qishui: "https://music.douyin.com/home",
+  qishui: "https://music.douyin.com/?business_home_login_redirect=%2Fconsole%2Fpublish%3Fsource%3Dnav&pop-login=true",
   qqmusic: "https://y.tencentmusic.com/",
   kugou: "https://y.tencentmusic.com/",
   tme: "https://y.tencentmusic.com/",
