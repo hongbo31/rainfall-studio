@@ -1,6 +1,7 @@
 import {z} from 'zod';
 import type {Studio} from './studio';
 import {resolveFanqieWork} from './fanqie-work';
+import {syncPlanMaterials} from './plan-center-assets';
 const prefix='plan-fanqie:';
 export function planFanqieJobs(s:Studio){return s.repo.all('settings').filter(r=>r.id.startsWith(prefix)).map(r=>r.value);}
 export function syncPlanFanqie(s:Studio){
@@ -89,6 +90,10 @@ export function planFanqieAction(s:Studio,action:string,input:unknown){
    const selected=value.workId?jobs.filter(job=>job.workId===value.workId):jobs;
    if(!selected.length||action==='claimBatch'&&value.workId)throw Error('FANQIE_BATCH_SCOPE_CHANGED');
    for(const job of selected){
+    if(run.snapshot.distinctLyrics||run.snapshot.songType==='instrumental'){
+     const item=s.planCenterService().list().items.find(row=>row.id===job.id);
+     if(!item||!syncPlanMaterials(s,run,item).ready)throw Error('FANQIE_MATERIALS_CHANGED');
+    }
     const source=resolveFanqieWork(s,{workId:job.workId,variant:job.variant});
     if(source.fingerprint!==job.fingerprint)throw Error('FANQIE_WORK_CHANGED');
    }

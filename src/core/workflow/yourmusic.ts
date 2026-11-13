@@ -229,7 +229,7 @@ export class YourMusicAdapter implements MusicAdapter {
     draft: CreativeDraft;
     modelId: string;
     operationId: string;
-  }) {
+  }, assertDispatch?:()=>Promise<void>) {
     const d = parseDraft(input.draft),
       p = d.musicPrompts.yourmusic,
       lyrics = d.sections
@@ -261,7 +261,7 @@ export class YourMusicAdapter implements MusicAdapter {
         : {}),
     };
     try {
-      const r = await this.api("POST", "/v1/suno/generate/custom", body);
+      const r = await this.api("POST", "/v1/suno/generate/custom", body, assertDispatch);
       if (r.status !== 202)
         return { state: "unknown", reason: "SUBMISSION_NOT_PROVEN_UNCHARGED",httpStatus:r.status };
       const parsed = z

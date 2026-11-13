@@ -3,15 +3,14 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { hash, type Repository } from './database';
 import { probe } from './assets';
-import { fanqieOrigin, type FanqieInput, type FanqieObservation, type FanqieBrowserPort, type FanqieRole, type FanqieStage } from '../shared/fanqie';
+import { fanqieOrigin, fanqieRoles, type FanqieInput, type FanqieObservation, type FanqieBrowserPort, type FanqieRole, type FanqieStage } from '../shared/fanqie';
 import {checkFanqieNewUpload} from '../shared/fanqie-catalog';
 import {assertPublicationFile,assertPublicationUploadReceipt,publicationRecordingKey,nextPublicationCheckpoint,interruptedPublicationState,fanqiePreparationPhases,publicationPhase,readPublicationAfterRecovery,auditPublicationTransition} from './publication-foundation';
 
-const roles: FanqieRole[] = ['audio', 'lyrics', 'cover'];
 const prefix = 'fanqie:preparation:v1:';
 const max = 1024 * 1024;
 export function fanqieMetadataFingerprint(input: FanqieInput) {
-  return hash({ title: input.title, ai: input.ai, musicType: input.musicType, authors: input.authors });
+  return hash({ title: input.title, ai: input.ai, musicType: input.musicType, authors: input.authors,...(input.instrumental?{instrumental:true}:{}) });
 }
 /** Fresh bytes and decoded properties, never caller-supplied duration/size claims. */
 export async function verifyFanqieMaterials(input: FanqieInput) {
@@ -22,8 +21,9 @@ export async function verifyFanqieMaterials(input: FanqieInput) {
   if (!['original', 'cover'].includes(input.musicType) || input.rightsConfirmed !== true ||
       input.musicType === 'cover' && !input.coverAuthorization?.trim()) throw Error('FANQIE_RIGHTS_REQUIRED');
   if (!input.authors || ['lyricist', 'composer', 'singer'].some(k => !input.authors[k as keyof typeof input.authors]?.trim())) throw Error('FANQIE_AUTHORS_REQUIRED');
-  if (input.lyricsMatchConfirmed !== true) throw Error('FANQIE_LYRICS_MATCH_REQUIRED');
-  for (const role of roles) {
+  if (!input.instrumental && input.lyricsMatchConfirmed !== true) throw Error('FANQIE_LYRICS_MATCH_REQUIRED');
+  if (input.instrumental && input.assets.lyrics) throw Error('FANQIE_LYRICS_INVALID');
+  for (const role of fanqieRoles(input.instrumental)) {
     const a = input.assets?.[role];
     if (!a || !path.isAbsolute(a.file) || !/^[a-f0-9]{64}$/.test(a.sha256)) throw Error('FANQIE_ASSET_INVALID');
     if(a.bytes<=0)throw Error('FANQIE_ASSET_CHANGED');
@@ -86,8 +86,8 @@ export class FanqiePreparationService {
     if (o.origin !== fanqieOrigin || !o.formVerified || o.source !== source || o.songCount !== 1 || !o.songKey ||
       ['accountId', 'artistId', 'sessionId'].some(k => o.scope?.[k as keyof typeof o.scope] !== j.input.scope[k as keyof typeof j.input.scope]) ||
       j.songKey && j.songKey !== o.songKey) throw Error('FANQIE_PAGE_SCOPE_CHANGED');
-    for (const role of roles) if (j.uploads[role] &&
-      (o.uploads[role]?.remoteId !== j.uploads[role] || o.uploads[role]?.sha256 !== j.input.assets[role].sha256)) throw Error('FANQIE_UPLOAD_CHANGED');
+    for (const role of fanqieRoles(j.input.instrumental)) if (j.uploads[role] &&
+      (o.uploads[role]?.remoteId !== j.uploads[role] || o.uploads[role]?.sha256 !== j.input.assets[role]?.sha256)) throw Error('FANQIE_UPLOAD_CHANGED');
   }
   async upload(id: string, port: FanqieBrowserPort, authorization: { fingerprint: string; upload: boolean }) {
     let j = this.get(id);
@@ -114,16 +114,18 @@ export class FanqiePreparationService {
       o = await this.observe(port); this.assertScope(j, o, port.source);
       if (o.metadataFingerprint !== fanqieMetadataFingerprint(j.input)) throw Error('FANQIE_METADATA_READBACK_REQUIRED');
       j = this.put({ ...j, metadata: true, pending: undefined });
-      for (const role of roles) {
+      for (const role of fanqieRoles(j.input.instrumental)) {
         await this.verify(j.input);
         o = await this.observe(port); this.assertScope(j, o, port.source);
         if (o.metadataFingerprint !== fanqieMetadataFingerprint(j.input)) throw Error('FANQIE_METADATA_CHANGED');
         if (o.uploads[role]) throw Error('FANQIE_EXISTING_UPLOAD_REQUIRES_RECONCILIATION');
         j = this.put({ ...j, pending: role });
-        await port.chooseFile(role, j.input.assets[role], o.songKey);
+        const asset=j.input.assets[role];
+        if(!asset)throw Error('FANQIE_ASSET_INVALID');
+        await port.chooseFile(role, asset, o.songKey);
         o = await this.observe(port); this.assertScope(j, o, port.source);
         if (o.metadataFingerprint !== fanqieMetadataFingerprint(j.input)) throw Error('FANQIE_METADATA_CHANGED');
-        assertPublicationUploadReceipt(o.uploads[role],j.input.assets[role].sha256,'FANQIE_UPLOAD_READBACK_REQUIRED');
+        assertPublicationUploadReceipt(o.uploads[role],asset.sha256,'FANQIE_UPLOAD_READBACK_REQUIRED');
         j = this.put({ ...j, pending: undefined, uploads: { ...j.uploads, [role]: o.uploads[role]!.remoteId } });
       }
       // Fixture evidence remains explicitly fixture-only and never advances production submission.
@@ -137,7 +139,7 @@ export class FanqiePreparationService {
     await this.verify(j.input);
     const o = await this.observe(port); this.assertScope(j, o, port.source);
     const complete = o.metadataFingerprint === fanqieMetadataFingerprint(j.input) &&
-      roles.every(role => o.uploads[role]?.remoteId && o.uploads[role]?.sha256 === j.input.assets[role].sha256);
+      fanqieRoles(j.input.instrumental).every(role => o.uploads[role]?.remoteId && o.uploads[role]?.sha256 === j.input.assets[role]?.sha256);
     return this.repo.transaction(() => {
       const fresh = this.get(id); if (fresh.revision !== revision || !['unknown', 'contract_pending'].includes(fresh.stage)) throw Error('FANQIE_RECONCILIATION_CONFLICT');
       return this.put({ ...fresh, stage: complete ? 'contract_pending' : 'unknown', reason: complete ? (port.source === 'fixture' ? 'OFFLINE_FIXTURE_ONLY' : 'FANQIE_CONTRACT_CONFIRMATION_REQUIRED') : 'FANQIE_UPLOAD_RECONCILIATION_REQUIRED' });

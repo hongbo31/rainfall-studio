@@ -11,13 +11,16 @@ export default function ManualCreation() {
   const { data, call, go, notify } = useStudio(),
     [artistId, setArtist] = useState(data.artists[0]?.id ?? ""),
     [story, setStory] = useState("下雨的傍晚，两个人第一次在同一屋檐下相遇。"),
-    [stage, setStage] = useState("相识"),
+    [songType, setSongType] = useState<"vocal"|"instrumental"|null>(null),
     [styleTemplate, setStyleTemplate] = useState(""),
     [routing, setRouting] = useState(defaultRoutes),
     [cover, setCover] = useState(false),
     [music, setMusic] = useState(false),
     [budget, setBudget] = useState(""),
     [consent, setConsent] = useState(false),
+    [musicConsent, setMusicConsent] = useState(false),
+    [musicProfiles, setMusicProfiles] = useState<any[]>([]),
+    [defaults, setDefaults] = useState<any>(null),
     [rows, setRows] = useState<any[]>([]),
     [status, setStatus] = useState<any>(null),
     [busy, setBusy] = useState(false),
@@ -25,6 +28,8 @@ export default function ManualCreation() {
   const inFlight = useRef(false),
     requestId = useRef(crypto.randomUUID());
   const artist = data.artists.find((a: any) => a.id === artistId);
+  const instrumental=(songType??artist?.defaults?.voice)==="instrumental";
+  const musicProfile=musicProfiles.find(p=>p.providerId==="yourmusic"&&p.modelId&&p.id===(routing.music.source==="default"?defaults?.roles.music:routing.music.profileId));
   const refresh = async () => {
     const [r, s] = await Promise.all([
       call("manualCreation.list"),
@@ -35,6 +40,10 @@ export default function ManualCreation() {
   };
   useEffect(() => {
     void refresh().catch(() => {});
+    void Promise.all([call("apiProfile.list"),call("generationConfig.read")]).then(([profiles,config])=>{
+      setMusicProfiles(profiles);
+      setDefaults(config);
+    }).catch(()=>{});
     const t = setInterval(() => void refresh().catch(() => {}), 3000);
     return () => clearInterval(t);
   }, []);
@@ -49,15 +58,19 @@ export default function ManualCreation() {
         requestId: requestId.current,
         artistId,
         storyBeat: story,
-        storyStage: stage,
+        songType: instrumental ? "instrumental" : "vocal",
         ...(styleTemplate.trim() ? { styleTemplate } : {}),
         routing,
-        outputs: { lyrics: true, cover, music },
+        outputs: { lyrics: !instrumental, cover: cover||music||instrumental, music: music||instrumental },
         text: {
           consent,
           budgetMicros: budget ? Math.round(Number(budget) * 1e6) : undefined,
         },
-        music: { consent: false },
+        music: musicConsent&&musicProfile ? {
+          consent:true,profileId:musicProfile.id,profileRevision:musicProfile.revision,modelId:musicProfile.modelId,
+          budgetCredits:1,maxCostPerRequestCredits:1,
+          creditPolicy:{mode:"uncapped_existing_credits",noRecharge:true,actualCostUnknown:true,consent:true},
+        }:{consent:false},
       });
       requestId.current = crypto.randomUUID();
       notify(
@@ -91,17 +104,21 @@ export default function ManualCreation() {
               onChange={(id) => {
                 setArtist(id);
                 setConsent(false);
+                setSongType(null);
+                setMusicConsent(false);
               }}
             />
           </div>
           <label>
-            本次故事阶段
-            <input
-              aria-label="本次故事阶段"
-              value={stage}
-              maxLength={1000}
-              onChange={(e) => setStage(e.target.value)}
-            />
+            歌曲类型
+            <select aria-label="歌曲类型" value={instrumental?"instrumental":"vocal"} onChange={e=>{
+              setSongType(e.target.value==="instrumental"?"instrumental":"vocal");
+              setConsent(false);
+              setMusicConsent(false);
+            }}>
+              <option value="vocal">人声歌曲</option>
+              <option value="instrumental">纯音乐</option>
+            </select>
           </label>
         </div>
         {artist && (
@@ -152,9 +169,12 @@ export default function ManualCreation() {
         />
         <GenerationRoutes
           value={routing}
-          onChange={(r) => {
+          onChange={(r,profiles,defaults) => {
             setRouting(r);
             setConsent(false);
+            setMusicConsent(false);
+            setMusicProfiles(profiles);
+            setDefaults(defaults);
           }}
           disabled={busy}
         />
@@ -170,13 +190,18 @@ export default function ManualCreation() {
           <label>
             <input
               type="checkbox"
-              checked={music}
-              onChange={(e) => setMusic(e.target.checked)}
+              checked={music||instrumental}
+              disabled={instrumental}
+              onChange={(e) => {setMusic(e.target.checked);setMusicConsent(false);}}
             />
             准备音乐任务
           </label>
         </div>
-        <p className="muted">音乐执行尚未授权；需编辑任务核对模型与额度。</p>
+        {(music||instrumental)&&<label className="check">
+          <input type="checkbox" checked={musicConsent} disabled={!musicProfile} onChange={e=>setMusicConsent(e.target.checked)}/>
+          使用谱乐已有积分生成 1 首（不充值）
+        </label>}
+        {!instrumental&&<>
         <label>
           文本总额度（所选配置币种）
           <input
@@ -202,6 +227,7 @@ export default function ManualCreation() {
           />
           允许此任务在上述总额度内生成与评分；需配置价格和 Key
         </label>
+        </>}
         <button
           className="primary"
           disabled={busy || !artistId || !story.trim()}

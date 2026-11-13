@@ -138,7 +138,7 @@ function audioFixture(){
  data.write('data',36);data.writeUInt32LE(samples*2,40);
  return data;
 }
-async function coverPlan(t,{generate=false,count=2}={}){
+async function coverPlan(t,{generate=false,count=2,instrumental=false}={}){
  const root=path.resolve('output/test-runs/plan-cover-'+randomUUID()),s=new Studio(root,'production');
  t.after(()=>s.close());
  const music=await s.call('apiProfile.save',{profile:{id:randomUUID(),kind:'music',providerId:'yourmusic',label:'Fixture music',modelId:'chirp-v6',executionEnabled:false},expectedRevision:null});
@@ -146,20 +146,31 @@ async function coverPlan(t,{generate=false,count=2}={}){
  const center=s.planCenterService(),artistId=s.all('artists')[0].id;
  const plan=center.save({plan:{
   id:randomUUID(),artistId,title:'Fixture release',theme:'恋爱',count,schedule:{kind:'daily',localTime:'09:00'},
-  material:{source:'pule_prompt'},text:{},music:{route:'pule',profileId:music.id,profileRevision:music.revision,modelId:music.modelId,budgetCredits:100,maxCostPerRequestCredits:20,consent:true,creditPolicy:{mode:'uncapped_existing_credits',noRecharge:true,actualCostUnknown:true,consent:true}},
+  material:{source:instrumental?'provider':'pule_prompt'},...(instrumental?{songType:'instrumental'}:{}),text:{},music:{route:'pule',profileId:music.id,profileRevision:music.revision,modelId:music.modelId,budgetCredits:100,maxCostPerRequestCredits:20,consent:true,creditPolicy:{mode:'uncapped_existing_credits',noRecharge:true,actualCostUnknown:true,consent:true}},
   routing:{text:{source:'default'},music:{source:'override',profileId:music.id},image:image?{source:'override',profileId:image.id}:{source:'default'}},
-  outputs:{lyrics:true,music:true,cover:false},
+  outputs:{lyrics:true,music:true,cover:instrumental},
   authorization:{text:false,music:true,publish:true},fanqie:{accountKey:'a'.repeat(64),configurationHash:'b'.repeat(64),materialsConsent:true},
  },expectedRevision:null});
  assert.equal(plan.outputs.cover,true);
  const preview=center.preview({id:plan.id}),run=center.run({id:plan.id,expectedRevision:plan.revision,summaryHash:preview.summaryHash,requestId:randomUUID(),source:'manual'});
  for(const item of center.list().items){
   const scope={runId:run.id,itemId:item.id,stage:'music_submit'},submit=planPuleAction(s,'claim',scope);
+  if(instrumental){
+   assert.equal(submit.draft.instrumental,true);assert.deepEqual(submit.draft.sections,[]);
+   const adapter=new YourMusicAdapter({source:'fixture',credential:async()=> 'fixture',request:async request=>{
+    assert.match(request.url,/generate\/custom$/);
+    assert.equal(request.body.instrumental,true);assert.equal(request.body.lyrics,'');
+    assert.match(request.body.tags,/纯器乐演奏/);await request.assertDispatch();
+    return{status:202,body:{task_id:'fixture',status:'pending',songs:[{id:'a'},{id:'b'}]}};
+   }});
+   const result=await adapter.submit({draft:submit.draft,modelId:submit.modelId,operationId:submit.attemptId},async()=>{});
+   assert.equal(result.state,'accepted');
+  }
   const songIds=[`song-${item.ordinal}-A`,`song-${item.ordinal}-B`];
   planPuleAction(s,'record',{...scope,attemptId:submit.attemptId,status:'succeeded',receipt:{trackingId:'job-'+item.ordinal,songIds}});
   const stage={...scope,stage:'music_assets'},assets=planPuleAction(s,'claim',stage);
   await planPuleAction(s,'assets',{...stage,attemptId:assets.attemptId,songs:[{
-   id:songIds[0],title:'街角 '+item.ordinal,lyrics:'这一首独立歌词 '+item.ordinal+'\n在街角等候回音\n今天把约定写下',mime:'audio/wav',bytes:audioFixture(),
+   id:songIds[0],title:'街角 '+item.ordinal,lyrics:instrumental?'':'这一首独立歌词 '+item.ordinal+'\n在街角等候回音\n今天把约定写下',mime:'audio/wav',bytes:audioFixture(),
   },null]});
  }
  tickPlanCenter(s);
@@ -195,6 +206,17 @@ test('prompt releases wait for song-specific covers and reject reuse across song
  assert.equal(planFanqieAction(s,'list',{}).length,2);
  assert.equal(new Set(center.list().items.map(item=>item.materials.coverAssetId)).size,2);
  assert.equal(s.all('works').length,2);
+});
+test('instrumental plan uses custom music without text stages and prepares lyric-free Fanqie materials',async t=>{
+ const {s,center,entries}=await coverPlan(t,{instrumental:true,generate:true,count:1});
+ const file=path.join(entries[0].directory,'cover.jpg');
+ fs.writeFileSync(file,await fixtureCover('#6ca452'));settleFile(file);
+ await scanCoverInbox(s);tickPlanCenter(s);tickPlanCenter(s);
+ const item=center.list().items[0],work=s.get('works',item.workId);
+ assert.equal(work.config.voice,'instrumental');assert.equal(work.lyrics,'');
+ assert.equal(item.materials.lyrics,'');
+ assert.deepEqual(center.list().stageAttempts.map(row=>row.stage),['music_submit','music_assets','cover','materials']);
+ assert.equal(planFanqieAction(s,'list',{}).length,1);
 });
 test('configured image service sends each final song brief once and persists the generated cover',async t=>{
  const {s,center,entries,image}=await coverPlan(t,{generate:true});

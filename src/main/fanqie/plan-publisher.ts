@@ -11,7 +11,7 @@ export function createPlanFanqiePublisher(o:Options){
  const authorizationChecks=new Map<string|undefined,number>();
  const rpc=async(action:string,input:unknown={})=>{const r=await o.rpc('internal.planFanqie.'+action,input);if(!r.ok)throw Error(r.error?.code??'FANQIE_PLAN_RPC');return r.value;};
  return {async pump(){
-  if(busy||!o.available()||o.upload.status().busy)return;busy=true;
+  if(busy||!o.available())return;busy=true;
   const generation=o.generation();
   try{
    const jobs=await rpc('list');
@@ -20,10 +20,17 @@ export function createPlanFanqiePublisher(o:Options){
    for(const job of jobs.filter((job:any)=>job.batchSize)){
     const group=groups.get(job.runId)??[];group.push(job);groups.set(job.runId,group);
    }
-   for(const [runId,group] of groups){
+   const accountGroups=new Map<string|undefined,[string,any[]][]>();
+   for(const entry of groups){
+    const accountId=entry[1][0].accountId;
+    const queue=accountGroups.get(accountId)??[];
+    queue.push(entry);accountGroups.set(accountId,queue);
+   }
+   await Promise.allSettled([...accountGroups].map(async ([accountId,queue])=>{
+    const upload=accountId?await o.forAccount?.(accountId):o.upload;
+    for(const [runId,group] of queue){
     if(!current())return;
     if(group.length!==group[0].batchSize||!group.every(job=>job.state==='ready'))continue;
-    const upload=group[0].accountId?await o.forAccount?.(group[0].accountId):o.upload;
     if(!upload?.publishScheduledBatch||upload.status().busy||!current())continue;
     const claimed=await rpc('claimBatch',{runId});
     try{
@@ -45,7 +52,8 @@ export function createPlanFanqiePublisher(o:Options){
      const reason=error instanceof Error&&/^[A-Z0-9_]+$/.test(error.message)?error.message:'FANQIE_PLAN_UPLOAD_UNKNOWN';
      await rpc('recordBatch',{runId,receipts:[],reason});
     }
-   }
+    }
+   }));
    for(const next of jobs.filter((j:any)=>j.state==='ready'&&!j.batchSize)){
     if(jobs.some((j:any)=>j.runId===next.runId&&['unknown','blocked','dispatching'].includes(j.state)))continue;
     if(!o.available()||generation!==o.generation())break;

@@ -36,6 +36,7 @@ export function prepareManualCreation(s: Studio, raw: unknown) {
     }
     const artist = s.get("artists", i.artistId),
       center = s.planCenterService();
+    if(i.outputs.lyrics===(i.songType==="instrumental"))throw Error("LYRICS_MISMATCH");
     const routing = i.routing ?? {
       text: { source: "default" },
       image: { source: "default" },
@@ -52,11 +53,13 @@ export function prepareManualCreation(s: Studio, raw: unknown) {
         theme: i.storyBeat.slice(0, 2000),
         storyContext: { storyBeat: i.storyBeat, storyStage: i.storyStage },
         styleTemplate: i.styleTemplate ?? "",
+        songType: i.songType,
+        ...(i.songType ? { distinctLyrics: true as const } : {}),
         outputs: i.outputs,
         material: { source: "provider" },
         routing,
-        text: { ...i.text, threshold: 75, maxRewrites: 0, maxScoreRetries: 1 },
-        music: { route: "manual", ...i.music },
+        text: { ...i.text, threshold: 75, maxRewrites: i.songType ? 2 : 0, maxScoreRetries: 1 },
+        music: { route: i.music.consent ? "pule" : "manual", ...i.music },
         authorization: {
           text: i.text.consent,
           music: i.music.consent,

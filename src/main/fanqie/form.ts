@@ -11,13 +11,13 @@ export interface FanqieReadPage {
   playwright: {domSnapshot(): Promise<string>};
 }
 const markers = ['上传歌曲信息','授权签约模式','预览合同协议','音乐类型','完整歌曲','歌词','作品名称','词作者','曲作者','歌手','歌曲封面','是否为AI作品'];
-export async function probeFanqieForm(page: FanqieReadPage) {
+export async function probeFanqieForm(page: FanqieReadPage,instrumental=false) {
   const raw = await page.url();
   const u = raw ? new URL(raw) : null;
   if (!u || u.origin !== fanqieOrigin || u.username || u.password) throw Error('FANQIE_PAGE_ORIGIN_CHANGED');
   const snapshot = await page.playwright.domSnapshot();
   const songCount = page.readSongCount ? await page.readSongCount() : (snapshot.match(/^\s*- generic: "歌曲\d+:/gm) ?? []).length;
-  const fields = markers.every(text => snapshot.includes(text));
+  const fields = markers.filter(text=>!instrumental||!['歌词','词作者'].includes(text)).every(text => snapshot.includes(text));
   const authors = (snapshot.match(/textbox "搜索或选择艺人"/g) ?? []).length;
   // Selected credits lose their placeholder; role ownership is checked independently before actions.
   // Display names do not prove stable account/artist identity.
@@ -71,10 +71,10 @@ const roles = {
   composer: {field: 'composer_id_list', label: '曲作者'},
   singer: {field: 'singer_id_list', label: '歌手'},
 } as const;
-async function calibratedRegion(page: CalibratedFormPage, role: keyof typeof roles) {
+async function calibratedRegion(page: CalibratedFormPage, role: keyof typeof roles,instrumental=false) {
   const url = await page.url();
   if (!url || new URL(url).pathname !== '/creator/music/finished/ugc/uploadProduct' ||
-      !(await probeFanqieForm(page)).firstStepObserved) throw Error('FANQIE_FORM_UNVERIFIED');
+      !(await probeFanqieForm(page,instrumental)).firstStepObserved) throw Error('FANQIE_FORM_UNVERIFIED');
   const expected = roles[role];
   const label = page.playwright.locator(`label[for="songs_0_${expected.field}_input"]`);
   if (await label.count() !== 1 || (await label.evaluate(el => el.textContent?.trim())) !== expected.label)
@@ -85,8 +85,8 @@ async function calibratedRegion(page: CalibratedFormPage, role: keyof typeof rol
   return region;
 }
 /** Calibrated on the empty 2026-11-11 form; resolving a control does not upload. */
-export async function fanqieFileControl(page: CalibratedFormPage, role: FanqieRole) {
-  const region = await calibratedRegion(page, role), control = region.locator(roles[role].selector);
+export async function fanqieFileControl(page: CalibratedFormPage, role: FanqieRole,instrumental=false) {
+  const region = await calibratedRegion(page, role,instrumental), control = region.locator(roles[role].selector);
   if (await control.count() !== 1 || !await control.isVisible()) throw Error('FANQIE_UPLOAD_CONTROL_UNVERIFIED');
   return control;
 }

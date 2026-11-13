@@ -74,7 +74,9 @@ async function nativeFixture(t, options={}) {
  const session=new FanqieCatalogSession({root,available:()=>true,generation:()=>1,launch:async()=>context});
  const asset=role=>{const file=path.join(root,files[role]);return{file,bytes:fs.statSync(file).size,sha256:createHash('sha256').update(fs.readFileSync(file)).digest('hex')};};
  const broker=new FanqieUploadBroker({root,session,available:()=>true,generation:()=>1,pickBundle:async()=>manifest,
-  work:async selection=>({...selection,title,ai:'generated',lyrics:'仅用于离线测试的合成歌词',audio:asset('audio'),cover:asset('cover'),fingerprint:'synthetic-current-work'})});
+  work:async selection=>({...selection,title,artistId:'00000000-0000-4000-8000-000000000001',ai:'generated',
+   ...(options.instrumental?{lyrics:'',instrumental:true}:{lyrics:'仅用于离线测试的合成歌词'}),
+   audio:asset('audio'),cover:asset('cover'),fingerprint:'synthetic-current-work'})});
  await session.ui('open');
  return {root,context,site,session,broker,title,files,artist};
 }
@@ -124,6 +126,17 @@ test('native upload stops after account changes and preserves the uncertain oper
  await assert.rejects(f.broker.ui('upload',{token:ready.token,consent:true}),/FANQIE_CATALOG_SCOPE_CHANGED/);
  assert.equal(f.broker.status().jobs[0].phase,'unknown');assert.equal(f.site.events.some(event=>event.kind==='file'||event.kind==='confirm-upload'),false);
  assert.equal(f.context.pages().filter(page=>page.url().endsWith('/uploadProduct')).length,1);assert.deepEqual(f.site.failures,[]);
+});
+
+test('instrumental form uploads audio and cover and omits lyrics and lyricist', {timeout:60000},async t=>{
+ const f=await nativeFixture(t,{instrumental:true});
+ await f.broker.ui('saveConfiguration',{version:1,authors:{lyricist:'Unused',composer:f.artist,singer:f.artist},useWorkMaterials:true,publicationConsent:true});
+ const result=await f.broker.ui('publishConfigured',{workId:'00000000-0000-4000-8000-000000000003',variant:'A'});
+ assert.equal(result.jobs[0].phase,'contract_pending');
+ assert.deepEqual(f.site.events.filter(e=>e.kind==='file').map(e=>e.role),['audio','cover']);
+ assert.deepEqual(f.site.events.filter(e=>e.kind==='credit').map(e=>e.role),['composer_id_list','singer_id_list']);
+ assert.equal(f.site.events.filter(e=>e.kind==='confirm-upload').length,1);
+ assert.deepEqual(f.site.failures,[]);
 });
 
 test('library upload UI binds the exact version and invalidates prepared materials after editing',async()=>{

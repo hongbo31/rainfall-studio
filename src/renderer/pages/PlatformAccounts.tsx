@@ -21,6 +21,7 @@ type LocalBinding = {
 type SessionStatus = {
   opened: boolean;
   savedProfile: boolean;
+  workWindow?: {artistId?:string}|null;
   profileVerified?: boolean;
   profile?: {
     accountKey: string;
@@ -59,7 +60,10 @@ function AccountDetails({ account }: { account: PlatformAccount }) {
       .call("accountSession.status", scoped)
       .then((result) => {
         if (!active) return;
-        if (result.ok) setStatus(result.value);
+        if (result.ok) {
+          setStatus(result.value);
+          setIdentityArtist(result.value.workWindow?.artistId??"");
+        }
         else setError(result.error.message);
       })
       .catch(() => {
@@ -86,7 +90,8 @@ function AccountDetails({ account }: { account: PlatformAccount }) {
   };
   const open = () =>
     act(async () => {
-      const next = await call("accountSession.open", scoped);
+      const artistId=linkedArtists.find(artist=>artist.id===identityArtist)?.id??linkedArtists[0]?.id;
+      const next = await call("accountSession.open", {...scoped,artistId});
       setStatus(next);
     });
   const sync = () =>
@@ -143,6 +148,12 @@ function AccountDetails({ account }: { account: PlatformAccount }) {
                 : "待登录"}
           </Badge>
         </div>
+        {!!linkedArtists.length&&<label>
+          窗口艺人
+          <select value={identityArtist||linkedArtists[0]?.id} disabled={busy} onChange={e=>setIdentityArtist(e.target.value)}>
+            {linkedArtists.map(artist=><option key={artist.id} value={artist.id}>{artist.name}</option>)}
+          </select>
+        </label>}
         <div className="account-actions">
           <button
             type="button"

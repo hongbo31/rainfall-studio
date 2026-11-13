@@ -4,6 +4,7 @@ import { platformTargets, type PlatformTarget } from "./platform-config";
 export const accountProviders = [...platformTargets, "tme", "suno", "yourmusic"] as const;
 export const AccountProviderSchema = z.enum(accountProviders);
 export const PlatformAccountIdSchema = z.strictObject({ accountId: z.uuid() });
+export const AccountWorkWindowSchema = PlatformAccountIdSchema.extend({artistId:z.uuid().optional()});
 export const defaultFanqieAccountId = "ea76a486-a79d-4ee7-aa4d-c68e4577f975";
 
 export type AccountProvider = z.infer<typeof AccountProviderSchema>;

@@ -56,16 +56,19 @@ export class PlanCenterService {
       if(parsed.plan.fanqie?.accountId&&this.repo.maybe('accounts',parsed.plan.fanqie.accountId)?.provider!=='fanqie')
         throw Error('ACCOUNT_PROVIDER_MISMATCH');
       const promptPlan=parsed.plan.material.source==='pule_prompt';
+      const instrumental=parsed.plan.songType==='instrumental';
+      if(instrumental&&(!parsed.plan.outputs.music||!['provider','pule_prompt'].includes(parsed.plan.material.source)))throw Error('INSTRUMENTAL_MUSIC_REQUIRED');
+      const typedPlan=instrumental?{...parsed.plan,outputs:{...parsed.plan.outputs,lyrics:false},text:{...parsed.plan.text,consent:false},authorization:{...parsed.plan.authorization,text:false}}:parsed.plan;
       const planInput=promptPlan?{
-        ...parsed.plan,outputs:{...parsed.plan.outputs,cover:true},
+        ...typedPlan,outputs:{...typedPlan.outputs,cover:true},
         ...(parsed.plan.routing||!parsed.plan.music.profileId?{}:{routing:{
           text:{source:'default' as const},image:{source:'default' as const},
           music:{source:'override' as const,profileId:parsed.plan.music.profileId},
         }}),
-      }:parsed.plan;
+      }:typedPlan;
       let inputPlan=freezePlanIdentities(this.repo,freezeArtist(this.repo,freezePlanRoutes(this.repo,planInput)));
       if(old?.routeSnapshot&&digest(old.routeSnapshot)!==digest(inputPlan.routeSnapshot)){inputPlan={...inputPlan,text:{...inputPlan.text,consent:false},music:{...inputPlan.music,consent:false},authorization:{...inputPlan.authorization,text:false,music:false}};}
-      if(inputPlan.material.source==='provider'&&inputPlan.text.profileId){
+      if(inputPlan.material.source==='provider'&&!instrumental&&inputPlan.text.profileId){
         const profile=this.repo.maybe('settings','api-profile:'+inputPlan.text.profileId);
         if(!profile||profile.kind!=='text'||!['deepseek','doubao'].includes(profile.providerId))throw Error('TEXT_PROFILE_REQUIRED');
         if(profile.revision!==inputPlan.text.profileRevision)throw Error('PROFILE_REVISION_CHANGED');
@@ -158,6 +161,7 @@ export class PlanCenterService {
   }
   private stages(plan:PlanCenterPlan):PlanCenterStage[] {
     if(plan.material.source==='pule_prompt')return ['music_submit','music_assets','cover','materials'];
+    if(plan.songType==='instrumental')return ['music_submit','music_assets',...(plan.outputs.cover?['cover' as const]:[]),'materials'];
     return [...(plan.material.source==='provider'?['text_generate' as const]:['dot' as const]),'text_score',...(plan.outputs.music?['music_submit' as const,'music_assets' as const]:[]),...(plan.outputs.cover?['cover' as const]:[]),'materials'];
   }
   private stageGate(run:PlanCenterRun,item:PlanCenterItem,stage:PlanCenterStage):{state:string;reason?:string} {
@@ -168,7 +172,8 @@ export class PlanCenterService {
     if(cap&&!this.capabilities()[cap].available)return {state:stage==='dot'?'waiting_external_dot':'blocked',reason:this.capabilities()[cap].reason};
     if(stage==='dot'&&(!run.snapshot.material.channel||!run.snapshot.material.identity))return {state:'waiting_external_dot',reason:'DOT_IDENTITY_REQUIRED'};
     if(['text_generate','text_score'].includes(stage)&&(!run.snapshot.authorization.text||!run.snapshot.text.consent||!run.snapshot.text.profileId||!run.snapshot.text.profileRevision||!run.snapshot.text.modelId||!run.snapshot.text.budgetMicros))return {state:'blocked',reason:'TEXT_GRANT_REQUIRED'};
-    if(stage==='music_submit'&&run.snapshot.music.route==='manual')return item.workId?{state:'ready'}:{state:'waiting_materials',reason:'EXISTING_AUDIO_BINDING_REQUIRED'};
+    if(stage==='music_submit'&&run.snapshot.songType==='instrumental'&&run.snapshot.music.creditPolicy?.mode!=='uncapped_existing_credits')return {state:'blocked',reason:'MUSIC_GRANT_REQUIRED'};
+    if(stage==='music_submit'&&run.snapshot.songType!=='instrumental'&&run.snapshot.music.route==='manual')return item.workId?{state:'ready'}:{state:'waiting_materials',reason:'EXISTING_AUDIO_BINDING_REQUIRED'};
     if(stage==='music_submit'&&(!run.snapshot.authorization.music||!run.snapshot.music.consent||!run.snapshot.music.profileId||!run.snapshot.music.profileRevision||!run.snapshot.music.modelId||!run.snapshot.music.budgetCredits||!run.snapshot.music.maxCostPerRequestCredits||(!run.snapshot.music.pricingEvidence&&!run.snapshot.music.creditPolicy)))return {state:'blocked',reason:'MUSIC_GRANT_REQUIRED'};
     if(stage==='music_submit'&&!['yourmusic','pule'].includes(run.snapshot.music.route))return {state:'blocked',reason:'MUSIC_ROUTE_UNAVAILABLE'};
     if(stage==='materials'&&!item.materials&&run.snapshot.authorization.publish&&run.snapshot.publishTargets.some(t=>t.enabled))return {state:'waiting_materials',reason:'MATERIALS_INCOMPLETE'};
@@ -362,9 +367,10 @@ export class PlanCenterService {
     const p=PlanCenterMaterialsSchema.parse(input);
     return this.repo.transaction(()=>{
       const item=this.store.get('item',p.itemId);if(!item)throw Error('NOT_FOUND');const run=this.store.get('run',item.runId)!;
+      if(Boolean(p.lyrics)===(run.snapshot.songType==='instrumental'))throw Error('LYRICS_MISMATCH');
       if(item.versions.length) {
         const first=item.versions.find(v=>v.version==='A')??item.versions[0];
-        const expected=run.snapshot.material.source==='pule_prompt'?item.selectedVersion:first.version;
+        const expected=run.snapshot.material.source==='pule_prompt'||run.snapshot.songType==='instrumental'?item.selectedVersion:first.version;
         if(run.snapshot.music.versionPolicy==='first'&&p.selectedVersion!==expected)throw Error('VERSION_POLICY_FIRST');
         const version=item.versions.find(v=>v.version===p.selectedVersion);if(!version||version.assetId!==p.audioAssetId)throw Error('AUDIO_VERSION_MISMATCH');
       }

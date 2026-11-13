@@ -11,6 +11,7 @@ export type BatchState={
   items:(BatchItem&{state:'queued'|'running'|'complete'|'paused';result?:unknown;error?:string})[];
   authorization?:FanqieAuthorizationResult[];
   authorizationError?:string;
+  configurationHash?:string;
   updatedAt:string;
 };
 /** Durable sequential queue. A failed item stops the batch; restart never blindly replays writes. */
@@ -40,11 +41,14 @@ export class FanqieBatch {
     }
   }
   async run(items:BatchItem[],accountKey:string,execute:(item:BatchItem)=>Promise<unknown>,guard:()=>void,resume=false,
-    authorize?:(items:BatchState['items'])=>Promise<FanqieAuthorizationResult[]>){
+    authorize?:(items:BatchState['items'])=>Promise<FanqieAuthorizationResult[]>,configurationHash?:string){
     if(this.busy)throw Error('FANQIE_BROWSER_BUSY');
     const prior=this.read();
-    if(resume&&(!prior||prior.accountKey!==accountKey||JSON.stringify(prior.items.map(({workId,variant})=>({workId,variant})))!==JSON.stringify(items)))throw Error('FANQIE_BATCH_SCOPE_CHANGED');
+    if(resume&&(!prior||prior.accountKey!==accountKey||(prior.configurationHash&&prior.configurationHash!==configurationHash)||
+      JSON.stringify(prior.items.map(({workId,variant})=>({workId,variant})))!==JSON.stringify(items)))throw Error('FANQIE_BATCH_SCOPE_CHANGED');
+    if(!resume&&prior?.state==='paused')throw Error('FANQIE_RECONCILIATION_REQUIRED');
     const state:BatchState=resume?prior!:{id:randomUUID(),accountKey,state:'running',items:items.map(item=>({...item,state:'queued'})),updatedAt:''};
+    if(configurationHash)state.configurationHash=configurationHash;
     this.busy=true;state.state='running';this.save(state);
     try{
       for(const item of state.items){

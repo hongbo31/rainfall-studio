@@ -168,7 +168,7 @@ export function planRouteIssue(
 ): string | undefined {
   if (!plan.routing || !plan.routeSnapshot) return;
   const roles: GenerationRole[] = [
-    ...(plan.material.source === "provider" ? ["text" as const] : []),
+    ...(plan.material.source === "provider" && plan.songType !== "instrumental" ? ["text" as const] : []),
     ...(plan.outputs.cover && plan.material.source !== "pule_prompt" ? ["image" as const] : []),
     ...(plan.outputs.music ? ["music" as const] : []),
   ];
@@ -210,21 +210,29 @@ export function freezeArtist(
     },
   };
 }
-export function planCreativeContext(plan: PlanCenterPlan) {
+export function planCreativeContext(plan: PlanCenterPlan, ordinal?: number) {
+  const theme = [
+    plan.theme,
+    plan.artistSnapshot && plan.storyContext
+      ? JSON.stringify({
+          storyBeat: plan.storyContext.storyBeat,
+          storyStage: plan.storyContext.storyStage,
+        })
+      : "",
+  ].filter(Boolean).join("\n");
+  const perspectives = ["一个决定", "一件随身物品", "一段对话", "一个反常动作", "一次视角转换"];
+  const brief = plan.distinctLyrics && ordinal
+    ? [
+        `\n同批第 ${ordinal} 首，共 ${plan.count} 首。写一首有人声的原创歌曲。`,
+        `用${perspectives[(ordinal - 1) % perspectives.length]}切入主题，自行构思具体时间、地点、动作和情绪转折。`,
+        "storyBeat 写本首具体场景，副歌写本首独有的钩子，歌名不超过 40 字。",
+        "用艺人语言和人声偏好，将用户选中的曲风融合到节奏、乐器和编曲中。若选择的是人声歌曲且艺人偏好纯音乐，按有声作品构思。",
+      ].join("\n")
+    : "";
   if (!plan.artistSnapshot)
-    return { theme: plan.theme, styleTemplate: plan.styleTemplate };
+    return { theme: theme + brief, styleTemplate: plan.styleTemplate };
   return {
-    theme: [
-      plan.theme,
-      plan.storyContext
-        ? JSON.stringify({
-            storyBeat: plan.storyContext.storyBeat,
-            storyStage: plan.storyContext.storyStage,
-          })
-        : "",
-    ]
-      .filter(Boolean)
-      .join("\n"),
+    theme: theme + brief,
     styleTemplate: [
       plan.styleTemplate,
       JSON.stringify({
@@ -245,7 +253,7 @@ export function frozenRouteIssue(
 ): string | undefined {
   if (!plan.routeSnapshot) return;
   const roles: GenerationRole[] = [
-    ...(plan.material.source === "provider" ? ["text" as const] : []),
+    ...(plan.material.source === "provider" && plan.songType !== "instrumental" ? ["text" as const] : []),
     ...(plan.outputs.cover && plan.material.source !== "pule_prompt" ? ["image" as const] : []),
     ...(plan.outputs.music ? ["music" as const] : []),
   ];

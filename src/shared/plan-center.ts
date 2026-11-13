@@ -25,6 +25,8 @@ export const PlanCenterPlanSchema = z.strictObject({
   enabled: z.boolean().default(false), timezone: z.literal('Asia/Shanghai').default('Asia/Shanghai'),
   schedule: PlanCenterScheduleSchema, count: z.number().int().min(1).max(20).default(1),
   theme: z.string().max(2000).default(''), styleTemplate: z.string().max(4000).default(''),
+  songType: z.enum(['vocal','instrumental']).optional(),
+  distinctLyrics: z.literal(true).optional(),
   outputs: z.strictObject({ lyrics: z.boolean(), cover: z.boolean(), music: z.boolean() }).refine(v=>v.lyrics||v.cover||v.music, 'OUTPUT_REQUIRED').default({ lyrics: true, cover: false, music: false }),
   material: z.strictObject({ source: z.enum(['dot','manual','provider','pule_prompt']).default('dot'), channel: z.string().max(500).default(''), identity: z.string().max(500).default(''), expectedExternalItemIds: z.array(InboxId).max(20).optional() }),
   text: z.strictObject({ profileId: id.optional(), profileRevision: revision.optional(), modelId: id.optional(), maxOutputTokens: z.number().int().min(256).max(16384).optional(), budgetMicros: z.number().int().positive().max(100_000_000).optional(), consent: z.boolean().default(false), threshold: z.number().min(0).max(100).default(75), maxRewrites: z.number().int().min(0).max(2).default(2), maxScoreRetries: z.number().int().min(0).max(2).default(2) }),
@@ -56,7 +58,7 @@ export const PlanCenterClaimSchema = z.strictObject({runId:id,itemId:id,stage:Pl
 export const PlanCenterRecordSchema = z.strictObject({attemptId:id,status:z.enum(['succeeded','failed','unknown','waiting']),externalTaskId:id.optional(),evidenceId:id.optional(),result:record.optional(),reason:z.string().max(2000).optional()});
 export const PlanCenterReconcileSchema = z.strictObject({attemptId:id,status:z.enum(['succeeded','failed','not_found','pending']),evidenceId:id,result:record.optional(),externalTaskId:id.optional(),reason:z.string().max(2000).optional()});
 export const PlanCenterRetrySchema = z.strictObject({attemptId:id});
-export const PlanCenterMaterialsSchema = z.strictObject({itemId:id,title:z.string().trim().min(1).max(500),lyrics:z.string().trim().min(1).max(100000),coverAssetId:id,audioAssetId:id,rightsEvidenceId:id,consistencyEvidenceId:id,selectedVersion:z.enum(['A','B'])});
+export const PlanCenterMaterialsSchema = z.strictObject({itemId:id,title:z.string().trim().min(1).max(500),lyrics:z.string().trim().max(100000),coverAssetId:id,audioAssetId:id,rightsEvidenceId:id,consistencyEvidenceId:id,selectedVersion:z.enum(['A','B'])});
 export const PlanCenterCapabilitySchema = z.strictObject({available:z.boolean(),reason:z.string().max(2000).optional()});
 export const PlanCenterCapabilityNames = ['dot','text','cover','music','publication','albumCatalog','albumCreate','albumAppend'] as const;
 export type PlanCenterCapabilityName = typeof PlanCenterCapabilityNames[number];

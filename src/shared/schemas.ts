@@ -2,7 +2,7 @@ import {AccountIdentityPublicActions} from './account-identity';
 import {MaterialMethods} from './material-methods';
 import {GenerationConfigSchemas} from './generation-config';
 import { z } from "zod";
-import { AccountProviderSchema, PlatformAccountIdSchema } from "./platform-accounts";
+import { AccountProviderSchema, AccountWorkWindowSchema } from "./platform-accounts";
 import {DirectoryTaskSchemas} from './directory-tasks';
 import {PlanCenterPrepareCoverWorkSchema} from './plan-center';
 import { saveApiProfileSchema } from "./api-profiles";
@@ -106,8 +106,8 @@ export const methodSchemas: Record<string, z.ZodType> = {
     name: z.string().trim().min(1).max(100),
     dailyLimit: z.number().int().min(0).max(10000),
   }),
-  "accountSession.status": PlatformAccountIdSchema,
-  "accountSession.open": PlatformAccountIdSchema,
+  "accountSession.status": AccountWorkWindowSchema,
+  "accountSession.open": AccountWorkWindowSchema,
   "binding.save": z.object({
     artistId: id,
     accountId: id,

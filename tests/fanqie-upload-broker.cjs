@@ -223,7 +223,11 @@ test('configured batch uses each work artist’s credits and skips existing work
  let uploads=0;const credits=[];
  f.options.execute=async(_context,input,callbacks)=>{await callbacks.intent('first-step:confirm-upload');credits.push(input.authors);uploads++;f.current.catalog.rows.push({id:'987654321098765432'+uploads,title:input.title,stage:'contract_pending',officialStatus:'待授权',createdAtText:'fixture',publishedAtText:'-'});f.current.catalog.total=f.current.catalog.rows.length;return{authorizationPageObserved:true,officialRecordVerified:false};};
  const broker=new FanqieUploadBroker(f.options);await broker.ui('saveConfiguration',{version:1,authors:f.raw.authors,artistAuthors:{[ids[1]]:alternate},useWorkMaterials:true,publicationConsent:true});
- const request={items:ids.map(workId=>({workId,variant:'A'}))};const first=await broker.ui('publishBatch',request);assert.equal(first.batch.state,'complete',JSON.stringify(first.batch));assert.equal(uploads,2);assert.equal(first.jobs.length,2);
+ const request={items:ids.map(workId=>({workId,variant:'A'}))};
+ await assert.rejects(broker.ui('publishBatch',request),/FANQIE_ARTIST_CREDITS_REQUIRED/);
+ assert.equal(uploads,0);
+ await broker.ui('saveConfiguration',{version:1,authors:f.raw.authors,artistAuthors:{[ids[0]]:f.raw.authors,[ids[1]]:alternate},useWorkMaterials:true,publicationConsent:true});
+ const first=await broker.ui('publishBatch',request);assert.equal(first.batch.state,'complete',JSON.stringify(first.batch));assert.equal(uploads,2);assert.equal(first.jobs.length,2);
  assert.deepEqual(credits,[f.raw.authors,alternate]);
  const second=await broker.ui('publishBatch',request);assert.equal(second.batch.state,'complete');assert.equal(uploads,2);assert.equal(f.current.catalog.rows.length,2);
 });

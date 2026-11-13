@@ -27,9 +27,11 @@ export function publicationPayload(s: Studio, w: Row) {
   const audio = asset(w.selectedAudioVariant==="B"?"audio_B":"audio_A", "AUDIO"),
     cover = asset("cover", "COVER"),
     l = s.lyricService().forWork(w);
-  if (!l.cleaned.trim()) warnings.push("LYRICS_MISSING");
-  if (!l.alignmentConfirmed) warnings.push("LYRICS_AUDIO_MATCH_UNCONFIRMED");
-  if (l.warnings.length) warnings.push("LYRICS_BRACKETS_REQUIRE_REVIEW");
+  if (w.config?.voice !== "instrumental") {
+    if (!l.cleaned.trim()) warnings.push("LYRICS_MISSING");
+    if (!l.alignmentConfirmed) warnings.push("LYRICS_AUDIO_MATCH_UNCONFIRMED");
+    if (l.warnings.length) warnings.push("LYRICS_BRACKETS_REQUIRE_REVIEW");
+  }
   return {
     schemaVersion: 1,
     workId: w.id,

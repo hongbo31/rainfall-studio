@@ -6,6 +6,7 @@ import {cleanLyricText} from '../shared/tme-lyrics';
 import {hash} from './database';
 import {publicationPayload} from './publication-payload';
 import {resolveFanqieWork} from './fanqie-work';
+import {providerPlanFinal} from './provider-plan-text';
 
 const normalized=(value:string)=>cleanLyricText(value).cleaned.normalize('NFKC').replace(/\s+/g,' ').trim();
 const bindingKey=(id:string)=>'plan-assets:binding:'+id;
@@ -17,8 +18,14 @@ function scope(s:Studio,itemId:string){
 function assertCurrent(s:Studio,run:PlanCenterRun,item:PlanCenterItem,workId:string){
  const work=s.get('works',workId);
  if(work.artistId!==run.snapshot.artistId)throw Error('ARTIST_MISMATCH');
- if(!item.material?.lyrics||normalized(work.lyrics??'')!==normalized(String(item.material.lyrics)))throw Error('LYRICS_MISMATCH');
+ if(run.snapshot.songType==='instrumental'){
+  if(work.config?.voice!=='instrumental'||normalized(work.lyrics??'')||item.material?.lyrics!=='')throw Error('LYRICS_MISMATCH');
+ }else if(!item.material?.lyrics||normalized(work.lyrics??'')!==normalized(String(item.material.lyrics)))throw Error('LYRICS_MISMATCH');
  if(work.title.normalize('NFKC').trim()!==String(item.material.title??'').normalize('NFKC').trim())throw Error('TITLE_MISMATCH');
+ if(run.snapshot.distinctLyrics&&run.snapshot.material.source==='provider'&&run.snapshot.songType!=='instrumental'){
+  const {version}=providerPlanFinal(s.repo,run,item);
+  if(work.lyrics!==version.pair.lyrics||work.prompt!==version.pair.musicPrompt)throw Error('PROVIDER_FINAL_CHANGED');
+ }
  return work;
 }
 function versions(s:Studio,work:Record<string,any>):PlanCenterItem['versions']{
@@ -88,8 +95,11 @@ export function confirmPlanMaterials(s:Studio,raw:unknown){
   const {item,run}=scope(s,input.itemId);assertEditable(s,item,run);if(!item.workId||!item.selectedVersion)throw Error('VERSION_SELECTION_REQUIRED');
   const work=assertCurrent(s,run,item,item.workId);if(work.revision!==input.expectedWorkRevision)throw Error('REVISION_CONFLICT');
   const payload=publicationPayload(s,work);
-  if(!payload.audio||!payload.cover||payload.audio.sha256!==input.audioHash||payload.cover.sha256!==input.coverHash||payload.lyrics.plainHash!==input.lyricsHash||!payload.lyrics.versionId)throw Error('MATERIALS_CHANGED');
-  s.lyricService().confirm({workId:work.id,versionId:payload.lyrics.versionId,plainHash:input.lyricsHash,audioHash:input.audioHash,confirmed:true});
+  if(!payload.audio||!payload.cover||payload.audio.sha256!==input.audioHash||payload.cover.sha256!==input.coverHash||payload.lyrics.plainHash!==input.lyricsHash)throw Error('MATERIALS_CHANGED');
+  if(run.snapshot.songType!=='instrumental'){
+   if(!payload.lyrics.versionId)throw Error('MATERIALS_CHANGED');
+   s.lyricService().confirm({workId:work.id,versionId:payload.lyrics.versionId,plainHash:input.lyricsHash,audioHash:input.audioHash,confirmed:true});
+  }
   const evidence={id:consentKey(item.id),value:{itemId:item.id,workId:work.id,audioHash:input.audioHash,coverHash:input.coverHash,lyricsHash:input.lyricsHash,rightsStatement:input.rightsStatement,source:'user-attestation',providerLicenseVerified:false,at:s.now().toISOString()}};
   s.save('settings',evidence);s.repo.audit('planCenter.materials.confirmed',item.id,{workId:work.id,evidenceId:evidence.id,providerLicenseVerified:false});return evidence.value;
  });
@@ -102,6 +112,11 @@ export function syncPlanMaterials(s:Studio,run:PlanCenterRun,item:PlanCenterItem
  if(!list.some(v=>v.version===version))return{ready:false,reasons:['AUDIO_REQUIRED']};
  if((work.selectedAudioVariant??'A')!==version)return{ready:false,reasons:['AUDIO_SELECTION_MISMATCH']};
  const payload=publicationPayload(s,work),consent=s.repo.maybe('settings',consentKey(item.id))?.value;
+ if(run.snapshot.outputs.cover&&(run.snapshot.songType==='instrumental'||run.snapshot.distinctLyrics)&&payload.cover){
+  const proof=s.coverHandoff().verifiedSelectedReceipt(work.id);
+  const cover=s.planCenterService().list().stageAttempts.find(a=>a.itemId===item.id&&a.stage==='cover'&&a.state==='succeeded');
+  if(cover?.result?.assetId!==proof.asset.id||cover?.result?.sha256!==proof.asset.sha256)return{ready:false,reasons:['COVER_MATERIAL_CHANGED'],payload};
+ }
  if(run.snapshot.fanqie?.materialsConsent&&run.snapshot.authorization.publish&&!run.snapshot.publishTargets.some(t=>t.enabled)){
   if(!payload.cover)return{ready:false,reasons:['COVER_REQUIRED'],payload};
   const source=resolveFanqieWork(s,{workId:work.id,variant:version});

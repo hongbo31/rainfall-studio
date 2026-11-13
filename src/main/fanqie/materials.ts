@@ -7,6 +7,7 @@ import sharp from 'sharp';
 import {digest,ffmpeg,probe} from '../../core/assets';
 import {assertPublicationFile} from '../../core/publication-foundation';
 import type {FanqieWorkSource} from '../../core/fanqie-work';
+import type {FanqieAssets} from '../../shared/fanqie';
 const run=promisify(execFile);
 /** Publication derivatives only. Originals and library metadata remain unchanged. */
 export async function prepareFanqieWorkMaterials(root:string,source:FanqieWorkSource,guard:()=>void) {
@@ -20,10 +21,11 @@ export async function prepareFanqieWorkMaterials(root:string,source:FanqieWorkSo
  for(let parent=folder;parent!==path.dirname(parent);parent=path.dirname(parent))if(fs.existsSync(parent)&&fs.lstatSync(parent).isSymbolicLink())throw Error('FANQIE_BUNDLE_INVALID');
  fs.mkdirSync(folder,{recursive:true});
  const stem=String(source.title).replace(/[<>:"/\\|?*\x00-\x1f]/g,'_').replace(/[. ]+$/,'').slice(0,80)||'歌曲';
- const files={audio:path.join(folder,stem+'.wav'),lyrics:path.join(folder,stem+'-歌词.txt'),cover:path.join(folder,stem+'-封面.jpg')};
+ const files={audio:path.join(folder,stem+'.wav'),cover:path.join(folder,stem+'-封面.jpg'),
+  ...(source.instrumental?{}:{lyrics:path.join(folder,stem+'-歌词.txt')})};
  await run(ffmpeg,['-nostdin','-v','error','-n','-protocol_whitelist','file,pipe','-i',source.audio.file,'-map','0:a:0','-vn','-c:a','pcm_s16le','-ar',String(rate),'-ac','2',files.audio],{windowsHide:true,timeout:120000,maxBuffer:1024*1024});guard();
  await sharp(source.cover.file,{limitInputPixels:100_000_000}).resize(Math.max(1440,Math.min(cover.width,2048))).jpeg({quality:95}).toFile(files.cover);guard();
- fs.writeFileSync(files.lyrics,source.lyrics,'utf8');
+ if(files.lyrics)fs.writeFileSync(files.lyrics,source.lyrics,'utf8');
  for(const asset of [source.audio,source.cover])assertPublicationFile(asset,{error:'FANQIE_ASSET_CHANGED',rejectSymlinks:true});
- return Object.fromEntries(Object.entries(files).map(([role,file])=>[role,{file,bytes:fs.statSync(file).size,sha256:digest(file)}])) as Record<'audio'|'lyrics'|'cover',{file:string;bytes:number;sha256:string}>;
+ return Object.fromEntries(Object.entries(files).map(([role,file])=>[role,{file,bytes:fs.statSync(file).size,sha256:digest(file)}])) as FanqieAssets;
 }

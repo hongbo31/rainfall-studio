@@ -6,6 +6,7 @@ import type {Studio} from './studio';
 import {CenterStore,digest} from './plan-center/storage';
 import type {PlanCenterItem,PlanCenterRun} from '../shared/plan-center';
 import {planPuleAttempt,planPuleReceipt,planPuleReleaseIndex,planPuleScope,type PlanPuleTask} from '../shared/plan-pule';
+import {parseDraft} from '../shared/creation';
 
 const scenes=[
   '小雨停后的街角', '清晨刚开门的花店', '轮渡末班船的甲板', '旧影院门口的海报',
@@ -37,24 +38,37 @@ function makeBrief(run:PlanCenterRun,item:PlanCenterItem) {
   };
 }
 
+const usesPuleRunner=(run:PlanCenterRun)=>run.snapshot.material.source==='pule_prompt'||run.snapshot.songType==='instrumental';
+
 function planTask(s:Studio,scope:PlanPuleTask) {
   const service=s.planCenterService(),rows=service.list();
   const run=rows.runs.find(row=>row.id===scope.runId),item=rows.items.find(row=>row.id===scope.itemId);
-  if(!run||!item||item.runId!==run.id||run.snapshot.material.source!=='pule_prompt')
+  if(!run||!item||item.runId!==run.id||!usesPuleRunner(run))
     throw Error('PLAN_MUSIC_SCOPE');
   const plan=run.snapshot,music=plan.music;
-  if(!plan.authorization.music||!music.consent||music.creditPolicy?.mode!=='uncapped_existing_credits'||
+  if(!plan.authorization.music||!music.consent||!['pule','yourmusic'].includes(music.route)||music.creditPolicy?.mode!=='uncapped_existing_credits'||
       !music.profileId||!music.profileRevision||!music.modelId)
     throw Error('MUSIC_GRANT_REQUIRED');
   const profile=s.repo.maybe('settings','api-profile:'+music.profileId);
   if(profile?.providerId!=='yourmusic'||profile.revision!==music.profileRevision)
     throw Error('PROFILE_REVISION_CHANGED');
+  const instrumental=plan.songType==='instrumental';
   const brief=makeBrief(run,item);
+  const defaults=plan.artistSnapshot?.defaults;
+  const style=plan.styleTemplate.trim()||String(defaults?.genre||'华语流行');
+  const instrumentalPrompt={positiveStyle:[style,defaults?.instruments,defaults?.mood,brief.theme.slice(0,120),brief.scene,'纯器乐演奏']
+    .filter(Boolean).join('，').slice(0,1000),negativeStyle:'vocals, spoken word',durationTarget:Math.min(360,Number(defaults?.duration??180)),voiceArrangement:'instrumental'};
+  const draft=instrumental?parseDraft({
+    title:Array.from(Array.from(brief.theme).slice(0,18).join('')+' · '+brief.scene).slice(0,40).join(''),
+    topic:brief.theme.slice(0,500),storyBeat:brief.scene,language:String(defaults?.language||'中文'),
+    style:style.slice(0,200),instrumental:true,sections:[],hook:null,vocalPlan:[],continuityNotes:'',
+    musicPrompts:{yourmusic:instrumentalPrompt,suno:instrumentalPrompt},
+  }):undefined;
   const next=service.next({runId:run.id,itemId:item.id});
   const attempt=rows.stageAttempts.filter(row=>row.itemId===item.id&&row.stage===scope.stage).at(-1);
   const original=rows.stageAttempts.find(row=>row.itemId===item.id&&row.stage==='music_submit'&&row.state==='succeeded');
   const receipt=scope.stage==='music_assets'?planPuleReceipt.parse(original?.result):undefined;
-  return {service,run,item,next,attempt,brief,receipt,
+  return {service,run,item,next,attempt,brief,receipt,draft,
     profileId:music.profileId,profileRevision:music.profileRevision,modelId:music.modelId};
 }
 
@@ -76,11 +90,11 @@ async function saveSong(s:Studio,input:z.infer<typeof planPuleAttempt>&{songs:z.
       throw Error('PLAN_MUSIC_ASSET_SCOPE');
     return task;
   };
-  const {service,run,item,brief,modelId,receipt}=verify();
-  const chosenIndex=planPuleReleaseIndex(input.songs),chosen=input.songs[chosenIndex];
+  const {service,run,item,brief,modelId,receipt,draft}=verify();
+  const chosenIndex=planPuleReleaseIndex(input.songs,!!draft),chosen=input.songs[chosenIndex];
   if(!chosen)throw Error('MUSIC_OUTPUT_TEXT_INVALID');
   const selectedVersion=chosenIndex===0?'A':'B';
-  const title=chosen.title.trim();
+  const title=draft?.title??chosen.title.trim(),lyrics=draft?'':chosen.lyrics;
   const titleKey=(value:string)=>value.normalize('NFKC').replace(/\s+/g,'').toLowerCase();
   const assertNewTitle=()=>{
     if(s.all('works').some(work=>titleKey(work.title)===titleKey(title)))throw Error('MUSIC_OUTPUT_TITLE_EXISTS');
@@ -102,16 +116,19 @@ async function saveSong(s:Studio,input:z.infer<typeof planPuleAttempt>&{songs:z.
     return s.repo.transaction(()=>{
       verify();
       assertNewTitle();
-      const work=s.saveWork({title,artistId:run.snapshot.artistId,story:brief.theme+' · '+brief.scene,lyrics:chosen.lyrics,
-        prompt:brief.prompt,parameters:{},rights:'歌词和音乐由谱乐生成，按计划已保存的发行授权设置使用。',ai:'generated',
+      const work=s.saveWork({title,artistId:run.snapshot.artistId,story:brief.theme+' · '+brief.scene,lyrics,
+        prompt:draft?.musicPrompts.yourmusic.positiveStyle??brief.prompt,
+        parameters:draft?{...run.snapshot.artistSnapshot?.defaults,genre:draft.style,voice:'instrumental',duration:draft.musicPrompts.yourmusic.durationTarget}:{},
+        rights:draft?'音频由谱乐生成，按计划已保存的发行授权设置使用。':'歌词和音乐由谱乐生成，按计划已保存的发行授权设置使用。',ai:'generated',
         source:'external',provider:'yourmusic',providerSongIds:receipt!.songIds,model:modelId,
         selectedAudioVariant:selectedVersion},{kind:'generation_input'});
       const versions=audio.map(({lyrics,...version})=>version);
       const assets=Object.fromEntries(versions.map(({version,assetId})=>['audio_'+version,assetId]));
-      s.save('works',{...work,assets,assetHistory:Object.values(assets),
+      s.save('works',{...work,assets,assetHistory:Object.values(assets),artistSnapshot:run.snapshot.artistSnapshot,
+        storyContext:run.snapshot.storyContext,routeSnapshot:run.snapshot.routeSnapshot,
         audioVersions:audio.map(({lyrics,...version})=>({...version,providerSongId:version.externalId,actualLyrics:lyrics?{text:lyrics,version:null}:null}))});
       new CenterStore(s.repo).put('item',{...item,workId:work.id,selectedVersion,versions,
-        material:{source:'yourmusic',title,lyrics:chosen.lyrics,theme:brief.theme,scene:brief.scene},updatedAt:s.now().toISOString()});
+        material:{source:'yourmusic',title,lyrics,theme:brief.theme,scene:brief.scene},updatedAt:s.now().toISOString()});
       return service.record({attemptId:input.attemptId,status:'succeeded',evidenceId:work.id,result:{versions,workId:work.id}});
     });
   }finally{
@@ -127,7 +144,7 @@ export function planPuleAction(s:Studio,action:string,raw:unknown) {
     z.strictObject({}).parse(raw);
     const rows=service.list(),tasks:PlanPuleTask[]=[];
     for(const run of rows.runs){
-      if(run.stopRequested||['completed','stopped','failed'].includes(run.state)||run.snapshot.material.source!=='pule_prompt')continue;
+      if(run.stopRequested||['completed','stopped','failed'].includes(run.state)||!usesPuleRunner(run))continue;
       const submits=new Map(rows.stageAttempts.filter(row=>row.runId===run.id&&row.stage==='music_submit').map(row=>[row.itemId,row]));
       const unresolved=[...submits.values()].some(row=>['unknown','failed'].includes(row.state));
       for(const item of rows.items.filter(row=>row.runId===run.id)){
@@ -151,7 +168,7 @@ export function planPuleAction(s:Studio,action:string,raw:unknown) {
     if(task.run.stopRequested||task.next?.stage!==scope.stage)throw Error('STOP_REQUESTED');
     let attempt=task.attempt;
     if(!attempt){
-      const claimed=service.claim({...scope,requestHash:digest({scope,brief:task.brief,profileId:task.profileId,modelId:task.modelId})});
+      const claimed=service.claim({...scope,requestHash:digest({scope,brief:task.brief,draft:task.draft,profileId:task.profileId,modelId:task.modelId})});
       if(!('id' in claimed))throw Error(claimed.reason??'MUSIC_GRANT_REQUIRED');
       attempt=claimed;
     }else if(!(scope.stage==='music_assets'&&['dispatching','waiting'].includes(attempt.state))&&
@@ -159,7 +176,7 @@ export function planPuleAction(s:Studio,action:string,raw:unknown) {
       throw Error('MUSIC_OUTCOME_UNKNOWN');
     if(scope.stage==='music_assets'&&attempt.state==='dispatching')
       attempt=service.record({attemptId:attempt.id,status:'waiting',reason:'ORIGINAL_ASSETS_PENDING'});
-    return {...scope,attemptId:attempt.id,prompt:task.brief.prompt,receipt:task.receipt,
+    return {...scope,attemptId:attempt.id,prompt:task.brief.prompt,receipt:task.receipt,draft:task.draft,
       profileId:task.profileId,profileRevision:task.profileRevision,modelId:task.modelId};
   }
   if(action==='current'){

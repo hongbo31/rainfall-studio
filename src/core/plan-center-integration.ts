@@ -52,7 +52,11 @@ export function executePlanCenter(s:Studio,method:string,raw:unknown){
   }
   case 'planCenter.status':{
    empty.parse(raw);const rows=service.list();
-   return{providerText:providerTextService(s).list().map(({id,runId,itemId,phase,state,reason,currency,spentMicros,reservedMicros})=>({id,runId,itemId,phase,state,reason,currency,spentMicros,reservedMicros})),dot:planDotStatus(s),publication:planPublicationStatus(s),music:rows.items.flatMap<Record<string,unknown>>(item=>{try{const run=rows.runs.find(r=>r.id===item.runId)!;const state=syncPlanMusic(s,run,item);return state?[{itemId:item.id,...state}]:[];}catch(e){return[{itemId:item.id,reason:e instanceof Error?e.message:'MUSIC_SCOPE_INVALID'}];}}),materials:rows.items.flatMap<Record<string,unknown>>(item=>{if(!item.workId)return[];try{return[{itemId:item.id,...planMaterialPreview(s,item.id)}]}catch(e){return[{itemId:item.id,reason:e instanceof Error?e.message:'MATERIALS_INVALID'}]}})};
+   return{providerText:providerTextService(s).list().map(({id,runId,itemId,phase,state,reason,currency,spentMicros,reservedMicros,versions,draftId})=>({
+    id,runId,itemId,phase,state,reason,currency,spentMicros,reservedMicros,
+    versions:versions.map(version=>({id:version.id,title:version.draft.title,scene:version.draft.storyBeat,lyrics:version.pair.lyrics,
+     score:version.score?.overall,final:state==='complete'&&version.id===draftId})),
+   })),dot:planDotStatus(s),publication:planPublicationStatus(s),music:rows.items.flatMap<Record<string,unknown>>(item=>{try{const run=rows.runs.find(r=>r.id===item.runId)!;const state=syncPlanMusic(s,run,item);return state?[{itemId:item.id,...state}]:[];}catch(e){return[{itemId:item.id,reason:e instanceof Error?e.message:'MUSIC_SCOPE_INVALID'}];}}),materials:rows.items.flatMap<Record<string,unknown>>(item=>{if(!item.workId)return[];try{return[{itemId:item.id,...planMaterialPreview(s,item.id)}]}catch(e){return[{itemId:item.id,reason:e instanceof Error?e.message:'MATERIALS_INVALID'}]}})};
   }
   case 'planCenter.fanqieStatus':empty.parse(raw);return planFanqieJobs(s);
   case 'planCenter.retryFanqie':return retryPlanFanqieBatch(s,raw);
@@ -123,7 +127,7 @@ export function tickPlanCenter(s:Studio){
    const next=service.next({runId:run.id,itemId:item.id})??(run.stopRequested&&outstandingScore?{stage:'text_score' as const,state:outstandingScore.state}:null);
    if(!next)continue;
    if(['music_submit','music_assets'].includes(next.stage)){
-    if(run.snapshot.material.source!=='pule_prompt')tickPlanMusic(s,run,boundItem);
+    if(run.snapshot.material.source!=='pule_prompt'&&run.snapshot.songType!=='instrumental')tickPlanMusic(s,run,boundItem);
     continue;
    }
    if(next.stage==='text_score'){
@@ -179,10 +183,10 @@ export function tickPlanCenter(s:Studio){
     if(boundCover){
      s.locate(boundCover.id);
      let source='user-bound-existing-work',generationVerified=false;
-     if(run.snapshot.material.source==='pule_prompt'){
+     if(run.snapshot.material.source==='pule_prompt'||run.snapshot.songType==='instrumental'||run.snapshot.distinctLyrics){
       source=typeof boundWork?.coverSource==='string'?boundWork.coverSource:'user-import-final-cover';
       const inbox=coverInboxStatus(s,latestItem.workId).find(entry=>entry.planItemId===latestItem.id&&entry.assetId===boundCover.id);
-      if(inbox){
+      if(inbox||run.snapshot.songType==='instrumental'||run.snapshot.distinctLyrics){
        const proof=s.coverHandoff().verifiedSelectedReceipt(latestItem.workId!);
        generationVerified=proof.receipt.generationVerified;
        source=generationVerified?'image-api':'user-import-final-cover';

@@ -1,6 +1,6 @@
 import path from 'node:path';
 import type {BrowserContext, Page, Locator} from 'playwright-core';
-import type {FanqieInput} from '../../shared/fanqie';
+import {fanqieRoles,type FanqieInput} from '../../shared/fanqie';
 import {openBackgroundOfficialPage} from '../background-page';
 import {readFanqieAccountUid} from './identity';
 import {chooseFanqieFile, fanqieFileControl} from './form';
@@ -36,9 +36,11 @@ const sizeText = (bytes: number) => {
   return bytes.toFixed(1)+'B';
 };
 export function expectedFanqieForm(input: FanqieInput): FanqieExpectedForm {
+  const lyrics=input.assets.lyrics;
+  if(!input.instrumental&&!lyrics)throw Error('FANQIE_LYRICS_INVALID');
   return {title: input.title, authors: input.authors, ai: input.ai, musicType: input.musicType,
     audio: {displayName: input.title, format: path.extname(input.assets.audio.file).toLowerCase() === '.wav' ? 'WAV' : 'MP3', displaySize: sizeText(input.assets.audio.bytes), bytes: input.assets.audio.bytes},
-    lyrics: {fileName: path.basename(input.assets.lyrics.file), displaySize: sizeText(input.assets.lyrics.bytes), bytes: input.assets.lyrics.bytes}};
+    ...(input.instrumental?{instrumental:true as const}:{lyrics:{fileName:path.basename(lyrics!.file),displaySize:sizeText(lyrics!.bytes),bytes:lyrics!.bytes}})};
 }
 export async function executeFanqieNativeUpload(context: BrowserContext, input: FanqieInput,
   callbacks: {guard: () => void; intent: (step: string) => Promise<void>; progress: (step: string) => void; diagnostic?:(value:unknown)=>void}) {
@@ -85,13 +87,22 @@ export async function executeFanqieNativeUpload(context: BrowserContext, input: 
   const before = await readFanqieVisibleForm(adapter);
   if (before.title || Object.values(before.authors).some(v => v.length) || before.coverPreview.length || /上传完成/.test(before.audioText + before.lyricsText))
     throw Error('FANQIE_EXISTING_FORM_REQUIRES_RECONCILIATION');
-  await intent('fill-title'); await page.getByRole('textbox', {name:'作品名称', exact:true}).fill(input.title);
   if (before.musicType !== '原创' || input.musicType !== 'original') throw Error('FANQIE_MUSIC_TYPE_UNSUPPORTED');
+  if(input.instrumental){
+    const form=page.locator('form').filter({has:page.getByRole('textbox',{name:'作品名称',exact:true})});
+    const choice=form.getByRole('radio',{name:'纯音乐',exact:true}).or(form.getByRole('checkbox',{name:'纯音乐',exact:true}));
+    if(await choice.count()!==1||!await choice.isVisible())throw Error('FANQIE_INSTRUMENTAL_FORM_UNVERIFIED');
+    if(!before.instrumental){await intent('select-instrumental');await assertScope();await choice.check();}
+    const observed=await readFanqieVisibleForm(adapter);
+    if(!observed.instrumental||observed.musicType!=='原创')throw Error('FANQIE_INSTRUMENTAL_FORM_UNVERIFIED');
+  }
+  await intent('fill-title'); await page.getByRole('textbox', {name:'作品名称', exact:true}).fill(input.title);
   if (before.ai !== (input.ai ? '是' : '否')) {
     const ai = page.locator('.arco-form-item').filter({has:page.locator('label[for="songs_0_ai_usage_type_input"]')});
     await intent('declare-ai'); await ai.getByText(input.ai ? '是' : '否', {exact:true}).click();
   }
   for (const role of ['lyricist','composer','singer'] as const) {
+    if(input.instrumental&&role==='lyricist')continue;
     callbacks.progress('正在填写署名');
     await selectFanqieCredit(adapter, role, input.authors[role], intent, assertScope);
   }
@@ -111,10 +122,12 @@ export async function executeFanqieNativeUpload(context: BrowserContext, input: 
         (role === 'audio' ? state?.audioText : state?.lyricsText)?.trim().slice(0, 240)});
     throw Error('FANQIE_UPLOAD_READBACK_TIMEOUT');
   };
-  for (const role of ['audio','lyrics','cover'] as const) {
+  for (const role of fanqieRoles(input.instrumental)) {
     callbacks.progress({audio:'正在上传音频',lyrics:'正在上传歌词',cover:'正在上传封面'}[role]);
     await intent('upload:'+role); await assertScope();
-    await chooseFanqieFile(adapter, await fanqieFileControl(adapter, role), input.assets[role], assertScope);
+    const asset=input.assets[role];
+    if(!asset)throw Error('FANQIE_ASSET_INVALID');
+    await chooseFanqieFile(adapter, await fanqieFileControl(adapter, role,input.instrumental),asset,assertScope);
     if (role === 'cover') {
       const crop = page.getByRole('dialog', {name:'裁剪图片 (1/1)', exact:true});
       await crop.waitFor({state:'visible', timeout:20000});
@@ -123,7 +136,7 @@ export async function executeFanqieNativeUpload(context: BrowserContext, input: 
       await crop.waitFor({state:'hidden', timeout:20000});
       await waitReadback(role, s => s.coverPreview.length === 1 && s.coverPreview[0].complete && s.coverPreview[0].width > 0 && s.coverPreview[0].width === s.coverPreview[0].height);
     } else if (role === 'audio') await waitReadback(role, s => fanqieTransferVerified(s.audioText, expected.audio));
-    else await waitReadback(role, s => fanqieTransferVerified(s.lyricsText, expected.lyrics));
+    else await waitReadback(role, s => fanqieTransferVerified(s.lyricsText, expected.lyrics!));
   }
   assertFanqieFirstStepReadback(await readFanqieVisibleForm(adapter), expected);
   callbacks.progress('正在确认上传结果');

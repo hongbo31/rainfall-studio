@@ -54,8 +54,9 @@ export const GenerationConfigSchemas: Record<string, z.ZodType> = {
     storyBeat: z.string().trim().min(1).max(10000),
     storyStage: z.string().max(1000).default(""),
     styleTemplate: z.string().trim().max(4000).optional(),
+    songType: z.enum(["vocal","instrumental"]).optional(),
     outputs: z.strictObject({
-      lyrics: z.literal(true),
+      lyrics: z.boolean(),
       cover: z.boolean(),
       music: z.boolean(),
     }),
@@ -70,6 +71,15 @@ export const GenerationConfigSchemas: Record<string, z.ZodType> = {
       budgetCredits: z.number().int().positive().optional(),
       maxCostPerRequestCredits: z.number().int().positive().optional(),
       pricingEvidence: z.string().max(1000).optional(),
+      profileId: z.uuid().optional(),
+      profileRevision: z.number().int().positive().optional(),
+      modelId: z.string().min(1).max(200).optional(),
+      creditPolicy: z.strictObject({
+        mode: z.literal("uncapped_existing_credits"),
+        noRecharge: z.literal(true),
+        actualCostUnknown: z.literal(true),
+        consent: z.literal(true),
+      }).optional(),
     }),
   }),
 };

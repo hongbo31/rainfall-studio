@@ -47,7 +47,7 @@ import {createAccountIdentityBroker,accountIdentityUiResponse} from './account-i
 import {fanqieCatalogError} from './fanqie/catalog-session';
 import {FanqieAccountSessions, splitFanqieAccountInput} from './fanqie/account-sessions';
 import {PlatformBrowserSessions} from './browser-accounts';
-import {PlatformAccountIdSchema, type PlatformAccount} from '../shared/platform-accounts';
+import {AccountWorkWindowSchema, type PlatformAccount} from '../shared/platform-accounts';
 import {createPlanFanqiePublisher} from './fanqie/plan-publisher';
 import {createPlanPuleRunner} from './plan-pule';
 import {createUnifiedPublishBroker,createTmeAiTransportProvider} from './tme/unified-publish';
@@ -60,7 +60,9 @@ import {createMaterialWorkbenchBroker} from './material-workbench';
 import {createPlanCoverImageRunner} from './plan-cover-image';
 import {pathToFileURL} from 'node:url';
 import {offlineAcceptanceEnabled,offlineAcceptanceInvocationAllowed} from '../shared/offline-acceptance';
+import {startPublishWorkbench,type WorkbenchRequest} from './publish-workbench';
 const offlineAcceptance=offlineAcceptanceEnabled();
+let publishWorkbench:ReturnType<typeof startPublishWorkbench>|undefined;
 let offlineNetworkBlocks=0;
 const offlineInvocationCounts:Record<string,number>={};
 if(offlineAcceptance){
@@ -175,10 +177,10 @@ const accountBrowsers = new PlatformBrowserSessions(root);
 const fanqieAccounts = new FanqieAccountSessions({root,available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,
   work:async selection=>{const result=await rpc('internal.fanqie.work',selection);if(!result.ok)throw Error(result.error.code);return result.value;},
   pickBundle:async()=>{const result=await dialog.showOpenDialog(window,{title:'选择番茄发布材料清单',properties:['openFile'],filters:[{name:'番茄发布材料清单',extensions:['json']}]});return result.canceled?null:result.filePaths[0];}});
-async function browserAccount(accountId:string):Promise<PlatformAccount>{
+async function browserAccount(accountId:string,artistId?:string):Promise<PlatformAccount>{
   if(mode!=='production'||switching||closing)throw Error('PRODUCTION_REQUIRED');
   const generation=coreGeneration;
-  const result=await rpc('internal.accountSession.get',{accountId});
+  const result=await rpc('internal.accountSession.get',{accountId,artistId});
   if(generation!==coreGeneration||switching||closing)throw Error('WORKSPACE_CHANGED');
   if(!result.ok)throw Error(result.error.code);
   return result.value;
@@ -186,6 +188,56 @@ async function browserAccount(accountId:string):Promise<PlatformAccount>{
 async function fanqieAccount(accountId?:string){
   if(accountId&&(await browserAccount(accountId)).provider!=='fanqie')throw Error('ACCOUNT_PROVIDER_MISMATCH');
   return fanqieAccounts.get(accountId);
+}
+async function platformSession(method:string,input:unknown){
+  const {accountId,artistId}=AccountWorkWindowSchema.parse(input);
+  const generation=coreGeneration,account=await browserAccount(accountId,artistId);
+  const guard=()=>{
+    if(mode!=='production'||switching||closing||generation!==coreGeneration)throw Error('WORKSPACE_CHANGED');
+  };
+  guard();
+  if(account.provider==='fanqie'){
+    const value=await fanqieAccounts.get(accountId).catalog.ui(method.endsWith('.open')?'open':'status');
+    if(!value)throw Error('FANQIE_BROWSER_CONNECTION_REQUIRED');
+    const workWindow=accountBrowsers.workWindow(account,artistId,method.endsWith('.open'));
+    return {...value,opened:value.connected,workWindow};
+  }
+  return method.endsWith('.open')
+    ?accountBrowsers.open(account,official[account.provider],guard,artistId)
+    :{...accountBrowsers.status(accountId),workWindow:accountBrowsers.workWindow(account)};
+}
+async function publishRequest(method:string,input:unknown){
+  const result=await rpc(method,input);
+  if(result.ok&&!offlineAcceptance)void unifiedPublish.pump();
+  return result;
+}
+async function workbenchDispatch({channel,method,input}:WorkbenchRequest){
+  try{
+    if(offlineAcceptance||mode!=='production'||switching||closing)throw Error('PRODUCTION_REQUIRED');
+    if(channel!=='call'){
+      const {accountId,actionInput}=splitFanqieAccountInput(input);
+      const session=await fanqieAccount(accountId);
+      return {ok:true,value:await (channel==='fanqieUpload'?session.upload:session.catalog).ui(method,actionInput)};
+    }
+    const parsed=validate(method,input);
+    if(method==='accountSession.open')return {ok:true,value:await platformSession(method,parsed)};
+    if(method==='publish.simple')return publishRequest(method,parsed);
+    if(method==='publish.reconcile')return {ok:true,value:await unifiedPublish.reconcile((parsed as {id:string}).id)};
+    if(method==='snapshot'){
+      const result=await rpc(method,parsed);
+      if(!result.ok)return result;
+      const {works,artists,assets,accounts,platformConfigurations,publicationRequests,publicationPipelineJobs,
+        publicationPendingTerms,publishSelection,targets,externalTmePublications,mode}=result.value;
+      return {ok:true,value:{mode,platformConfigurations,publicationRequests,publicationPipelineJobs,publicationPendingTerms,
+        publishSelection,targets,externalTmePublications,materialWorkbench:{materials:[]},
+        works:works.map(({id,title,artistId,assets,selectedAudioVariant,revision}:any)=>({id,title,artistId,assets,selectedAudioVariant,revision})),
+        artists:artists.map(({id,name}:any)=>({id,name})),
+        assets:assets.map(({id,kind,bytes,sha256}:any)=>({id,kind,bytes,sha256})),
+        accounts:accounts.map(({id,name,provider}:any)=>({id,name,provider})),
+      }};
+    }
+    return rpc(method,parsed);
+  }catch(error){return {ok:false,error:fanqieCatalogError(error)};}
 }
 const planFanqiePublisher=createPlanFanqiePublisher({
   rpc,upload:fanqieAccounts.get().upload,forAccount:async id=>(await fanqieAccount(id)).upload,
@@ -410,22 +462,7 @@ function handlers() {
       const parsed = validate(method, input);
       if(method==="accountSession.status"||method==="accountSession.open"){
         try {
-          const {accountId}=PlatformAccountIdSchema.parse(parsed);
-          const generation=coreGeneration,account=await browserAccount(accountId);
-          const guard=()=>{
-            if(mode!=='production'||switching||closing||generation!==coreGeneration)
-              throw Error('WORKSPACE_CHANGED');
-          };
-          guard();
-          if(account.provider==='fanqie'){
-            const value=await fanqieAccounts.get(accountId).catalog.ui(method.endsWith('.open')?'open':'status');
-            if(!value)throw Error('FANQIE_BROWSER_CONNECTION_REQUIRED');
-            return {ok:true,value:{...value,opened:value.connected}};
-          }
-          const value=method.endsWith('.open')
-            ?await accountBrowsers.open(account,official[account.provider],guard)
-            :accountBrowsers.status(accountId);
-          return {ok:true,value};
+          return {ok:true,value:await platformSession(method,parsed)};
         } catch(error){return {ok:false,error:fanqieCatalogError(error)};}
       }
         if(method.startsWith('materials.'))return{ok:true,value:await materialWorkbench.ui(method.slice('materials.'.length),parsed)};
@@ -465,9 +502,7 @@ function handlers() {
 
       if (method === "publish.reconcile") return {ok:true,value:await unifiedPublish.reconcile((parsed as {id:string}).id)};
       if (method === "publish.simple" && mode === 'production') {
-        const result = await rpc(method, parsed);
-        if (result.ok&&!offlineAcceptance) void unifiedPublish.pump();
-        return result;
+        return publishRequest(method,parsed);
       }
       return method === "apiProfile.save"
         ? apiCredentials.runExclusive(() => rpc(method, parsed))
@@ -579,6 +614,14 @@ function handlers() {
   ipcMain.handle("rainfall:official", (e, provider) =>
     safe(async () => {
       trusted(e);
+      if(provider==='publishWorkbench'){
+        if(offlineAcceptance||mode!=='production'||switching||closing)throw Error('PRODUCTION_REQUIRED');
+        publishWorkbench??=startPublishWorkbench(path.join(__dirname,'ui'),workbenchDispatch);
+        const current=publishWorkbench;
+        const url=await current.ready.catch(error=>{if(publishWorkbench===current)publishWorkbench=undefined;throw error;});
+        await shell.openExternal(url);
+        return {ok:true,value:true};
+      }
       if (!official[provider]) throw Error("PROVIDER");
       await shell.openExternal(official[provider]);
       return { ok: true, value: true };
@@ -710,6 +753,7 @@ app
   });
 let closing = false;
 app.on("before-quit", (e) => {
+  publishWorkbench?.close();
   void tmeAiCloud.disconnect().catch(()=>{});
   tmeAiNative.interrupt();
   if (!closing && child) {

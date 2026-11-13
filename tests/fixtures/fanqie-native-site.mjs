@@ -3,7 +3,7 @@
 const html = body => `<!doctype html><html lang="zh"><meta charset="utf-8"><body>${body}</body></html>`;
 const formPath = '/creator/music/finished/ugc/uploadProduct';
 const catalogPath = '/creator/music/finished/ugc';
-export async function installFanqieNativeSite(context, {title, artist, accountId, cover, beforeEvent, countDelay = 0}) {
+export async function installFanqieNativeSite(context, {title, artist, accountId, cover, beforeEvent, countDelay = 0,instrumental=false}) {
   const events = [], requests = [], failures = [];
   const rows = [{id:'1234567890123456789', title:'已有合成作品'}];
   await context.exposeBinding('fixtureEvent', async (_source, event) => {
@@ -15,6 +15,7 @@ export async function installFanqieNativeSite(context, {title, artist, accountId
   const form = `<form><p>上传歌曲信息 授权签约模式 预览合同协议</p><div>歌曲1: </div>
     <div class="arco-form-item"><label for="songs_0_name_input">作品名称</label><input id="songs_0_name_input"></div>
     <div class="arco-form-item"><label for="songs_0_type_input">音乐类型</label><label><input type="radio" name="type" checked>原创</label></div>
+    ${instrumental?'<label><input type="checkbox" id="instrumental">纯音乐</label>':''}
     <div class="arco-form-item"><label for="songs_0_ai_usage_type_input">是否为AI作品</label><label><input type="radio" name="ai" value="yes">是</label><label><input type="radio" name="ai" value="no" checked>否</label></div>
     ${credit('lyricist_id_list','词作者')}${credit('composer_id_list','曲作者')}${credit('singer_id_list','歌手')}
     ${file('songFile','完整歌曲','audio')}${file('lyricFile','歌词','lyrics')}${file('coverImage','歌曲封面','cover')}
@@ -22,6 +23,11 @@ export async function installFanqieNativeSite(context, {title, artist, accountId
   const formScript = `<script>
     const artist=${JSON.stringify(artist)}, title=${JSON.stringify(title)};
     const event=value=>window.fixtureEvent(value);
+    const pure=document.querySelector('#instrumental');
+    if(pure)pure.onchange=()=>{
+      document.querySelector('[data-credit="lyricist_id_list"]').hidden=pure.checked;
+      document.querySelector('#songs_0_lyricFile').parentElement.hidden=pure.checked;
+    };
     const modal=(name,body)=>{const el=document.createElement('div');el.setAttribute('role','dialog');el.setAttribute('aria-label',name);el.innerHTML=body;document.body.append(el);return el;};
     document.querySelectorAll('[data-credit]').forEach(region=>{
       region.querySelector('input').oninput=()=>{

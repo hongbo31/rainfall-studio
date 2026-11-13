@@ -14,8 +14,9 @@ export const planPuleReceipt=z.strictObject({
 export type PlanPuleTask=z.infer<typeof planPuleScope>;
 export type PlanPuleReceipt=z.infer<typeof planPuleReceipt>;
 
-export function planPuleReleaseIndex(songs:ReadonlyArray<{title?:string;lyrics?:string}|null>){
+export function planPuleReleaseIndex(songs:ReadonlyArray<{title?:string;lyrics?:string}|null>,instrumental=false){
   return songs.findIndex(song=>{
+    if(instrumental)return !!song&&!cleanLyricText(song.lyrics??'').cleaned.trim();
     const title=song?.title?.trim();
     return !!title&&Array.from(title).length<=40&&!!song?.lyrics&&!!cleanLyricText(song.lyrics).cleaned.trim();
   });

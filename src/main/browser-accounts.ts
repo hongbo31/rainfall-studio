@@ -1,8 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
+import {randomUUID} from "node:crypto";
 import { chromium, type BrowserContext } from "playwright-core";
 import {
   PlatformAccountIdSchema,
+  AccountWorkWindowSchema,
+  AccountProviderSchema,
   type PlatformAccount,
 } from "../shared/platform-accounts";
 import { fanqieChromeLaunchOptions } from "./fanqie/chrome-executable";
@@ -40,6 +43,24 @@ export class PlatformBrowserSessions {
 
   constructor(private readonly root: string) {}
 
+  workWindow(account:PlatformAccount,artistId?:string,save=false){
+    const file=path.join(scopedDirectory(this.root,'runtime','work-windows'),account.id+'.json');
+    const schema=AccountWorkWindowSchema.extend({provider:AccountProviderSchema});
+    if(!save){
+      if(!fs.existsSync(file))return null;
+      try{
+        const parsed=schema.safeParse(JSON.parse(fs.readFileSync(file,'utf8')));
+        return parsed.success&&parsed.data.accountId===account.id&&parsed.data.provider===account.provider?parsed.data:null;
+      }catch{return null;}
+    }
+    const scope=schema.parse({accountId:account.id,provider:account.provider,artistId});
+    fs.mkdirSync(path.dirname(file),{recursive:true});
+    const temporary=file+'.'+randomUUID()+'.tmp';
+    fs.writeFileSync(temporary,JSON.stringify(scope),{flag:'wx'});
+    fs.renameSync(temporary,file);
+    return scope;
+  }
+
   status(accountId: string) {
     return {
       opened: this.contexts.has(accountId),
@@ -49,7 +70,7 @@ export class PlatformBrowserSessions {
     };
   }
 
-  async open(account: PlatformAccount, url: string, guard: () => void) {
+  async open(account: PlatformAccount, url: string, guard: () => void,artistId?:string) {
     guard();
     let pending = this.contexts.get(account.id);
     if (!pending) {
@@ -80,7 +101,7 @@ export class PlatformBrowserSessions {
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: 20_000 });
     guard();
     await page.bringToFront();
-    return this.status(account.id);
+    return {...this.status(account.id),workWindow:this.workWindow(account,artistId,true)};
   }
 
   async close() {

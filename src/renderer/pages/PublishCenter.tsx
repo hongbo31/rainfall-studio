@@ -24,7 +24,7 @@ const states: Record<string, string> = {
   unavailable: "未接通",
   ready: "模拟就绪",
 };
-export default function PublishCenter() {
+export default function PublishCenter({browser=false}:{browser?:boolean}={}) {
   const {
     data,
     selected,
@@ -35,6 +35,7 @@ export default function PublishCenter() {
     call,
     refresh,
     go,
+    notify,
   } = useStudio();
   const [fallback, setFallback] = useState<PublishSelection>(
     () =>
@@ -67,6 +68,7 @@ export default function PublishCenter() {
   const fanqieConfigured = accountConfig?.accountId === fanqieAccountId && accountConfig.ready;
   const setFanqieState = (value: any) => setAccountState({ accountId: fanqieAccountId, value });
   const [channelResults,setChannelResults]=useState<string[]>([]);
+  const [channelStatus,setChannelStatus]=useState<Record<string,{text:string;error?:boolean}>>({});
   useEffect(()=>{
     let active=true;
     setAccountState(undefined);
@@ -80,7 +82,9 @@ export default function PublishCenter() {
     }
     return()=>{active=false};
   },[data.mode,fanqieAccountId,fanqieAccountRequired]);
-  useEffect(()=>{if(!busy||!selection.targets.includes('fanqie'))return;let active=true;const timer=setInterval(()=>{void window.rainfall.fanqieCatalog('status',fanqieInput).then(r=>{if(active&&r.ok&&r.value.progress)setMessage('番茄音乐：'+r.value.progress)}).catch(()=>{});},1200);return()=>{active=false;clearInterval(timer)};},[busy,data.mode,fanqieAccountId,selection.targets.includes('fanqie')]);
+  const fanqieRunning=channelStatus.fanqie?.text==='正在处理';
+  const [fanqieProgress,setFanqieProgress]=useState('');
+  useEffect(()=>{if(!fanqieRunning)return;let active=true;const timer=setInterval(()=>{void window.rainfall.fanqieCatalog('status',fanqieInput).then(r=>{if(active&&r.ok&&r.value.progress)setFanqieProgress(r.value.progress)}).catch(()=>{});},1200);return()=>{active=false;clearInterval(timer);setFanqieProgress('');};},[fanqieRunning,data.mode,fanqieAccountId]);
   const [currentResult, setCurrentResult] = useState<{
     requests: SimplePublicationRequest[];
     reused: boolean;
@@ -143,6 +147,7 @@ export default function PublishCenter() {
     setQueueTaskId("");
     setQueueAccountId("");
     setCurrentResult(null);
+    setChannelStatus({});
     setError("");
     setMessage("");
   }, [data.mode]);
@@ -167,6 +172,12 @@ export default function PublishCenter() {
       setError(e.message);
     }
   };
+  const openBrowser = async () => {
+    try {
+      const result=await window.rainfall.openOfficial('publishWorkbench');
+      if(!result.ok)throw Error(result.error.message);
+    } catch(e){notify(e instanceof Error?e.message:'浏览器发布台未打开');}
+  };
   const publish = async () => {
     if (inFlight.current) return;
     inFlight.current = true;
@@ -178,7 +189,16 @@ export default function PublishCenter() {
     const submittedScope = currentScope;
     try {
       await save(selection);
-      if(selection.targets.includes('fanqie')){
+      const update=(channel:string,text:string,error=false)=>{
+        if(scopeRef.current===submittedScope)setChannelStatus(previous=>({...previous,[channel]:{text,error}}));
+      };
+      const run=async(channel:string,dispatch:()=>Promise<string>)=>{
+        update(channel,'正在处理');
+        try{update(channel,await dispatch());}
+        catch(e){update(channel,e instanceof Error?e.message:'请重试',true);}
+      };
+      const channels:Promise<void>[]=[];
+      if(selection.targets.includes('fanqie'))channels.push(run('fanqie',async()=>{
         if(data.mode!=='production')throw Error('番茄音乐暂不提供模拟发布');
         if(fanqieAccountRequired)throw Error('请选择番茄发布账号');
         const config=await window.rainfall.fanqieUpload('configuration',fanqieInput);
@@ -187,26 +207,27 @@ export default function PublishCenter() {
         const items=selection.workIds.map(workId=>{const work=data.works.find((w:any)=>w.id===workId);if(!work)throw Error('作品已变化，请重新选择');return {workId,variant:work.selectedAudioVariant==='B'?'B':'A'};});
         const uploaded=await window.rainfall.fanqieUpload('publishBatch',{...fanqieInput,items});
         if(!uploaded.ok)throw Error(uploaded.error.message);
-        if(scopeRef.current!==submittedScope)return;
-        showFanqieBatch(uploaded.value);
+        if(scopeRef.current===submittedScope)showFanqieBatch(uploaded.value);
         if(uploaded.value.batch.state!=='complete')throw Error(uploaded.value.batchError??'本批已暂停，请核对官网状态。');
-      }
-      const otherTargets=selection.targets.filter(t=>t!=='fanqie');
-      if(!otherTargets.length){setMessage('');return;}
-      const result = await call("publish.simple", {...selection,targets:otherTargets});
-      if (scopeRef.current !== submittedScope) return;
-      setCurrentResult({
-        requests: result.requests ?? [],
-        reused: result.reused,
-        pipeline: result.pipeline,
-      });
-      setMessage(
-        result.pipeline?.length
-          ? "发布任务已更新"
-          : result.reused
-            ? "已重新核验"
-            : "已整理发布材料",
-      );
+        return '批次已处理';
+      }));
+      if(selection.targets.includes('qishui')&&data.mode==='production')channels.push(run('qishui',async()=>{
+        const accountId=selection.accountOverrides.qishui??configurations.find((item:any)=>item.target==='qishui')?.accountId;
+        if(!accountId)throw Error('请选择汽水音乐发布账号');
+        await call('accountSession.open',{accountId});
+        return '已打开专属窗口 · 请在官网继续';
+      }));
+      const otherTargets=selection.targets.filter(t=>t!=='fanqie'&&(t!=='qishui'||data.mode==='simulation'));
+      if(otherTargets.length)channels.push(run('other',async()=>{
+        const result = await call("publish.simple", {...selection,targets:otherTargets});
+        if(scopeRef.current===submittedScope)setCurrentResult({
+          requests: result.requests ?? [],
+          reused: result.reused,
+          pipeline: result.pipeline,
+        });
+        return result.pipeline?.length?"发布任务已更新":result.reused?"已重新核验":"已整理发布材料";
+      }));
+      await Promise.all(channels);
     } catch (e: any) {
       if (scopeRef.current === submittedScope)
         setError(
@@ -294,7 +315,7 @@ export default function PublishCenter() {
   }, [activePipeline]);
   return (
     <div className="simple-publishing">
-      <PageHead title="发布中心" />
+      <PageHead title="发布中心" action={!browser&&data.mode==='production'?<button disabled={busy} onClick={()=>void openBrowser()}>在浏览器打开</button>:undefined}/>
       <section className="panel publish-choices" aria-label="选择歌曲和平台">
         <fieldset
           className="simple-publish-grid publish-selection-fields"
@@ -349,7 +370,7 @@ export default function PublishCenter() {
                           checked={chosen}
                           disabled={
                             target==='fanqie'?data.mode!=='production':data.mode !== "simulation" &&
-                            !["qqmusic", "kugou"].includes(target)
+                            !["qqmusic", "kugou", "qishui"].includes(target)
                           }
                           onChange={() =>
                             change({
@@ -377,7 +398,7 @@ export default function PublishCenter() {
                           ? "模拟"
                           : ["qqmusic", "kugou"].includes(target)
                             ? "腾讯 AI 投稿"
-                            : "未接通"}
+                            : target==='qishui'?'官网手动接续':"未接通"}
                       </span>
                       <button
                         className="text-button"
@@ -426,7 +447,7 @@ export default function PublishCenter() {
               (fanqieAccountRequired && selection.targets.includes("fanqie")) ||
               (data.mode !== "simulation" &&
                 selection.targets.some(
-                  (target) => !["fanqie", "qqmusic", "kugou"].includes(target),
+                  (target) => !["fanqie", "qqmusic", "kugou", "qishui"].includes(target),
                 ))
             }
             onClick={() => void publish()}
@@ -454,6 +475,9 @@ export default function PublishCenter() {
           )}
         </div>
         {channelResults.map((text,index)=><p role="status" key={index}>{text}</p>)}
+        {Object.entries(channelStatus).map(([channel,status])=><p key={channel} role={status.error?'alert':'status'} className={status.error?'error':undefined}>
+          {channel==='other'?selection.targets.filter(t=>t!=='fanqie'&&(t!=='qishui'||data.mode==='simulation')).map(t=>names[t]).join(' / '):names[channel]} · {channel==='fanqie'&&fanqieProgress?fanqieProgress:status.text}
+        </p>)}
         {fanqieBatch&&<section className="publication-current-result" aria-label="番茄批次">
           <h3>番茄批次</h3>
           <p role="status">{fanqieBatch.state==='paused'?'已暂停':

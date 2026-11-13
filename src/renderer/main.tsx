@@ -27,6 +27,7 @@ import {
   type PublishSelection,
 } from "../shared/platform-config";
 import ChatCreation from "./pages/ChatCreation";
+import BrowserPublishWorkbench from "./pages/BrowserPublishWorkbench";
 initializeTheme();
 const pages = [
   ['materials','▦','素材列表'],
@@ -345,4 +346,4 @@ function App() {
     </Context.Provider>
   );
 }
-createRoot(document.getElementById("root")!).render(<App />);
+createRoot(document.getElementById("root")!).render(window.rainfall?<App/>:<BrowserPublishWorkbench/>);

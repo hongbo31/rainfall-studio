@@ -111,20 +111,18 @@ function FanqieSettings({ accountId }: { accountId: string }) {
       <form onSubmit={(event) => void save(event)}>
         <fieldset className="platform-fields" disabled={busy || loading}>
           {!!linkedArtists.length && (
-            <ChoiceButtons
-              label="署名适用音乐人"
-              value={artistId}
-              onChange={setArtistId}
-              choices={[
-                { value: "", label: "账号默认署名" },
-                ...linkedArtists.map(
-                  (artist: { id: string; name: string }) => ({
-                    value: artist.id,
-                    label: artist.name,
-                  }),
-                ),
-              ]}
-            />
+            <div>
+              <button type="button" aria-pressed={!artistId} onClick={()=>setArtistId("")}>账号默认署名</button>
+              <ul aria-label="已绑定音乐人与发行署名">
+                {linkedArtists.map((artist:{id:string;name:string})=>{
+                  const credits=artistAuthors[artist.id]??authors;
+                  return <li key={artist.id}>
+                    <button type="button" aria-pressed={artistId===artist.id} onClick={()=>setArtistId(artist.id)}>{artist.name}</button>
+                    <small> 词 {credits.lyricist||'待设置'} · 曲 {credits.composer||'待设置'} · 演唱 {credits.singer||'待设置'}</small>
+                  </li>;
+                })}
+              </ul>
+            </div>
           )}
           <div className="form-grid">
             {(["lyricist", "composer", "singer"] as const).map((role) => (

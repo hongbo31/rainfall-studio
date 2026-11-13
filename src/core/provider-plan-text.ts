@@ -19,7 +19,8 @@ export function providerPlanProof(repo:Repository,run:PlanCenterRun,item:PlanCen
  const expected={ownerKey:generation.id,runId:run.id,itemId:item.id,artistId:run.snapshot.artistId,profileId:text.profileId,profileRevision:text.profileRevision};
  const proof=(complete?verifyProviderTextProof:verifyProviderTextGeneration)(repo,jobId,expected);
  const job=proof.job;
- if(job.planId!==run.planId||job.planRevision!==run.planRevision||job.theme!==planCreativeContext(run.snapshot).theme||job.styleTemplate!==planCreativeContext(run.snapshot).styleTemplate||job.modelId!==text.modelId||job.threshold!==text.threshold||job.maxRewrites!==text.maxRewrites||job.maxScoreRetries!==text.maxScoreRetries||job.maxOutputTokens!==(text.maxOutputTokens??2048)||job.budgetMicros!==text.budgetMicros||!text.consent||!run.snapshot.authorization.text)throw Error('PROVIDER_PLAN_GRANT_MISMATCH');
+ const brief=planCreativeContext(run.snapshot,item.ordinal);
+ if(job.planId!==run.planId||job.planRevision!==run.planRevision||job.theme!==brief.theme||job.styleTemplate!==brief.styleTemplate||job.modelId!==text.modelId||job.threshold!==text.threshold||job.maxRewrites!==text.maxRewrites||job.maxScoreRetries!==text.maxScoreRetries||job.maxOutputTokens!==(text.maxOutputTokens??2048)||job.budgetMicros!==text.budgetMicros||!text.consent||!run.snapshot.authorization.text)throw Error('PROVIDER_PLAN_GRANT_MISMATCH');
  return proof;
 }
 
@@ -85,7 +86,7 @@ export function tickProviderPlanText(s:Studio,run:PlanCenterRun,item:PlanCenterI
   if(!run.snapshot.authorization.text||!text.consent)throw Error('TEXT_GRANT_REQUIRED');
   const ownerKey=generation.id;
   binding=s.repo.transaction(()=>{
-   const job=service.prepare({ownerKey,runId:run.id,itemId:item.id,artistId:run.snapshot.artistId,profileId:text.profileId!,profileRevision:text.profileRevision!,modelId:text.modelId!,budgetMicros:text.budgetMicros!,maxOutputTokens:text.maxOutputTokens??2048,...planCreativeContext(run.snapshot),threshold:text.threshold,maxRewrites:text.maxRewrites,maxScoreRetries:text.maxScoreRetries,consent:true});
+   const job=service.prepare({ownerKey,runId:run.id,itemId:item.id,artistId:run.snapshot.artistId,profileId:text.profileId!,profileRevision:text.profileRevision!,modelId:text.modelId!,budgetMicros:text.budgetMicros!,maxOutputTokens:text.maxOutputTokens??2048,...planCreativeContext(run.snapshot,item.ordinal),threshold:text.threshold,maxRewrites:text.maxRewrites,maxScoreRetries:text.maxScoreRetries,consent:true});
    const value={jobId:job.id,ownerKey,runId:run.id,itemId:item.id,artistId:run.snapshot.artistId};
    s.repo.save('settings',{id:bindingKey(item.id),value});return value;
   });

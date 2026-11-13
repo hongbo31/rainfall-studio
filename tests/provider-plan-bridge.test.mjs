@@ -16,7 +16,7 @@ const {draft}=require('./fixtures/workflow.cjs');
 function setup(t){
  const repo=new w.Repository(path.join(buildRoot,randomUUID(),'library.sqlite'));t.after(()=>repo.close());
  const service=new w.PlanCenterService(repo,{capabilities:{text:{available:true}}});
- const plan={id:randomUUID(),artistId:randomUUID(),title:'Provider fixture',enabled:false,schedule:{kind:'daily',localTime:'09:00'},material:{source:'provider',channel:'',identity:''},text:{consent:false,threshold:75,maxRewrites:2,maxScoreRetries:2},music:{route:'manual',consent:false},authorization:{text:false,music:false,publish:false}};
+ const plan={id:randomUUID(),artistId:randomUUID(),title:'Provider fixture',theme:'A song about the rain',enabled:false,schedule:{kind:'daily',localTime:'09:00'},material:{source:'provider',channel:'',identity:''},text:{consent:false,threshold:75,maxRewrites:2,maxScoreRetries:2},music:{route:'manual',consent:false},authorization:{text:false,music:false,publish:false}};
  return{repo,service,plan,save:()=>service.save({plan,expectedRevision:null})};
 }
 test('provider plan is accepted without granting any paid execution and waits at generation',t=>{
@@ -116,6 +116,26 @@ test('provider bounded rewrite preserves one owner and final lyrics and prompt f
  const final=x.item().material.finalRevision;assert.equal(final.title,revised.title);assert.match(final.lyrics,/rewritten original phrase/);assert.equal(final.musicPrompt,revised.musicPrompts.yourmusic.positiveStyle);
  assert.equal(x.text.list().length,1);assert.equal(x.job().ownerKey,owner);assert.equal(x.job().versions.length,2);
  assert.equal(x.center.list().stageAttempts.filter(a=>a.stage==='text_generate').length,1);assert.equal(x.center.list().stageAttempts.filter(a=>a.stage==='text_score').length,1);
+});
+test('independent briefs differ and a duplicate draft must be rewritten even when it passes scoring',t=>{
+ const x=studioFixture(t,{count:2,distinctLyrics:true,outputs:{lyrics:true,cover:false,music:false}});
+ const [first,second]=x.text.list().sort((a,b)=>a.itemId.localeCompare(b.itemId));
+ assert.notEqual(first.theme,second.theme);
+ assert.match(second.theme,/同批第 2 首/);
+ generate({...x,job:()=>first});w.tickPlanCenter(x.s);
+ assert.equal(score({...x,job:()=>first}).state,'complete');
+ w.tickPlanCenter(x.s);
+ generate({...x,job:()=>second});w.tickPlanCenter(x.s);
+ const duplicate=score({...x,job:()=>second});
+ assert.equal(duplicate.phase,'rewrite');assert.equal(duplicate.reason,'TEXT_BATCH_DUPLICATE');
+ const revised=draft();
+ revised.title='Last ferry home';revised.storyBeat='An empty deck under a single yellow lamp';
+ revised.sections=revised.sections.map(s=>({...s,lines:s.lines.map(line=>'Midnight ferry: '+line)}));
+ generate({...x,job:()=>second},revised);w.tickPlanCenter(x.s);
+ assert.equal(score({...x,job:()=>second}).state,'complete');w.tickPlanCenter(x.s);
+ const item=x.center.list().items.find(i=>i.id===second.itemId);
+ assert.equal(item.material.finalRevision.title,revised.title);
+ assert.equal(x.text.context(second.id).job.versions.length,2);
 });
 test('provider generation stage is distinct and stopped provider run cannot claim a new stage',t=>{
  const x=setup(t);assert.equal(w.PlanCenterStageSchema.parse('text_generate'),'text_generate');

@@ -14,9 +14,10 @@ export function resolveFanqieWork(s:Studio,raw:unknown) {
   return {file:s.locate(asset.id).file,sha256:asset.sha256,bytes:asset.bytes};
  };
  const audio=resolve('audio_'+selection.variant,'audio'),cover=resolve('cover','image');
- const lyrics=s.lyricService().forWork(work).cleaned;
- if(!lyrics.trim())throw Error('FANQIE_LYRICS_INVALID');
- const source={...selection,title:work.title,audio,cover,lyrics,ai:work.ai};
+ const instrumental=work.config?.voice==='instrumental';
+ const lyrics=instrumental?'':s.lyricService().forWork(work).cleaned;
+ if(!instrumental&&!lyrics.trim())throw Error('FANQIE_LYRICS_INVALID');
+ const source={...selection,title:work.title,audio,cover,lyrics,ai:work.ai,...(instrumental?{instrumental:true as const}:{})};
  return {...source,artistId:work.artistId as string,fingerprint:hash(source)};
 }
 export type FanqieWorkSource=ReturnType<typeof resolveFanqieWork>;

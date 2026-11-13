@@ -1,9 +1,10 @@
 import type {ApiCredentials} from './api-credentials';
 import {planPuleReleaseIndex,type PlanPuleReceipt,type PlanPuleTask} from '../shared/plan-pule';
+import type {CreativeDraft} from '../shared/creation';
 
 type ClaimedTask=PlanPuleTask&{
   attemptId:string;profileId:string;profileRevision:number;modelId:string;
-  prompt:string;receipt?:PlanPuleReceipt;
+  prompt:string;receipt?:PlanPuleReceipt;draft?:CreativeDraft;
 };
 type Options={
   rpc:(method:string,input?:unknown)=>Promise<any>;
@@ -43,12 +44,16 @@ export function createPlanPuleRunner(options:Options){
           await options.credentials.withMusicAdapter(identity,async adapter=>{
             await check();
             if(task.stage==='music_submit'){
-              const result=await adapter.submitPrompt({prompt:task.prompt,modelId:task.modelId},async()=>{
+              const dispatch=async()=>{
                 await check();paid=true;
-              });
-              if(result.state==='accepted')
+              };
+              const result=task.draft
+                ?await adapter.submit({draft:task.draft,modelId:task.modelId,operationId:task.attemptId},dispatch)
+                :await adapter.submitPrompt({prompt:task.prompt,modelId:task.modelId},dispatch);
+              if(result.state==='accepted'&&result.songIds?.length===2)
                 await record('succeeded',undefined,{trackingId:result.trackingId,songIds:result.songIds});
-              else await record(result.state,result.reason);
+              else if(result.state==='accepted')await record('unknown','MUSIC_RECEIPT_INVALID');
+              else await record(paid?result.state:'failed',result.reason);
               return;
             }
             const {songIds}=task.receipt!;
@@ -60,13 +65,14 @@ export function createPlanPuleRunner(options:Options){
             const originals=songs.map(song=>song?.status==='succeeded'&&song.audio_url&&!song.has_watermark&&
               (!song.audio_delivery_status||song.audio_delivery_status==='original')?
               {...song,lyrics:song.lyric??''}:null);
-            const selected=originals[planPuleReleaseIndex(originals)];
+            const eligible=task.draft?originals.map(song=>song&&planPuleReleaseIndex([song],true)>=0?song:null):originals;
+            const selected=eligible[planPuleReleaseIndex(eligible,!!task.draft)];
             if(!selected){
               await record('failed',originals.some(Boolean)?'MUSIC_OUTPUT_TEXT_INVALID':'MUSIC_PROVIDER_FAILED');
               return;
             }
             const assets=[];
-            for(const song of originals){
+            for(const song of eligible){
               if(!song){assets.push(null);continue;}
               await check();
               const audio=await adapter.download(song.audio_url!);
