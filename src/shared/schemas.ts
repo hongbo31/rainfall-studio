@@ -3,6 +3,7 @@ import {MaterialMethods} from './material-methods';
 import {GenerationConfigSchemas} from './generation-config';
 import { z } from "zod";
 import { AccountProviderSchema, AccountWorkWindowSchema } from "./platform-accounts";
+import { QishuiReleaseSchema,QishuiFillSchema,QishuiJobSchema,QishuiAuthorizationSchema,QishuiAcceptSchema } from "./qishui";
 import {DirectoryTaskSchemas} from './directory-tasks';
 import {PlanCenterPrepareCoverWorkSchema} from './plan-center';
 import { saveApiProfileSchema } from "./api-profiles";
@@ -108,6 +109,12 @@ export const methodSchemas: Record<string, z.ZodType> = {
   }),
   "accountSession.status": AccountWorkWindowSchema,
   "accountSession.open": AccountWorkWindowSchema,
+  "publish.qishui.prepare": QishuiReleaseSchema,
+  "publish.qishui.fill": QishuiFillSchema,
+  "publish.qishui.status": QishuiJobSchema,
+  "publish.qishui.authorization": QishuiAuthorizationSchema,
+  "publish.qishui.contract": QishuiJobSchema,
+  "publish.qishui.accept": QishuiAcceptSchema,
   "binding.save": z.object({
     artistId: id,
     accountId: id,

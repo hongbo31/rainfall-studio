@@ -72,11 +72,11 @@ test('account windows use separate profiles and retain the last artist on reopen
   profiles.push(profile);await fs.mkdir(profile,{recursive:true});
   const context=new EventEmitter();
   let url='about:blank';
-  const page={url:()=>url,goto:async next=>{url=next;},isClosed:()=>false,bringToFront:async()=>{}};
+  const page={url:()=>url,goto:async next=>{url=new URL(next).href;},isClosed:()=>false,bringToFront:async()=>{}};
   return Object.assign(context,{pages:()=>[page],close:async()=>context.emit('close')});
  };
  const first={id:randomUUID(),provider:'tme',name:'测试账号 A',dailyLimit:1};
- const second={id:randomUUID(),provider:'qishui',name:'测试账号 B',dailyLimit:1};
+ const second={id:randomUUID(),provider:'netease',name:'测试账号 B',dailyLimit:1};
  const artistA=randomUUID(),artistB=randomUUID(),manager=new PlatformBrowserSessions(root,launch);
  t.after(()=>manager.close());
  const url='https://fixture.invalid',guard=()=>{};

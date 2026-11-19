@@ -364,7 +364,9 @@ export function checkSimplePublication(
       reason:
         s.mode === "simulation"
           ? "本地模拟 · 未上传"
-          : `${target === "qqmusic" ? "QQ音乐" : target === "netease" ? "网易云音乐" : target === "qishui" ? "汽水音乐" : target === "kugou" ? "酷狗音乐" : "抖音视频"}上传未接通`,
+          : target === "qishui"
+            ? "请在汽水音乐专属窗口继续"
+            : `${target === "qqmusic" ? "QQ音乐" : target === "netease" ? "网易云音乐" : target === "kugou" ? "酷狗音乐" : "抖音视频"}上传未接通`,
     },
   };
 }
@@ -527,7 +529,7 @@ export function listSimplePublicationRequests(
     }
   return result;
 }
-export function publishSimple(s: Studio, input: PublishSelection) {
+export function publishSimple(s: Studio, input: PublishSelection, enqueue = true) {
   if (!input.workIds.length || !input.targets.length)
     throw Error("EMPTY_SELECTION");
   const selection = normalizeSelection(s, input),
@@ -592,7 +594,7 @@ export function publishSimple(s: Studio, input: PublishSelection) {
     });
     return {
       requests,
-      pipeline: s.mode === "production" ? unifiedPublicationService(s).enqueue(requests) : [],
+      pipeline: s.mode === "production" && enqueue ? unifiedPublicationService(s).enqueue(requests) : [],
       reused,
       rechecked: true,
       checkedAt: s.now().toISOString(),

@@ -23,6 +23,9 @@ import {ProductionFlowSchemas} from '../shared/production-flow';
 import {importProductionAudio} from './production-integration';
 import {executeTmeAiPrepare} from './tme-ai-prepare-integration';
 import {resolveFanqieWork} from './fanqie-work';
+import {resolveQishuiWork} from './qishui-work';
+import {publishSimple} from './simple-publication';
+import {QishuiReleaseSchema} from '../shared/qishui';
 import { AccountProviderSchema, AccountWorkWindowSchema } from "../shared/platform-accounts";
 import {planFanqieAction,recoverPlanFanqie} from './plan-fanqie';
 import {planPuleAction} from './plan-pule';
@@ -236,6 +239,12 @@ if (port) {
       return true;
     }
     if (method === 'internal.fanqie.work') return resolveFanqieWork(studio,input);
+    if (method === 'internal.qishui.work') return resolveQishuiWork(studio,input);
+    if (method === 'internal.qishui.prepare') {
+      if (studio.mode !== 'production') throw Error('PRODUCTION_REQUIRED');
+      const {accountId,workIds}=QishuiReleaseSchema.parse(input);
+      return publishSimple(studio,{workIds,targets:['qishui'],accountOverrides:{qishui:accountId}},false);
+    }
     if (method === "internal.accountSession.get") {
       const { accountId,artistId } = AccountWorkWindowSchema.parse(input);
       const account = studio.repo.maybe("accounts", accountId);

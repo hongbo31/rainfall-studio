@@ -11,7 +11,7 @@ const requestSchema=z.strictObject({
 });
 export type WorkbenchRequest=z.infer<typeof requestSchema>;
 const routes={
-  call:new Set(['snapshot','publish.selection.save','publish.simple','work.selectAudioVersion','publish.reconcile','accountSession.open']),
+  call:new Set(['snapshot','publish.selection.save','publish.simple','work.selectAudioVersion','publish.reconcile','accountSession.open','publish.qishui.prepare']),
   fanqieCatalog:new Set(['status','open','read']),
   fanqieUpload:new Set(['status','configuration','publishBatch','reconcile','authorizeExisting']),
 };

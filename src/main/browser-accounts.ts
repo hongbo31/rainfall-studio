@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import {randomUUID} from "node:crypto";
-import { chromium, type BrowserContext } from "playwright-core";
+import { chromium, type BrowserContext, type Page } from "playwright-core";
+import { inspectQishuiSession } from "./qishui-session";
+import {qishuiOrigin} from '../shared/qishui';
 import {
   PlatformAccountIdSchema,
   AccountWorkWindowSchema,
@@ -70,6 +72,26 @@ export class PlatformBrowserSessions {
     };
   }
 
+  async qishuiStatus(accountId: string) {
+    const status = this.status(accountId);
+    const pending = this.contexts.get(accountId);
+    const context = pending ? await pending : null;
+    const page = context?.pages().find(tab => !tab.isClosed() && tab.url().startsWith(qishuiOrigin+'/'));
+    return { ...status, qishuiState: page ? await inspectQishuiSession(page) : "closed" as const };
+  }
+
+  async qishuiPage(accountId:string):Promise<Page>{
+    const context=await this.contexts.get(accountId);
+    const pages=context?.pages().filter(p=>!p.isClosed()&&p.url().startsWith(qishuiOrigin+'/'))??[];
+    if(pages.length!==1)throw Error(pages.length?'QISHUI_MULTIPLE_TABS':'QISHUI_WINDOW_REQUIRED');
+    return pages[0];
+  }
+
+  async closeAccount(accountId:string){
+    const pending=this.contexts.get(accountId);
+    if(pending)await(await pending).close();
+  }
+
   async open(account: PlatformAccount, url: string, guard: () => void,artistId?:string) {
     guard();
     let pending = this.contexts.get(account.id);
@@ -94,14 +116,19 @@ export class PlatformBrowserSessions {
     const context = await pending;
     guard();
     const page =
-      context.pages().find((tab) => !tab.isClosed()) ??
+      context.pages().find((tab) => !tab.isClosed() && tab.url().startsWith(new URL(url).origin+'/')) ??
+      context.pages().find((tab) => !tab.isClosed() && tab.url()==='about:blank') ??
       (await context.newPage());
     guard();
     if (page.url() === "about:blank")
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: 20_000 });
     guard();
     await page.bringToFront();
-    return {...this.status(account.id),workWindow:this.workWindow(account,artistId,true)};
+    return {
+      ...this.status(account.id),
+      workWindow: this.workWindow(account,artistId,true),
+      ...(account.provider === "qishui" ? { qishuiState: await inspectQishuiSession(page) } : {}),
+    };
   }
 
   async close() {

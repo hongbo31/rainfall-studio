@@ -10,6 +10,7 @@ import { platformTargets, type PlatformConfiguration, type PlatformTarget } from
 import { Badge, names, PageHead, useStudio } from "../context";
 import AccountBinding from "../components/AccountBinding";
 import ChoiceButtons from "../components/ChoiceButtons";
+import type { QishuiSessionState } from "../../shared/qishui";
 
 type LocalArtist = { id: string; name: string };
 type LocalBinding = {
@@ -23,6 +24,7 @@ type SessionStatus = {
   savedProfile: boolean;
   workWindow?: {artistId?:string}|null;
   profileVerified?: boolean;
+  qishuiState?: QishuiSessionState;
   profile?: {
     accountKey: string;
     maskedAccount: string;
@@ -49,6 +51,7 @@ function AccountDetails({ account }: { account: PlatformAccount }) {
   );
   const scoped = { accountId: account.id };
   const fanqie = account.provider === "fanqie";
+  const qishui = account.provider === "qishui";
   const production = data.mode === "production";
   const supportedTargets = platformTargets.filter((target) => accountSupportsTarget(account.provider, target));
   const configurations: PlatformConfiguration[] = data.platformConfigurations ?? [];
@@ -73,6 +76,14 @@ function AccountDetails({ account }: { account: PlatformAccount }) {
       active = false;
     };
   }, [account.id, production]);
+
+  const qishuiLabels: Record<QishuiSessionState,string> = {
+    closed: "窗口未打开",
+    login_required: "请在窗口登录",
+    release_page: "已进入发布后台",
+    release_form: "已打开全曲发布表单",
+    unverified: "发布页待核对",
+  };
 
   const act = async (run: () => Promise<unknown>, success?: string) => {
     if (busy) return;
@@ -141,7 +152,7 @@ function AccountDetails({ account }: { account: PlatformAccount }) {
         <div className="section-title">
           <h2>{account.name}</h2>
           <Badge>
-            {status?.profileVerified
+            {qishui && status?.qishuiState ? qishuiLabels[status.qishuiState] : status?.profileVerified
               ? "登录已核对"
               : status?.savedProfile
                 ? "登录待核对"
@@ -171,6 +182,11 @@ function AccountDetails({ account }: { account: PlatformAccount }) {
             >
               同步官网资料
             </button>
+          )}
+          {qishui && (
+            <button type="button" disabled={!production || busy} onClick={() => void act(async () => {
+              setStatus(await call("accountSession.status", scoped));
+            })}>核对发布后台</button>
           )}
           {account.provider !== "suno" && account.provider !== "yourmusic" && (
             <button

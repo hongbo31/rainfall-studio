@@ -31,7 +31,8 @@ export default function PublicationMaterialResult({
     cover = m?.cover,
     lyrics = m?.lyrics,
     metadata = m?.metadata;
-  const missingLyrics = !lyrics?.plainText?.trim();
+  const hasLyrics = !!lyrics?.plainText?.trim();
+  const missingLyrics = r.issues.includes("缺少歌词");
   return (
     <article className="publication-material-result" data-request-id={r.id}>
       <div className="simple-request-heading">
@@ -49,7 +50,9 @@ export default function PublicationMaterialResult({
       <p className="publication-submit-blocker">
         {r.source === "simulation"
           ? "本地模拟 · 未上传"
-          : `暂不能提交：${r.submission?.reason ?? names[r.target].replace(/\s/g, "") + "上传未接通"}`}
+          : r.target === "qishui"
+            ? r.submission?.reason
+            : `暂不能提交：${r.submission?.reason ?? names[r.target].replace(/\s/g, "") + "上传未接通"}`}
       </p>
       {r.stale ? (
         <p>以下为上次材料快照，请重新检查。</p>
@@ -60,7 +63,7 @@ export default function PublicationMaterialResult({
               ? `音频 ${m?.recordingSlot === 'audio_B' ? 'B' : 'A'} · ${(a.format ?? a.mime?.split("/")[1] ?? "").toUpperCase()} ${duration(a.durationSeconds)}`
               : "缺少音频"}
           </span>
-          <span>{missingLyrics ? "缺少歌词" : "歌词已准备"}</span>
+          {(hasLyrics||missingLyrics)&&<span>{missingLyrics ? "缺少歌词" : "歌词已准备"}</span>}
           <span>{cover ? "封面已准备" : "缺少封面"}</span>
           <span>{aiNames[m?.ai ?? "unknown"] ?? "AI来源待确认"}</span>
         </div>
@@ -69,7 +72,7 @@ export default function PublicationMaterialResult({
         {!a && <button onClick={onTrack}>补音频</button>}
         {missingLyrics && <button onClick={onTrack}>补歌词</button>}
         {!cover && <button onClick={onTrack}>补封面</button>}
-        {!missingLyrics && !lyrics?.alignmentConfirmed && (
+        {hasLyrics && !lyrics?.alignmentConfirmed && (
           <button onClick={onTrack}>核对歌词</button>
         )}
         {r.issues.some((v) => v.includes("权益") || v.includes("翻唱")) && (
@@ -122,7 +125,7 @@ export default function PublicationMaterialResult({
             {m?.provenance?.statement || m?.rights || "待记录"}
           </dd>
         </dl>
-        {!missingLyrics && (
+        {hasLyrics && (
           <label>
             发布歌词
             <textarea

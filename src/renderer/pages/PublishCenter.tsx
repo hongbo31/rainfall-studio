@@ -1,4 +1,5 @@
 import FanqieCatalogPanel from '../components/FanqieCatalogPanel';
+import QishuiPublisher from '../components/QishuiPublisher';
 import PublicationMusicList from "../components/PublicationMusicList";
 import React, { useEffect, useRef, useState } from "react";
 import { useStudio, PageHead, Badge, names, label } from "../context";
@@ -190,6 +191,15 @@ export default function PublishCenter({browser=false}:{browser?:boolean}={}) {
     const submittedScope = currentScope;
     try {
       await save(selection);
+      const prepared: SimplePublicationRequest[]=[];
+      let reused=true;
+      let pipeline:any[]=[];
+      const showResults=(result:{requests?:SimplePublicationRequest[];reused:boolean;pipeline?:any[]})=>{
+        prepared.push(...(result.requests??[]));
+        reused=reused&&result.reused;
+        if(result.pipeline) pipeline.push(...result.pipeline);
+        if(scopeRef.current===submittedScope)setCurrentResult({requests:[...prepared],reused,pipeline});
+      };
       const update=(channel:string,text:string,error=false)=>{
         if(scopeRef.current===submittedScope)setChannelStatus(previous=>({...previous,[channel]:{text,error}}));
       };
@@ -215,17 +225,17 @@ export default function PublishCenter({browser=false}:{browser?:boolean}={}) {
       if(selection.targets.includes('qishui')&&data.mode==='production')channels.push(run('qishui',async()=>{
         const accountId=selection.accountOverrides.qishui??configurations.find((item:any)=>item.target==='qishui')?.accountId;
         if(!accountId)throw Error('请选择汽水音乐发布账号');
-        await call('accountSession.open',{accountId});
-        return '已打开专属窗口 · 请在官网继续';
+        const result=await call('publish.qishui.prepare',{accountId,workIds:selection.workIds});
+        showResults(result);
+        if(result.session.qishuiState==='login_required')return '材料已检查 · 请在专属窗口登录';
+        if(result.session.qishuiState==='release_page')return '材料已检查 · 已进入发布后台';
+        if(result.session.qishuiState==='release_form')return '材料已检查 · 已打开全曲发布表单';
+        return '材料已检查 · 请核对专属窗口';
       }));
       const otherTargets=selection.targets.filter(t=>t!=='fanqie'&&(t!=='qishui'||data.mode==='simulation'));
       if(otherTargets.length)channels.push(run('other',async()=>{
         const result = await call("publish.simple", {...selection,targets:otherTargets});
-        if(scopeRef.current===submittedScope)setCurrentResult({
-          requests: result.requests ?? [],
-          reused: result.reused,
-          pipeline: result.pipeline,
-        });
+        showResults(result);
         return result.pipeline?.length?"发布任务已更新":result.reused?"已重新核验":"已整理发布材料";
       }));
       await Promise.all(channels);
@@ -317,6 +327,7 @@ export default function PublishCenter({browser=false}:{browser?:boolean}={}) {
   return (
     <div className="simple-publishing">
       <PageHead title="发布中心" action={!browser&&data.mode==='production'?<button disabled={busy} onClick={()=>void openBrowser()}>在浏览器打开</button>:undefined}/>
+      {!browser&&data.mode==='production'&&<QishuiPublisher/>}
       <section className="panel publish-choices" aria-label="选择歌曲和平台">
         <fieldset
           className="simple-publish-grid publish-selection-fields"
@@ -400,7 +411,7 @@ export default function PublishCenter({browser=false}:{browser?:boolean}={}) {
                           ? "模拟"
                           : ["qqmusic", "kugou"].includes(target)
                             ? "腾讯 AI 投稿"
-                            : target==='qishui'?'官网手动接续':"未接通"}
+                            : target==='qishui'?'材料预检 · 官网接续':"未接通"}
                       </span>
                       <button
                         className="text-button"

@@ -1,0 +1,38 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {build} from 'esbuild';
+import {chromium} from 'playwright-core';
+
+test('Qishui requires official visible release controls and tolerates closing tabs',async t=>{
+  const built=await build({entryPoints:['src/main/qishui-session.ts'],bundle:true,platform:'node',format:'esm',write:false});
+  const {inspectQishuiSession}=await import('data:text/javascript;base64,'+Buffer.from(built.outputFiles[0].contents).toString('base64'));
+  const browser=await chromium.launch({channel:'chrome',headless:true});
+  t.after(()=>browser.close());
+  const page=await browser.newPage();
+  await page.route('**/*',route=>route.fulfill({contentType:'text/html',body:'<body></body>'}));
+  await page.goto('https://music.douyin.com/console/publish');
+  assert.equal(await inspectQishuiSession(page),'unverified');
+  await page.setContent('<input placeholder="请输入手机号"><button>发布全曲</button>');
+  assert.equal(await inspectQishuiSession(page),'login_required');
+  await page.setContent('<button>发布全曲</button>');
+  assert.equal(await inspectQishuiSession(page),'release_page');
+  await page.setContent('<button>发布全曲 chevron_right</button>');
+  assert.equal(await inspectQishuiSession(page),'release_page');
+  await page.setContent('<button hidden>发布全曲</button>');
+  assert.equal(await inspectQishuiSession(page),'unverified');
+  await page.setContent('<button>发布全曲</button><button>发布全曲</button>');
+  assert.equal(await inspectQishuiSession(page),'unverified');
+  await page.goto('https://fixture.invalid/console/publish');
+  await page.setContent('<button>发布全曲</button>');
+  assert.equal(await inspectQishuiSession(page),'unverified');
+  await page.goto('https://music.douyin.com/console/complete-publish?publish_timestamp=1');
+  assert.equal(await inspectQishuiSession(page),'unverified');
+  await page.setContent('<h2>发布全曲</h2><input aria-label="歌曲标题*"><button>cloud_upload_stroked 上传完整版</button>');
+  assert.equal(await inspectQishuiSession(page),'release_form');
+  await page.setContent('<h2>发布全曲</h2><input aria-label="歌曲标题*">');
+  assert.equal(await inspectQishuiSession(page),'release_form');
+  await page.setContent('<h2>发布全曲</h2><input aria-label="歌曲标题*"><button>cloud_upload_stroked 上传完整版</button><button>登录/注册</button>');
+  assert.equal(await inspectQishuiSession(page),'login_required');
+  await page.close();
+  assert.equal(await inspectQishuiSession(page),'closed');
+});

@@ -61,6 +61,9 @@ import {createPlanCoverImageRunner} from './plan-cover-image';
 import {pathToFileURL} from 'node:url';
 import {offlineAcceptanceEnabled,offlineAcceptanceInvocationAllowed} from '../shared/offline-acceptance';
 import {startPublishWorkbench,type WorkbenchRequest} from './publish-workbench';
+import {qishuiPublishUrl,QishuiReleaseSchema} from '../shared/qishui';
+import {QishuiFillSchema,QishuiJobSchema,QishuiAuthorizationSchema,QishuiAcceptSchema} from '../shared/qishui';
+import {QishuiFlow} from './qishui-flow';
 const offlineAcceptance=offlineAcceptanceEnabled();
 let publishWorkbench:ReturnType<typeof startPublishWorkbench>|undefined;
 let offlineNetworkBlocks=0;
@@ -174,6 +177,35 @@ const tmeAiNative=new TmeAiNativePort(path.join(__dirname,'tme-ai-uia-host.ps1')
 const tmeAiCloud=new TmeAiCloudSessionManager({enableExistingAlbum:true,available:()=>mode==='production'&&!switching&&!closing});
 const accountIdentity=createAccountIdentityBroker({session:tmeAiCloud,rpc:(method,input)=>rpc(method,input),available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration});
 const accountBrowsers = new PlatformBrowserSessions(root);
+const qishuiFlow = new QishuiFlow(root);
+async function qishuiAction(method:string,raw:unknown){
+ const {accountId,workId}=QishuiJobSchema.parse({accountId:(raw as any).accountId,workId:(raw as any).workId});
+ const generation=coreGeneration;
+ const guard=()=>{if(offlineAcceptance||mode!=='production'||switching||closing||generation!==coreGeneration)throw Error('WORKSPACE_CHANGED');};
+ guard();const account=await browserAccount(accountId);guard();
+ if(account.provider!=='qishui')throw Error('ACCOUNT_PROVIDER_MISMATCH');
+ if(method==='publish.qishui.status')return {ok:true,value:qishuiFlow.status(accountId,workId)};
+ if(method==='publish.qishui.fill'){
+  const input=QishuiFillSchema.parse(raw),source=await rpc('internal.qishui.work',input);guard();
+  if(!source.ok)return source;
+  await accountBrowsers.open(account,qishuiPublishUrl,guard,source.value.artistId);
+  const page=await accountBrowsers.qishuiPage(accountId);
+  return {ok:true,value:await qishuiFlow.fill(page,input,source.value,guard)};
+ }
+ if(method==='publish.qishui.authorization'){
+  const input=QishuiAuthorizationSchema.parse(raw),page=await accountBrowsers.qishuiPage(accountId);guard();
+  return {ok:true,value:await qishuiFlow.authorization(page,input,guard)};
+ }
+ if(method==='publish.qishui.contract'){
+  const page=await accountBrowsers.qishuiPage(accountId);guard();
+  return {ok:true,value:await qishuiFlow.contract(page,{accountId,workId},guard)};
+ }
+ if(method==='publish.qishui.accept'){
+  const input=QishuiAcceptSchema.parse(raw),page=await accountBrowsers.qishuiPage(accountId);guard();
+  return {ok:true,value:await qishuiFlow.accept(page,input,guard)};
+ }
+ throw Error('METHOD_NOT_ALLOWED');
+}
 const fanqieAccounts = new FanqieAccountSessions({root,available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,
   work:async selection=>{const result=await rpc('internal.fanqie.work',selection);if(!result.ok)throw Error(result.error.code);return result.value;},
   pickBundle:async()=>{const result=await dialog.showOpenDialog(window,{title:'选择番茄发布材料清单',properties:['openFile'],filters:[{name:'番茄发布材料清单',extensions:['json']}]});return result.canceled?null:result.filePaths[0];}});
@@ -206,7 +238,18 @@ async function platformSession(method:string,input:unknown){
   }
   return method.endsWith('.open')
     ?accountBrowsers.open(account,official[account.provider],guard,artistId)
-    :{...accountBrowsers.status(accountId),workWindow:accountBrowsers.workWindow(account)};
+    :{...(account.provider==='qishui'?await accountBrowsers.qishuiStatus(accountId):accountBrowsers.status(accountId)),workWindow:accountBrowsers.workWindow(account)};
+}
+async function prepareQishuiRelease(input:unknown){
+  const selection=QishuiReleaseSchema.parse(input);
+  const generation=coreGeneration, account=await browserAccount(selection.accountId);
+  if(account.provider!=='qishui')throw Error('ACCOUNT_PROVIDER_MISMATCH');
+  const result=await rpc('internal.qishui.prepare',selection);
+  if(!result.ok)return result;
+  if(generation!==coreGeneration||switching||closing)throw Error('WORKSPACE_CHANGED');
+  const session=await platformSession('accountSession.open',{accountId:account.id});
+  if(generation!==coreGeneration||switching||closing)throw Error('WORKSPACE_CHANGED');
+  return {ok:true,value:{...result.value,session}};
 }
 async function publishRequest(method:string,input:unknown){
   const result=await rpc(method,input);
@@ -223,6 +266,8 @@ async function workbenchDispatch({channel,method,input}:WorkbenchRequest){
     }
     const parsed=validate(method,input);
     if(method==='accountSession.open')return {ok:true,value:await platformSession(method,parsed)};
+    if(method==='publish.qishui.prepare')return prepareQishuiRelease(parsed);
+    if(method.startsWith('publish.qishui.'))return qishuiAction(method,parsed);
     if(method==='publish.simple')return publishRequest(method,parsed);
     if(method==='publish.reconcile')return {ok:true,value:await unifiedPublish.reconcile((parsed as {id:string}).id)};
     if(method==='snapshot'){
@@ -378,7 +423,7 @@ const official: Record<string, string> = {
   suno: "https://suno.com",
   yourmusic: "https://app.yourmusic.fun/create",
   netease: "https://music.163.com/st/musician",
-  qishui: "https://music.douyin.com/?business_home_login_redirect=%2Fconsole%2Fpublish%3Fsource%3Dnav&pop-login=true",
+  qishui: qishuiPublishUrl,
   qqmusic: "https://y.tencentmusic.com/",
   kugou: "https://y.tencentmusic.com/",
   tme: "https://y.tencentmusic.com/",
@@ -462,6 +507,8 @@ function handlers() {
     safe(async () => {
       trusted(e);
       const parsed = validate(method, input);
+      if(method==='publish.qishui.prepare')return prepareQishuiRelease(parsed);
+      if(method.startsWith('publish.qishui.'))return qishuiAction(method,parsed);
       if(method==="accountSession.status"||method==="accountSession.open"){
         try {
           return {ok:true,value:await platformSession(method,parsed)};
