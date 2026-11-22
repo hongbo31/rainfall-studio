@@ -5,9 +5,9 @@ import {planModelCatalog} from './plan-center-models';
 // Describes installed code and saved declarations, never a live provider discovery result.
 // Native providers must supply a fresh trusted catalog before an album/model is executable.
 export function planCatalog(repo: Repository) {
-  const profiles = repo.all('settings').filter(r => r.id.startsWith('api-profile:')).map(p => ({
+  const profiles = repo.settingsByPrefix('api-profile:').map(p => ({
     id:p.id.slice('api-profile:'.length), label:p.label, kind:p.kind,
-    providerId:p.providerId, modelId:p.modelId, revision:p.revision,
+    providerId:p.providerId, modelId:p.modelId, revision:p.revision, textPricing:p.textPricing??null,
   }));
   const models=planModelCatalog(repo);
   const unavailable = (reason:string) => ({available:false,reason});

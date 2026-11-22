@@ -1,0 +1,268 @@
+import fs from "node:fs";
+import path from "node:path";
+import { z } from "zod";
+import { hash } from "./database";
+import {
+  downloadAccountPart, downloadFolderName, downloadSingerPart, resolveDownloadArchiveRoot,
+} from "./download-archive";
+import { downloadSupportFolders, songDownloadCollisionStem } from "./download-filenames";
+import type { Studio } from "./studio";
+import { PlatformAccountIdSchema } from "../shared/platform-accounts";
+import { artistMusicTypeSchema, artistSongAttributeSchema, artistSongType, type ArtistProfile } from "../shared/local-artist";
+import { defaultFanqieDirectoryRelease, fanqieOriginalSingerSchema, fanqieOriginalWorkIdSchema,
+  type FanqieDirectoryRelease, type FanqieDownloadSong } from "../shared/fanqie-downloads";
+import type { FanqieInput } from "../shared/fanqie";
+import { fanqieTitleKey } from "../shared/fanqie-catalog";
+
+export type FanqieDownloadFile = { file: string; bytes: number; identity: string };
+export type FanqieDownloadTrack = FanqieDownloadSong & {
+  artistId?: string;
+  credits?: FanqieInput["authors"];
+  instrumental?: true;
+  formTitle?: string;
+  originalTitle?: string;
+  relatedFiles?: string[];
+  source?: { audio: FanqieDownloadFile; cover: FanqieDownloadFile; lyrics?: FanqieDownloadFile; proof?: FanqieDownloadFile };
+};
+export type FanqieDownloadArchive = { fingerprint: string; items: FanqieDownloadTrack[]; root?: string };
+const ScopeSchema = z.strictObject({ folder: z.string().min(1).max(255), id: z.string().regex(/^[a-f0-9]{64}$/u) });
+export type FanqieDownloadScope = z.infer<typeof ScopeSchema>;
+const ArchiveRequest = PlatformAccountIdSchema.extend({ scope: ScopeSchema.optional() });
+
+const key = (name: string) => {
+  const normalized = name.normalize("NFC");
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+};
+const byName = (left: string, right: string) => left.localeCompare(right, "zh-CN", { numeric: true });
+const samePath = (a: string, b: string) => process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+const audioExtensions = new Set([".wav", ".mp3"]);
+const coverExtensions = [".png", ".jpg", ".jpeg"];
+const proofExtensions = [".pdf", ...coverExtensions, ".zip", ".bmp"];
+const readFingerprint = (info: fs.BigIntStats) =>
+  [info.dev, info.ino, info.size, info.mtimeNs, info.ctimeNs].map(String).join(":");
+
+function snapshotFile(file: string): FanqieDownloadFile {
+  const info = fs.lstatSync(file, { bigint: true });
+  if (!info.isFile() || info.isSymbolicLink() || !samePath(fs.realpathSync.native(file), file))
+    throw Error("FANQIE_DOWNLOAD_FILE_INVALID");
+  return { file, bytes: Number(info.size), identity: readFingerprint(info) };
+}
+
+export function assertFanqieDownloadFile(expected: FanqieDownloadFile) {
+  try {
+    if (snapshotFile(expected.file).identity === expected.identity) return;
+  } catch { /* Missing or replaced files use the same scope error. */ }
+  throw Error("FANQIE_DOWNLOADS_CHANGED");
+}
+
+export function assertFanqieDownloadTrack(track: FanqieDownloadTrack) {
+  const source = track.source;
+  if (!source) throw Error("FANQIE_DOWNLOAD_FILE_INVALID");
+  for (const expected of Object.values(source)) if (expected) assertFanqieDownloadFile(expected);
+}
+
+type Singer = { name: string; part: string; artistId: string; profile?: ArtistProfile; instrumental: boolean; folder: string; release: FanqieDirectoryRelease };
+
+function singerForFolder(folder: string, rest: string, singers: Singer[]) {
+  const matching = singers.filter(singer => key(rest).startsWith(key(singer.part) + "_") && rest.slice(singer.part.length + 1).trim());
+  const longest = Math.max(0, ...matching.map(singer => singer.part.length));
+  const possible = matching.filter(singer => singer.part.length === longest);
+  const exact = possible.filter(singer => key(folder) === key(singer.folder) || key(folder) === key(singer.folder + "_B"));
+  const candidates = exact.length ? exact : possible;
+  const identities = new Set(candidates.map(singer => singer.name));
+  if (identities.size > 1) return { name: candidates[0].part, issue: "FANQIE_DOWNLOAD_SINGER_AMBIGUOUS" };
+  const saved = candidates[0];
+  if (saved) {
+    // Multiple configurations may share a singer. Use defaults only when their relevant values agree.
+    const sameDetails = candidates.every(candidate =>
+      candidate.instrumental === saved.instrumental && candidate.profile?.lyricist === saved.profile?.lyricist &&
+      candidate.profile?.composer === saved.profile?.composer && hash(candidate.release) === hash(saved.release));
+    if (!sameDetails) return { name: saved.name, issue: "FANQIE_DOWNLOAD_SINGER_AMBIGUOUS" };
+    return { name: saved.name, saved };
+  }
+  const separator = rest.indexOf("_");
+  if (separator <= 0 || !rest.slice(separator + 1).trim()) return;
+  const name = rest.slice(0, separator).trim();
+  return name ? { name } : undefined;
+}
+
+function readArchiveDirectory(directory: string) {
+  try {
+    const info = fs.lstatSync(directory, { throwIfNoEntry: false });
+    if (!info?.isDirectory() || info.isSymbolicLink() || !samePath(fs.realpathSync.native(directory), directory)) return [];
+    return fs.readdirSync(directory, { withFileTypes: true });
+  } catch {
+    throw Error("DOWNLOAD_FOLDER_UNAVAILABLE");
+  }
+}
+
+function scanFolder(root: string, folder: string, singer: NonNullable<ReturnType<typeof singerForFolder>>) {
+  const directory = path.join(root, folder);
+  const entries = readArchiveDirectory(directory);
+  const tracks = scanRecordings(directory, entries, folder, singer);
+  for (const entry of entries.sort((a, b) => byName(a.name, b.name))) {
+    if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+    const stem = songDownloadCollisionStem(entry.name);
+    if (!stem) continue;
+    const child = path.join(directory, entry.name);
+    tracks.push(...scanRecordings(child, readArchiveDirectory(child), folder, singer, stem));
+  }
+  return tracks;
+}
+
+function scanRecordings(directory: string, entries: fs.Dirent[], folder: string,
+  singer: NonNullable<ReturnType<typeof singerForFolder>>, expectedStem?: string) {
+  const names = entries
+    .filter(entry => entry.isFile() && !entry.isSymbolicLink()).map(entry => entry.name)
+    .sort(byName);
+  const records = names.map(name => {
+    const { name: stem, ext } = path.parse(name);
+    return { name, stem, ext: ext.toLowerCase() };
+  });
+  const byStem = new Map<string, typeof records>();
+  for (const record of records) {
+    const stem = key(record.stem);
+    const group = byStem.get(stem);
+    if (group) group.push(record);
+    else byStem.set(stem, [record]);
+  }
+  const match = (stem: string, extensions: string[], label?: string) => {
+    const exact = byStem.get(key(stem)) ?? [];
+    for (const ext of extensions) {
+      const files = exact.filter(file => file.ext === ext);
+      if (files.length > 1) throw Error("FANQIE_DOWNLOAD_MATERIALS_AMBIGUOUS");
+      if (files.length) return files[0].name;
+    }
+    if (!label) return;
+    const scope = key(stem + "_" + label + "_");
+    for (const ext of extensions) {
+      const files = records.filter(file => file.ext === ext && key(file.stem).startsWith(scope) &&
+        /^[a-f0-9]{12}$/iu.test(file.stem.slice(scope.length)));
+      if (files.length > 1) throw Error("FANQIE_DOWNLOAD_MATERIALS_AMBIGUOUS");
+      if (files.length) return files[0].name;
+    }
+  };
+  const recordings = records.filter(record => audioExtensions.has(record.ext) &&
+      (expectedStem === undefined || key(record.stem) === key(expectedStem)))
+    .sort((a, b) => byName(a.stem, b.stem) || Number(b.ext === ".wav") - Number(a.ext === ".wav"));
+  const savedProofs = singer.saved?.release.proofRequired && recordings.length
+    ? readArchiveDirectory(path.join(directory, downloadSupportFolders.rights)).filter(entry => entry.isFile() && !entry.isSymbolicLink()) : [];
+  const savedProof = (stem: string) => {
+    for (const ext of proofExtensions) {
+      const files = savedProofs.filter(entry => path.extname(entry.name).toLowerCase() === ext && key(path.parse(entry.name).name) === key(stem));
+      if (files.length > 1) throw Error("FANQIE_DOWNLOAD_MATERIALS_AMBIGUOUS");
+      if (files.length) return path.join(downloadSupportFolders.rights, files[0].name);
+    }
+  };
+  return recordings.map(({ name: audioName, stem }): FanqieDownloadTrack => {
+    const exactCover = byStem.get(key(stem))?.some(file => coverExtensions.includes(file.ext));
+    const archived = expectedStem === undefined && !exactCover
+      ? /^(.*)_([AB])_([a-f0-9]{12})$/iu.exec(stem) : null;
+    const titleStem = archived ? archived[1] + " - " + archived[2].toUpperCase() : stem;
+    const formTitle = (/《([^》]+)》/u.exec(titleStem)?.[1] ?? titleStem).trim();
+    const baseTitle = (archived?.[1] ?? /^(.*) - [AB](?: \(\d+\))?$/u.exec(formTitle)?.[1])?.trim();
+    const profile = singer.saved?.profile;
+    const release = singer.saved?.release ?? defaultFanqieDirectoryRelease;
+    // The creator site appends the original singer to the catalog name for a cover.
+    const catalogTitle = (name: string) => release.originalSinger
+      ? name.replace(/\(Cover[^)]*\)/gi, "").trim() + `(Cover ${release.originalSinger})` : name;
+    const title = catalogTitle(formTitle);
+    const originalTitle = baseTitle && catalogTitle(baseTitle);
+    const track: FanqieDownloadTrack = {
+      id: hash([directory, audioName]), folder, audioName, title, singer: singer.name, release,
+      ...(formTitle !== title ? { formTitle } : {}),
+      ...(originalTitle && originalTitle !== title ? { originalTitle } : {}),
+      ...(singer.saved ? { artistId: singer.saved.artistId } : {}),
+      ...(profile ? { credits: { lyricist: profile.lyricist, composer: profile.composer, singer: singer.name } } : {}),
+      ...(singer.saved?.instrumental ? { instrumental: true as const } : {}),
+    };
+    try {
+      const coverName = match(stem, coverExtensions) ?? (archived &&
+        (archived[2].toUpperCase() === "B" ? match(archived[1], coverExtensions, "封面 B") : undefined)) ??
+        (archived ? match(archived[1], coverExtensions, "封面") : undefined);
+      const lyricsName = track.instrumental ? undefined :
+        match(stem, [".txt"]) ?? (archived ? match(archived[1], [".txt"], "歌词") : undefined);
+      const proofName = release.proofRequired ?
+        savedProof(stem) ?? match(stem + "_版权证明", proofExtensions) ?? match(stem + " - 版权证明", proofExtensions) ??
+        match(stem + "_授权附件", proofExtensions) ?? match(stem, [".pdf"]) ??
+        (archived ? match(archived[1], proofExtensions, "授权附件") : undefined) : undefined;
+      track.relatedFiles = [audioName, coverName, lyricsName, proofName]
+        .filter((file): file is string => typeof file === "string").map(file => path.join(directory, file));
+      if (singer.issue) throw Error(singer.issue);
+      if (!formTitle || formTitle.length > 40) throw Error("FANQIE_TITLE_INVALID");
+      if (typeof coverName !== "string") throw Error("FANQIE_DOWNLOAD_COVER_REQUIRED");
+      if (!track.instrumental && !lyricsName) throw Error("FANQIE_DOWNLOAD_LYRICS_REQUIRED");
+      if (release.proofRequired && !proofName) throw Error("FANQIE_DOWNLOAD_PROOF_REQUIRED");
+      if (release.musicType === "cover" && !release.originalSinger) throw Error("FANQIE_DOWNLOAD_ORIGINAL_SINGER_REQUIRED");
+      if (release.songAttribute === "multi_version" && !release.originalWorkId) throw Error("FANQIE_DOWNLOAD_ORIGINAL_WORK_REQUIRED");
+      const audio = snapshotFile(path.join(directory, audioName));
+      const cover = snapshotFile(path.join(directory, coverName));
+      const lyrics = lyricsName ? snapshotFile(path.join(directory, lyricsName)) : undefined;
+      const proof = proofName ? snapshotFile(path.join(directory, proofName)) : undefined;
+      if (audio.bytes < 1 || audio.bytes > 200 * 1024 * 1024) throw Error("FANQIE_AUDIO_FORMAT");
+      if (cover.bytes < 1 || cover.bytes > 10 * 1024 * 1024) throw Error("FANQIE_COVER_FORMAT");
+      if (lyrics && (lyrics.bytes < 1 || lyrics.bytes > 1024 * 1024)) throw Error("FANQIE_LYRICS_INVALID");
+      if (proof && (proof.bytes < 1 || proof.bytes > 200 * 1024 * 1024)) throw Error("FANQIE_DOWNLOAD_PROOF_INVALID");
+      return { ...track, source: { audio, cover, lyrics, proof } };
+    } catch (error) {
+      const issue = error instanceof Error && /^[A-Z0-9_]+$/u.test(error.message) ? error.message : "FANQIE_DOWNLOAD_FILE_INVALID";
+      return { ...track, issue };
+    }
+  });
+}
+
+export function readFanqieDownloadArchive(studio: Pick<Studio, "repo" | "mode">, raw: unknown): FanqieDownloadArchive {
+  if (studio.mode !== "production") throw Error("PRODUCTION_REQUIRED");
+  const { accountId, scope } = ArchiveRequest.parse(raw);
+  const account = studio.repo.maybe("accounts", accountId);
+  if (!account || account.provider !== "fanqie" || !account.name?.trim()) throw Error("FANQIE_DOWNLOAD_ACCOUNT_REQUIRED");
+  const root = resolveDownloadArchiveRoot(studio.repo);
+  if (!root) throw Error("DOWNLOAD_ROOT_REQUIRED");
+  const prefix = downloadAccountPart(account.name) + "_";
+  const accounts = studio.repo.all("accounts").filter(row => row.id !== accountId && row.name?.trim());
+  const otherPrefixes = accounts.map(row => ({ prefix: key(downloadAccountPart(row.name)) + "_", fanqie: row.provider === "fanqie" }));
+  if (otherPrefixes.some(row => row.fanqie && row.prefix === key(prefix))) throw Error("FANQIE_DOWNLOAD_ACCOUNT_AMBIGUOUS");
+  const singers: Singer[] = studio.repo.all("accountLocalArtists").filter(row => row.accountId === accountId).flatMap(row => {
+    const profile: ArtistProfile | undefined = row.profile;
+    const prompt = row.promptTemplateId ? studio.repo.maybe("promptTemplates", row.promptTemplateId)?.name : undefined;
+    const originalSinger = row.musicType === "cover" ? fanqieOriginalSingerSchema.safeParse(row.originalSinger).data : undefined;
+    const originalWorkId = row.songAttribute === "multi_version" ? fanqieOriginalWorkIdSchema.safeParse(row.originalWorkId).data : undefined;
+    const release: FanqieDirectoryRelease = {
+      musicType: artistMusicTypeSchema.safeParse(row.musicType).data ?? defaultFanqieDirectoryRelease.musicType,
+      songAttribute: artistSongAttributeSchema.safeParse(row.songAttribute).data ?? defaultFanqieDirectoryRelease.songAttribute,
+      ai: typeof row.isAiWork === "boolean" ? row.isAiWork : defaultFanqieDirectoryRelease.ai,
+      proofRequired: row.hasCopyrightProof === true,
+      ...(originalSinger ? { originalSinger } : {}),
+      ...(originalWorkId ? { originalWorkId } : {}),
+      ...(profile?.contractMode ? { contractMode: profile.contractMode === "non_exclusive" ? "nonexclusive" as const : "exclusive" as const } : {}),
+    };
+    const names: string[] = [profile?.singer ?? row.name, row.secondSinger?.name].filter(name => typeof name === "string" && name.trim());
+    return [...new Set(names)].map(name => ({
+      name: name.trim(), part: downloadSingerPart(name), artistId: row.id, profile,
+      instrumental: artistSongType(row.defaults) === "instrumental", folder: downloadFolderName(account.name, name, prompt), release,
+    }));
+  });
+  const items: FanqieDownloadTrack[] = [];
+  const seenTitles = new Set<string>();
+  let directories: fs.Dirent[];
+  try { directories = fs.readdirSync(root, { withFileTypes: true }); }
+  catch { throw Error("DOWNLOAD_ROOT_UNAVAILABLE"); }
+  for (const entry of directories.sort((a, b) => byName(a.name, b.name))) {
+    const folder = key(entry.name);
+    if ((scope && entry.name !== scope.folder) || !entry.isDirectory() || entry.isSymbolicLink() || !folder.startsWith(key(prefix)) ||
+      otherPrefixes.some(row => row.prefix.length > prefix.length && folder.startsWith(row.prefix))) continue;
+    const singer = singerForFolder(entry.name, entry.name.normalize("NFC").slice(prefix.length), singers);
+    if (!singer) continue;
+    for (const track of scanFolder(root, entry.name, singer)) {
+      const title = fanqieTitleKey(track.title);
+      if (!track.issue && seenTitles.has(title)) {
+        items.push({ ...track, source: undefined, issue: "FANQIE_DOWNLOAD_SAME_TITLE" });
+        continue;
+      }
+      if (!track.issue) seenTitles.add(title);
+      items.push(track);
+    }
+  }
+  const selected = scope ? items.filter(item => item.id === scope.id) : items;
+  return { root, items: selected, fingerprint: hash({ accountId, root, items: selected }) };
+}

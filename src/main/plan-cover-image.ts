@@ -1,10 +1,27 @@
 import type {ApiCredentials} from './api-credentials';
+import sharp from 'sharp';
+import {COVER_API_IMAGE_MAX_BYTES,COVER_IMAGE_POLICY,coverResolutionSchema} from '../shared/cover-handoff';
 
 type ImageTask = {
   requestId: string;
   profileId: string;
   expectedRevision: number;
+  modelId?: string;
+  manualGeneration?: boolean;
 };
+
+export async function resizeCover(bytes:Buffer,rawResolution:unknown,outputFormat?:'jpeg') {
+  if(rawResolution===undefined)return bytes;
+  const size=coverResolutionSchema.parse(rawResolution);
+  const image=sharp(bytes,{limitInputPixels:COVER_IMAGE_POLICY.maxPixels});
+  const {width,height,pages,format}=await image.metadata();
+  if(!width||height!==width||width<COVER_IMAGE_POLICY.minEdge||width>COVER_IMAGE_POLICY.maxEdge||(pages??1)>1)
+    throw Error('IMAGE_DIMENSIONS');
+  if(width===size&&(!outputFormat||format===outputFormat))return bytes;
+  const resized=image.resize(size,size);
+  const output=await resized.clone().jpeg({quality:85,mozjpeg:true}).toBuffer();
+  return output.length<=COVER_API_IMAGE_MAX_BYTES ? output : resized.jpeg({quality:65,mozjpeg:true}).toBuffer();
+}
 
 export function createPlanCoverImageRunner(options:{
   rpc:(method:string,input?:unknown)=>Promise<any>;
@@ -27,29 +44,34 @@ export function createPlanCoverImageRunner(options:{
       const guard=()=>{if(!current())throw Error('WORKSPACE_CHANGED');};
       try{
         const tasks:ImageTask[]=await rpc('list');
-        for(const {requestId,profileId,expectedRevision} of tasks){
+        for(const {requestId,profileId,expectedRevision,modelId,manualGeneration} of tasks){
           guard();
           const scope={requestId};
           const status=await options.credentials.apiCredentialStatus({profileId});
-          if(!status.configured)continue;
+          if(!status.configured){
+            if(manualGeneration)await rpc('failure',{...scope,unknown:false,reason:'CREDENTIAL_REQUIRED'});
+            continue;
+          }
           let dispatched=false;
           try{
             const task=await rpc('prepare',scope);
-            const bytes=await options.credentials.generatePlanCover({profileId,expectedRevision},task.prompt,async()=>{
+            const bytes=await options.credentials.generatePlanCover({profileId,expectedRevision,...(modelId?{modelId}:{})},task.prompt,async()=>{
               guard();
               await rpc('dispatch',scope);
               dispatched=true;
               guard();
-            },guard);
+            },guard,task.coverResolution);
             guard();
-            await rpc('receive',{...scope,bytes:new Uint8Array(bytes)});
+            const cover=await resizeCover(bytes,task.coverResolution);
+            guard();
+            await rpc('receive',{...scope,bytes:new Uint8Array(cover)});
             return;
           }catch(error){
             if(!current())return;
             const reason=error instanceof Error&&/^[A-Z0-9_]+$/.test(error.message)?error.message:'IMAGE_OPERATION_FAILED';
-            if(!dispatched&&['COVER_IMPORT_PENDING','COVER_SCOPE_MISMATCH'].includes(reason))continue;
+            if(!manualGeneration&&!dispatched&&['COVER_IMPORT_PENDING','COVER_SCOPE_MISMATCH'].includes(reason))continue;
             const unknown=dispatched&&!/^IMAGE_HTTP_4\d\d$/.test(reason);
-            await rpc('failure',{...scope,unknown,reason:unknown?'IMAGE_OUTCOME_UNKNOWN':reason});
+            await rpc('failure',{...scope,unknown,reason});
             if(dispatched)return;
           }
         }

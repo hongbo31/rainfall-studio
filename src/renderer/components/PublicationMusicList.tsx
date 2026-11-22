@@ -1,3 +1,4 @@
+import { studioMediaUrl } from "../browser-studio";
 import React, { useEffect, useState } from "react";
 import { useStudio, names } from "../context";
 import {
@@ -5,6 +6,7 @@ import {
   type PublishSelection,
 } from "../../shared/platform-config";
 import type { MaterialWorkbenchSnapshot } from "../../shared/material-workbench";
+import { workRecordingSinger } from "../../shared/local-artist";
 import { publicationState, publicationStates } from "../publication-status";
 import "../publication-workbench.css";
 export { publicationState, publicationStates } from "../publication-status";
@@ -132,6 +134,9 @@ export default function PublicationMusicList({
             (s) => s.id === material?.sourceId,
           );
           const chosen = work.selectedAudioVariant === "B" ? "B" : "A";
+          const artist = data.artists?.find((a: { id: string }) => a.id === work.artistId);
+          const singers = { A: workRecordingSinger(work, artist, "A"), B: workRecordingSinger(work, artist, "B") };
+          const separateSingers = singers.A && singers.B && singers.A !== singers.B;
           const cover = (data.assets ?? []).find(
             (a: any) => a.id === work.assets?.cover,
           );
@@ -162,8 +167,7 @@ export default function PublicationMusicList({
                 <b>{work.title}</b>
               </label>
               <small>
-                {data.artists?.find((a: any) => a.id === work.artistId)?.name ??
-                  "未指定艺人"}{" "}
+                {singers[chosen] ?? "未指定艺人"}{" "}
                 · {names[target]}：
                 {publicationStates[publicationState(data, work.id, target)]}
               </small>
@@ -172,7 +176,7 @@ export default function PublicationMusicList({
                   <summary>
                     <img
                       alt={work.title + " 封面缩略图"}
-                      src={"media://asset/" + cover.id}
+                      src={studioMediaUrl("media://asset/" + cover.id)}
                     />
                     <span>
                       查看封面 · {cover.metadata?.width ?? "?"} ×{" "}
@@ -181,7 +185,7 @@ export default function PublicationMusicList({
                   </summary>
                   <img
                     alt={work.title + " 发布封面"}
-                    src={"media://asset/" + cover.id}
+                    src={studioMediaUrl("media://asset/" + cover.id)}
                   />
                   <small>作品已绑定封面 · {cover.label ?? cover.id}</small>
                 </details>
@@ -201,9 +205,8 @@ export default function PublicationMusicList({
                       disabled={!versions.some((x) => x.version === v)}
                     >
                       {v} 版
-                      {versions.some((x) => x.version === v)
-                        ? ""
-                        : "（无音频）"}
+                      {separateSingers && " · " + singers[v]}
+                      {!versions.some((x) => x.version === v) && "（无音频）"}
                     </option>
                   ))}
                 </select>
@@ -218,7 +221,7 @@ export default function PublicationMusicList({
                     controls
                     preload="none"
                     aria-label={work.title + " " + version + " 版试听"}
-                    src={"media://asset/" + asset.id}
+                    src={studioMediaUrl("media://asset/" + asset.id)}
                     onError={() =>
                       setError(
                         work.title +
@@ -236,12 +239,6 @@ export default function PublicationMusicList({
                     来源：{source?.root ?? material.sourceId} ·{" "}
                     {material.number} · 修订 {material.revision}
                   </small>
-                  <button
-                    type="button"
-                    onClick={() => go("materials", material.id)}
-                  >
-                    生成历史 · {material.jobIds.length} 次
-                  </button>
                 </div>
               ) : (
                 <small>来源：现有作品库</small>

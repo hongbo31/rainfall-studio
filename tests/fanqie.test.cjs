@@ -2,6 +2,7 @@ const test=require('node:test'), assert=require('node:assert/strict');
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const {execFileSync}=require('node:child_process'),{createHash}=require('node:crypto');
 const sharp=require('sharp');
+const ffmpeg = require('./fixtures/media-tool-path.cjs')('ffmpeg');
 const {FanqiePreparationService,fanqieMetadataFingerprint,verifyFanqieMaterials,fanqieCapabilities,Repository,probeFanqieForm,chooseFanqieFile,fanqieAuthorControl,UnifiedPublicationService}=require(process.env.RAINFALL_FANQIE_BUNDLE);
 const {parseFanqieCatalog,checkFanqieNewUpload,readFanqieCatalog}=require(process.env.RAINFALL_FANQIE_BUNDLE);
 const {parseFanqieArtists,readFanqieAccountUid,fanqieFileControl,fanqieCreditControl}=require(process.env.RAINFALL_FANQIE_BUNDLE);
@@ -27,16 +28,28 @@ function catalogSessionFixture() {
     assert.equal(method,'Target.createTarget');
     assert.deepEqual(params,{url:'about:blank',background:true,browserContextId:'fixture'});
     const targetId='probe-'+probes.length;
-    const page={targetId,goto:async url=>visits.push(url),close:async()=>{page.closed=true},accountUid:()=>uid};
+    let currentUrl='about:blank';
+    const page={targetId,url:()=>currentUrl,isClosed:()=>!!page.closed,setDefaultTimeout:()=>{},
+      goto:async url=>{currentUrl=url;visits.push(url);},close:async()=>{page.closed=true},accountUid:()=>uid};
     probes.push(page);return {targetId};
    },
    detach:async()=>{},
   })}),
  };
  editor.context=()=>context;
+ const frames=new Map();
+ editor.locator=selector=>selector==='body'?{evaluate:async(_create,{id})=>{
+  let url='about:blank',detached=false;
+  frames.set('iframe#'+id,{url:()=>url,goto:async target=>{url=target;visits.push(target);},
+   isDetached:()=>detached,detach:()=>{detached=true;}});
+  return true;
+ }}:{
+  elementHandle:async()=>({contentFrame:async()=>frames.get(selector),dispose:async()=>{}}),
+  evaluateAll:async()=>{frames.get(selector)?.detach();frames.delete(selector);},
+ };
  const catalog={source:'browser',url:catalogUrl,observedAt:new Date().toISOString(),total:1,complete:true,rows:[{id:'1234567890123456789',title:'已有作品',stage:'contract_pending',officialStatus:'待授权',createdAtText:'测试时间',publishedAtText:'-'}]};
  const options={root,available:()=>available,generation:()=>generation,launch:async()=>context,account:async()=>({accountId:uid}),catalog:async()=>structuredClone(catalog)};
- return{root,options,visits,probes,editor,catalog,context,setUid:value=>{uid=value},changeGeneration:()=>{generation++},setAvailable:value=>{available=value},close:()=>closed()};
+ return{root,options,visits,probes,frames,editor,catalog,context,setUid:value=>{uid=value},changeGeneration:()=>{generation++},setAvailable:value=>{available=value},close:()=>closed()};
 }
 test('application catalog bridge persists only account-scoped public rows and preserves editor',async()=>{
  const f=catalogSessionFixture(),session=new FanqieCatalogSession(f.options);
@@ -87,7 +100,7 @@ test('changed previously read upload blocks the next file',async()=>{const {s,j,
 test('real material bytes, probe duration/PCM/channels and decoded cover are verified',async()=>{
  const input=structuredClone(base);
  const wav=path.join(dir,'valid.wav'),cover=path.join(dir,'valid.png'),lyrics=path.join(dir,'valid.txt');
- execFileSync('C:\\ffmpeg\\ffmpeg-8.1-essentials_build\\bin\\ffmpeg.exe',['-v','error','-f','lavfi','-i','anullsrc=r=44100:cl=stereo','-t','31','-c:a','pcm_s16le',wav]);
+ execFileSync(ffmpeg,['-v','error','-f','lavfi','-i','anullsrc=r=44100:cl=stereo','-t','31','-c:a','pcm_s16le',wav]);
  await sharp({create:{width:1440,height:1440,channels:3,background:'#334455'}}).png().toFile(cover);fs.writeFileSync(lyrics,'第一句\n第二句','utf8');
  for(const [r,f]of Object.entries({audio:wav,cover,lyrics})){const b=fs.readFileSync(f);input.assets[r]={file:f,bytes:b.length,sha256:h(b)}}
  await verifyFanqieMaterials(input);
@@ -141,7 +154,7 @@ test('decoded audio boundary failures cannot pass local preparation',async()=>{
   ['mono',44100,'mono',31,'pcm_s16le','AUDIO_PROPERTIES'],
   ['rate',22050,'stereo',31,'pcm_s16le','AUDIO_PROPERTIES'],
   ['depth',44100,'stereo',31,'pcm_u8','AUDIO_BIT_DEPTH'],
- ]){const file=path.join(dir,name+'.wav');execFileSync('C:\\ffmpeg\\ffmpeg-8.1-essentials_build\\bin\\ffmpeg.exe',['-v','error','-f','lavfi','-i',`anullsrc=r=${rate}:cl=${layout}`,'-t',String(seconds),'-c:a',codec,file]);bind('audio',file);await assert.rejects(verifyFanqieMaterials(input),new RegExp(reason))}
+ ]){const file=path.join(dir,name+'.wav');execFileSync(ffmpeg,['-v','error','-f','lavfi','-i',`anullsrc=r=${rate}:cl=${layout}`,'-t',String(seconds),'-c:a',codec,file]);bind('audio',file);await assert.rejects(verifyFanqieMaterials(input),new RegExp(reason))}
 });
 test('metadata changed during final upload cannot reach contract boundary',async()=>{
  const {s,j,p,grant}=await setup(),choose=p.chooseFile;
@@ -162,7 +175,7 @@ test('real MP3 is accepted without PCM bit depth; channel and rate limits still 
  bind('cover',cover);bind('lyrics',lyrics);
  for(const [name,rate,channels,valid] of [['stereo',44100,2,true],['mono',44100,1,false],['low-rate',22050,2,false]]){
   const file=path.join(dir,'actual-'+name+'.mp3');
-  execFileSync('C:\\ffmpeg\\ffmpeg-8.1-essentials_build\\bin\\ffmpeg.exe',['-v','error','-f','lavfi','-i','sine=frequency=440:sample_rate='+rate,'-t','31','-ac',String(channels),'-c:a','libmp3lame','-b:a','128k',file],{windowsHide:true});
+  execFileSync(ffmpeg,['-v','error','-f','lavfi','-i','sine=frequency=440:sample_rate='+rate,'-t','31','-ac',String(channels),'-c:a','libmp3lame','-b:a','128k',file],{windowsHide:true});
   bind('audio',file);
   if(valid)await verifyFanqieMaterials(input);
   else await assert.rejects(verifyFanqieMaterials(input),/AUDIO_PROPERTIES/);
@@ -182,11 +195,19 @@ test('same-title records block every status without claiming equal audio hashes'
   const r=checkFanqieNewUpload(catalog(catalogRaw(status)),'测 试作品');assert.equal(r.allowed,false);assert.equal(r.reason,'FANQIE_OFFICIAL_RECORD_ALREADY_EXISTS');assert.equal(r.matches.length,1);assert.equal(r.matches[0].sha256,undefined);
  }
 });
+test('a new official status preserves the work identity for duplicate checks',()=>{
+ const c=catalog(catalogRaw('处理中'));
+ assert.equal(c.complete,true);
+ assert.deepEqual([c.rows[0].stage,c.rows[0].officialStatus],['unknown','处理中']);
+ assert.equal(checkFanqieNewUpload(c,'测试作品').reason,'FANQIE_OFFICIAL_RECORD_ALREADY_EXISTS');
+ assert.equal(checkFanqieNewUpload(c,'从未发行的另一首').allowed,true);
+});
 test('filtered, incomplete, malformed and duplicate catalog data cannot clear the duplicate barrier',()=>{
  assert.throws(()=>catalog({...catalogRaw(),query:'测试作品'}),/FILTERED/);
  assert.throws(()=>catalog({...catalogRaw(),selectedTab:'待授权·1'}),/FILTERED/);
  assert.throws(()=>catalog({...catalogRaw(),headers:['作品信息']}),/LAYOUT_CHANGED/);
- assert.throws(()=>catalog(catalogRaw('处理中')),/ROW_UNVERIFIED/);
+ assert.throws(()=>catalog({...catalogRaw(),rows:[['测试作品\n工单号：9000000000000000001',...catalogRaw().rows[0].slice(1)]]}),
+  error=>error.message==='FANQIE_CATALOG_WORK_ID_UNVERIFIED'&&error.row===1);
  assert.throws(()=>catalog({...catalogRaw(),selectedTab:'全部·2',rows:[...catalogRaw().rows,...catalogRaw().rows]}),/DUPLICATE_ID/);
  const partial=catalog({...catalogRaw(),selectedTab:'全部·2'});assert.equal(partial.complete,false);assert.equal(checkFanqieNewUpload(partial,'另一首歌').reason,'FANQIE_CATALOG_INCOMPLETE');
  assert.equal(checkFanqieNewUpload(catalog(),'另一首歌').allowed,true);
@@ -205,6 +226,27 @@ test('catalog reader waits for separately rendered count and rows without any si
  const raw=catalogRaw();let reads=0;
  const page={url:async()=>catalogUrl,playwright:{getByRole:()=>({evaluate:async()=>({selectedTabs:[++reads===1?'全部·0':raw.selectedTab],queries:[''],headers:raw.headers,rows:raw.rows})})}};
  const result=await readFanqieCatalog(page);assert.equal(reads,2);assert.equal(result.complete,true);assert.equal(result.rows.length,1);
+});
+test('a delayed status can settle before a fresh upload receipt is read',async()=>{
+ let reads=0;
+ const page={url:async()=>catalogUrl,playwright:{getByRole:()=>({evaluate:async()=>{
+  const raw=catalogRaw(++reads===1?'':'待授权');
+  return {selectedTabs:[raw.selectedTab],queries:[''],headers:raw.headers,rows:raw.rows};
+ }})}};
+ const result=await readFanqieCatalog(page);
+ assert.equal(reads,2);
+ assert.equal(result.rows[0].stage,'contract_pending');
+});
+test('an unreadable ID reports the affected page and row and retains no raw cell text in the error',async t=>{
+ const raw=catalogRaw();
+ raw.rows.push(['隐藏测试作品\n标签不符',...raw.rows[0].slice(1)]);
+ const page={url:async()=>catalogUrl,playwright:{getByRole:()=>({evaluate:async()=>({
+  selectedTabs:['全部·2'],queries:[''],headers:raw.headers,rows:raw.rows,
+ })})}};
+ const start=Date.now();
+ let now=start;
+ t.mock.method(Date,'now',()=>{now+=16000;return now;});
+ await assert.rejects(readFanqieCatalog(page,4),{message:'FANQIE_CATALOG_WORK_ID_UNVERIFIED',page:4,row:2});
 });
 for(const failure of ['duplicate','incomplete','account','source'])test('catalog '+failure+' stops before metadata and file writes',async()=>{
  const {s,j,p,grant}=await setup();
@@ -314,6 +356,22 @@ test('artist sync refuses switched identity and preserves last verified snapshot
  const session=new FanqieCatalogSession(f.options);await session.ui('syncProfile');const original=session.status().profile;
  f.options.artists=async()=>{f.setUid('987654321000001');return{artists:[{artistId:'99999999',name:'其他艺人'}]}};
  await assert.rejects(session.ui('syncProfile'),/SCOPE_CHANGED/);assert.deepEqual(session.status().profile,original);
+});
+
+test('login indicators verify an account without another tab and recognize a sign-in redirect',async()=>{
+ const f=catalogSessionFixture(),session=new FanqieCatalogSession(f.options);
+ assert.equal(await session.loginState(),'unknown');
+ await session.ui('open');
+ assert.deepEqual(await Promise.all([session.loginState(),session.loginState()]),['valid','valid']);
+ assert.equal(f.probes.length,0);
+ assert.equal(f.frames.size,0);
+ assert.equal(f.visits.length,1);
+ assert.equal(session.status().profile,null);
+ f.editor.url=()=>new URL('/creator/music/login',catalogUrl).href;
+ assert.equal(await session.loginState(),'expired');
+ assert.equal(f.probes.length,0);
+ f.close();
+ assert.equal(await session.loginState(),'unknown');
 });
 
 test('account slots keep the legacy session and independently persist two artist rosters and publication configurations',async()=>{

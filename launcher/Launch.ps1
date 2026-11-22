@@ -1,3 +1,4 @@
+#Requires -Version 7.0
 param([string]$Manager=$PSScriptRoot,[switch]$Previous,[switch]$ValidateOnly)
 $ErrorActionPreference='Stop'
 function Read-JsonFile([string]$File) { Get-Content -LiteralPath $File -Raw -Encoding UTF8 | ConvertFrom-Json }

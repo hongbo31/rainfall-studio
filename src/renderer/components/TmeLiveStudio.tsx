@@ -212,10 +212,10 @@ export default function TmeLiveStudio({
       <section className="panel">
         <div className="section-title">
           <h2>所选作品 · 逐首上传批次</h2>
-          <Badge>作品库已选择 {selected.length} 首</Badge>
+          <Badge>已选 {selected.length} 首</Badge>
         </div>
         <HelpNote label="批次准备说明">
-          每首先在上方保存资料预检。复用作品库勾选：同一账号、同一艺人的作品串行处理；缺资料项会单独显示。当前支持添加到现有专辑，保留其共享封面。
+          每首先在上方保存资料预检。从创作中心选择作品。同一账号、同一艺人的作品串行处理。缺资料项会单独显示。追加到现有专辑时保留共享封面。
         </HelpNote>
         <div className="selected-titles">
           {data.works
@@ -225,7 +225,7 @@ export default function TmeLiveStudio({
             ))}
         </div>
         <div className="button-row">
-          <button onClick={() => go("library")}>调整作品多选</button>
+          <button onClick={() => go("chat")}>调整作品多选</button>
           <button
             disabled={
               busy ||

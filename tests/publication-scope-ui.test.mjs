@@ -1,19 +1,20 @@
+import { launchHeadlessChromium } from "../scripts/lib/headless-chromium.mjs";
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import path from 'node:path';
-import {pathToFileURL} from 'node:url';
 import {build} from 'esbuild';
 import {chromium} from 'playwright-core';
-const folder=path.resolve('output/provider-wiring/publication-scope-ui');
-fs.mkdirSync(folder,{recursive:true});
-await build({entryPoints:['tests/fixtures/publication-scope-ui.tsx'],outfile:path.join(folder,'app.js'),platform:'browser',bundle:true});
-fs.writeFileSync(path.join(folder,'index.html'),'<meta charset="utf-8"><div id="root"></div><script src="./app.js"></script>');
-const executablePath=['C:/Program Files/Google/Chrome/Application/chrome.exe','C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe','/usr/bin/chromium'].find(p=>fs.existsSync(p));
+const {outputFiles}=await build({entryPoints:['tests/fixtures/publication-scope-ui.tsx'],outdir:'build',platform:'browser',bundle:true,write:false});
 let browser;
-test.before(async()=>{browser=await chromium.launch({executablePath,headless:true,args:['--disable-background-networking','--no-first-run','--no-sandbox']});});
+test.before(async()=>{browser=await launchHeadlessChromium(chromium, {args:['--disable-background-networking','--no-first-run','--no-sandbox']});});
 test.after(async()=>browser?.close());
-async function fixture(t){const page=await browser.newPage();t.after(()=>page.close());const network=[];await page.route('**/*',route=>{if(route.request().url().startsWith('file:'))return route.continue();network.push(route.request().url());return route.abort();});await page.goto(pathToFileURL(path.join(folder,'index.html')).href);await page.waitForFunction(()=>!!window.ui?.setTask);return {page,network};}
+async function fixture(t){
+ const page=await browser.newPage();t.after(()=>page.close());const network=[];
+ await page.route('**/*',route=>{network.push(route.request().url());return route.abort();});
+ await page.setContent('<meta charset="utf-8"><div id="root"></div>');
+ await page.addStyleTag({content:outputFiles.find(file=>file.path.endsWith('.css')).text});
+ await page.addScriptTag({content:outputFiles.find(file=>file.path.endsWith('.js')).text});
+ await page.waitForFunction(()=>!!window.ui?.setTask);return {page,network};
+}
 const button=(page,index)=>page.locator('.simple-request').locator('button').nth(index);
 test('scoped preparation inspect/register sends exact task+account, lists stay legacy and switching task clears consent',async t=>{
  const {page,network}=await fixture(t);await page.getByTestId('tme-ai-prepare-compact').locator('button').first().click();
@@ -35,7 +36,30 @@ test('late inspection from an unmounted task cannot authorize another account',a
  await page.evaluate(()=>window.ui.setTask(window.ui.taskB));await page.waitForFunction(()=>document.querySelector('[data-pipeline-id]')?.getAttribute('data-pipeline-id')===window.ui.taskB);await page.evaluate(()=>window.ui.resolveInspect());
  assert.equal(await page.getByTestId('tme-ai-prepare-compact').locator('input[type=checkbox]').first().isChecked(),false);assert.equal(await page.getByTestId('tme-ai-prepare-compact').locator('input[type=checkbox]').first().isDisabled(),true);assert.deepEqual(network,[]);
 });
-test('queue filters persisted task and account independently while legacy workspace keeps old request format',async t=>{
- const {page,network}=await fixture(t);await page.evaluate(()=>window.ui.setKind('center'));await page.getByTestId('publication-task-filter').waitFor();assert.equal(await page.locator('[data-pipeline-id]').count(),2);const ids=await page.evaluate(()=>window.ui);await page.getByTestId('publication-account-filter').selectOption(ids.accountB);assert.equal(await page.locator('[data-pipeline-id]').count(),1);assert.equal(await page.locator('[data-pipeline-id]').getAttribute('data-pipeline-id'),ids.taskB);
- await page.evaluate(()=>{window.ui.setKind('prepare');window.ui.setLegacy(true);});await page.getByTestId('tme-ai-prepare-compact').locator('button').first().click();const legacy=await page.evaluate(()=>window.ui.calls.filter(c=>c.action==='inspect').at(-1).input);assert.deepEqual(legacy,{workId:ids.workId});assert.deepEqual(network,[]);
+test('desktop and browser publish centers show the task list and history without the platform records panel',async t=>{
+ const {page,network}=await fixture(t);
+ for(const kind of ['center','center-browser']){
+  await page.evaluate(value=>window.ui.setKind(value),kind);
+  const tasks=page.getByRole('region',{name:'发布任务',exact:true});
+  const row=tasks.getByRole('row',{name:/已保存的发布任务/});
+  await row.waitFor();
+  assert.equal(await page.getByText('平台处理与投稿记录',{exact:true}).count(),0);
+  assert.equal(await page.getByText('番茄音乐 · 测试番茄账号',{exact:true}).count(),0);
+  assert.equal(await page.getByRole('button',{name:'＋ 新建任务',exact:true}).isEnabled(),true);
+  await row.getByRole('button',{name:'记录',exact:true}).click();
+  const history=page.getByRole('dialog',{name:'执行记录',exact:true});
+  await history.getByText('测试投稿已记录',{exact:true}).waitFor();
+  assert.equal(await history.getByRole('button',{name:'查看平台处理',exact:true}).count(),0);
+  await history.getByRole('button',{name:'关闭',exact:true}).click();
+ }
+ assert.deepEqual(network,[]);
+});
+test('the standalone preparation panel retains the legacy request format',async t=>{
+ const {page,network}=await fixture(t);
+ await page.evaluate(()=>window.ui.setLegacy(true));
+ await page.waitForFunction(()=>document.querySelector('[data-pipeline-id="legacy-task"]'));
+ await page.getByTestId('tme-ai-prepare-compact').locator('button').first().click();
+ const {calls,workId}=await page.evaluate(()=>window.ui);
+ assert.deepEqual(calls.filter(c=>c.action==='inspect').at(-1).input,{workId});
+ assert.deepEqual(network,[]);
 });

@@ -4,13 +4,20 @@ import {
   credentialIdentitySchema,
   credentialInputSchema,
   credentialStatusInputSchema,
-  openAiCoverModel,
+  doubaoCoverEndpoint,
+  doubaoCoverSize,
+  glmImageCoverModel,
+  supportsImageApiModel,
+  zhipuCoverDownloadHosts,
+  zhipuCoverEndpoint,
   type ApiProfile,
   type CredentialStatus,
   type ApiConnectionCheck,
 } from "../shared/api-profiles";
 import type { CredentialVault } from "./credentials";
+import { COVER_API_IMAGE_MAX_BYTES as maxCoverBytes, COVER_RESOLUTION_MIN } from "../shared/cover-handoff";
 import {credentialFailureCode,credentialFailureMessages} from '../shared/credential-errors';
+import { imageCredentialCheckEndpoints } from "../shared/platform-image";
 import type { HttpTransport } from "../core/workflow/yourmusic";
 import {YourMusicAdapter} from '../core/workflow/yourmusic';
 import {DeepSeekAdapter} from '../core/workflow/deepseek';
@@ -33,6 +40,38 @@ const musicHistorySchema=z.strictObject({
 }).refine(p=>p.total>=p.data.length&&p.total_pages===Math.ceil(p.total/20));
 
 type Context = { mode: string; generation: number };
+const imageCredentialIdentitySchema = credentialIdentitySchema.extend({ modelId: z.string().min(1).max(200).optional() });
+const connectionCheckEndpoints = {
+  deepseek: "https://api.deepseek.com/models",
+  yourmusic: "https://api.yourmusic.fun/v1/music/generations/history?page=1&size=1",
+  ...imageCredentialCheckEndpoints,
+};
+
+function maskApiKey(secret: string) {
+  const characters = Array.from(secret);
+  if (characters.length <= 6) return "*".repeat(characters.length);
+  return characters.slice(0, 2).join("") + "*".repeat(characters.length - 6) + characters.slice(-4).join("");
+}
+
+function matchesConnectionResponse(providerId: ApiConnectionCheck["providerId"], body: any) {
+  if (!Array.isArray(body?.data)) return false;
+  if (providerId === "yourmusic") {
+    return body.data.length <= 1 && Number.isInteger(body.total) && body.total >= 0 &&
+      body.page === 1 && body.size === 1 && Number.isInteger(body.total_pages) && body.total_pages >= 0;
+  }
+  if (body.object !== "list" || (providerId === "deepseek" && body.data.length > 100) ||
+      (providerId === "zhipu_image" && body.data.length > 1)) return false;
+  return body.data.every((item: any) => typeof item?.id === "string" && item.id.trim().length > 0 && item.id.length < 200);
+}
+
+function zhipuDownloadUrl(raw: unknown) {
+  const url = typeof raw === 'string' && raw.length <= 4096 ? URL.parse(raw) : null;
+  if (!url || url.protocol !== 'https:' || url.port || url.username || url.password || url.hash ||
+      !zhipuCoverDownloadHosts.some(host => host === url.hostname))
+    throw Error('IMAGE_DOWNLOAD_URL_REJECTED');
+  return url.href;
+}
+
 type Options = {
   vault: CredentialVault;
   getProfile: (id: string) => Promise<ApiProfile | undefined>;
@@ -89,7 +128,7 @@ export class ApiCredentials {
       remoteSubject: "local-profile:" + profile.id,
     };
   }
-  private status(profile: ApiProfile): CredentialStatus {
+  private status(profile: ApiProfile, includeMaskedKey = false): CredentialStatus {
     const absent: CredentialStatus = {
       profileId: profile.id,
       state: "absent",
@@ -99,20 +138,22 @@ export class ApiCredentials {
     try {
       if (!this.options.vault.isAvailable())
         return { ...absent, state: "unavailable", failureCode:'SECURE_STORAGE_UNAVAILABLE' };
-      return this.options.vault.has(this.binding(profile))
-        ? { ...absent, state: "stored_unverified", configured: true }
-        : absent;
+      const binding = this.binding(profile);
+      if (!this.options.vault.has(binding)) return absent;
+      const status: CredentialStatus = { ...absent, state: "stored_unverified", configured: true };
+      if (includeMaskedKey && profile.kind === "image") status.maskedKey = maskApiKey(this.options.vault.get(binding));
+      return status;
     } catch (error) {
       return { ...absent, state: "unavailable", failureCode:credentialFailureCode(error) };
     }
   }
   async apiCredentialStatus(input: unknown): Promise<CredentialStatus> {
-    const { profileId } = credentialStatusInputSchema.parse(input);
+    const { profileId, includeMaskedKey } = credentialStatusInputSchema.parse(input);
     const scope = { ...this.options.context() };
     if (scope.mode !== "production")
       return { profileId, state: "unavailable", configured: false };
     return this.runExclusive(async () => {
-      return this.status(await this.lookup(profileId, scope));
+      return this.status(await this.lookup(profileId, scope), includeMaskedKey);
     });
   }
   async writeApiCredential(input: unknown): Promise<CredentialStatus> {
@@ -135,7 +176,7 @@ export class ApiCredentials {
       }
       this.options.vault.put(this.binding(profile), secret);
       await this.lookup(profileId, scope, expectedRevision);
-      const saved=this.status(profile);
+      const saved=this.status(profile, true);
       if(!saved.configured)throw Error(saved.failureCode??'CREDENTIAL_READBACK_FAILED');
       return saved;
     });
@@ -170,32 +211,30 @@ export class ApiCredentials {
       throw Error(scope.mode === "simulation" ? "SIMULATION_CREDENTIALS_DISABLED" : "WORKSPACE_CHANGED");
     return this.runExclusive(async () => {
       const profile = await this.lookup(profileId, scope, expectedRevision);
-      if (!["yourmusic", "deepseek"].includes(profile.providerId)) throw Error("CONNECTION_CHECK_UNSUPPORTED");
-      const deepseek=profile.providerId==='deepseek';
-      const request = deepseek ? this.options.textRequest : this.options.connectionRequest;
+      if (!Object.hasOwn(connectionCheckEndpoints, profile.providerId)) throw Error("CONNECTION_CHECK_UNSUPPORTED");
+      const providerId = profile.providerId as keyof typeof connectionCheckEndpoints;
+      const request = providerId === "deepseek" ? this.options.textRequest : this.options.connectionRequest;
       if (!request) throw Error("CONNECTION_CHECK_UNAVAILABLE");
       // Only Main consumes the credential. Never return request, headers, history or remote errors.
       const credential = this.options.vault.get(this.binding(profile));
       let failureCode: ApiConnectionCheck["failureCode"] = null;
       const response = await request({
         method: "GET",
-        url: deepseek ? "https://api.deepseek.com/models" : "https://api.yourmusic.fun/v1/music/generations/history?page=1&size=1",
+        url: connectionCheckEndpoints[providerId],
+        ...(profile.kind === "image" ? { purpose: "image_credential_check" } : {}),
         headers: { Authorization: "Bearer " + credential, Accept: "application/json" },
+        assertActive: () => this.assertScope(scope),
       }).catch(error => { failureCode = connectionFailure(error); return null; });
       await this.lookup(profileId, scope, expectedRevision);
       let state: ApiConnectionCheck["state"] = "unavailable";
       const status = response?.status ?? null;
       if (status === 200) {
-        const b = response?.body;
-        state = deepseek ? (b && b.object==='list' && Array.isArray(b.data) && b.data.length<=100 && b.data.every((m:any)=>typeof m.id==='string'&&m.id.trim().length>0&&m.id.length<200) ? 'connected':'invalid_response') : b && Array.isArray(b.data) && b.data.length <= 1 &&
-          Number.isInteger(b.total) && b.total >= 0 && b.page === 1 && b.size === 1 &&
-          Number.isInteger(b.total_pages) && b.total_pages >= 0
-          ? "connected" : "invalid_response";
+        state = matchesConnectionResponse(providerId, response?.body) ? "connected" : "invalid_response";
       } else if (status === 401) state = "unauthorized";
       else if (status === 403) state = "forbidden";
       else if (status === 402) state = "credits_required";
       else if (status === 429) state = "rate_limited";
-      return { profileId, providerId: deepseek ? "deepseek" : "yourmusic", state, httpStatus: status, failureCode,
+      return { profileId, providerId, state, httpStatus: status, failureCode,
         checkedAt: new Date().toISOString(), scope: "authentication_only", paidGenerationRequested: false };
     });
   }
@@ -261,34 +300,68 @@ export class ApiCredentials {
       const result=await callback(adapter);guard();return result;
     });
   }
-  async generatePlanCover(input:unknown,prompt:string,beforeSend:()=>Promise<void>,assertActive:()=>void) {
-    const {profileId,expectedRevision}=credentialIdentitySchema.parse(input),scope={...this.options.context()};
+  async generatePlanCover(input:unknown,prompt:string,beforeSend:()=>Promise<void>,assertActive:()=>void,coverResolution?:number) {
+    const {profileId,expectedRevision,modelId}=imageCredentialIdentitySchema.parse(input),scope={...this.options.context()};
     if(scope.mode!=='production')throw Error('PRODUCTION_REQUIRED');
     return this.runExclusive(async()=>{
       assertActive();
       const profile=await this.lookup(profileId,scope,expectedRevision);
-      if(profile.kind!=='image'||profile.providerId!=='openai_image'||profile.modelId!==openAiCoverModel)
+      const model=modelId??profile.modelId;
+      if(profile.kind!=='image'||!supportsImageApiModel(profile.providerId,model))
         throw Error('IMAGE_PROFILE_REQUIRED');
       const request=this.options.connectionRequest;
       if(!request)throw Error('IMAGE_TRANSPORT_UNAVAILABLE');
       const credential=this.options.vault.get(this.binding(profile));
       const guard=()=>{assertActive();this.assertScope(scope);};
+      const zhipu=profile.providerId==='zhipu_image';
+      const doubao=profile.providerId==='doubao_image';
+      const glmImage=model===glmImageCoverModel;
+      const nativeSize=coverResolution!==undefined&&coverResolution>=COVER_RESOLUTION_MIN&&
+        (glmImage?coverResolution%32===0&&coverResolution<=2048:coverResolution%16===0&&coverResolution**2<=2**21);
+      const zhipuSize=nativeSize?`${coverResolution}x${coverResolution}`:glmImage?'1280x1280':'1024x1024';
+      const imagePrompt=glmImage?Array.from(prompt).slice(0,1000).join(''):prompt.slice(0,24000);
+      const imageRequest = doubao ? {
+        url:doubaoCoverEndpoint, purpose:'doubao_image' as const,
+        body:{model,prompt:imagePrompt,size:doubaoCoverSize,response_format:'b64_json',output_format:'jpeg'},
+      } : zhipu ? {
+        url:zhipuCoverEndpoint, body:{model,prompt:imagePrompt,size:zhipuSize},
+      } : {
+        url:'https://api.openai.com/v1/images/generations',
+        body:{model,prompt:imagePrompt,size:'2048x2048',quality:'medium',n:1,output_format:'jpeg'},
+      };
       const response=await request({
-        method:'POST',url:'https://api.openai.com/v1/images/generations',
+        ...imageRequest, method:'POST',
         headers:{Authorization:'Bearer '+credential,'Content-Type':'application/json',Accept:'application/json'},
-        body:{model:profile.modelId,prompt:prompt.slice(0,24000),size:'2048x2048',quality:'medium',n:1,output_format:'jpeg'},
         assertActive:guard,assertDispatch:beforeSend,
       });
       guard();
-      if(response.status>=400&&response.status<500)throw Error('IMAGE_HTTP_'+response.status);
+      if(response.status>=400&&response.status<500){
+        const code=zhipu&&response.status===400?response.body?.error?.code:undefined;
+        const cause=(typeof code==='string'||typeof code==='number')&&/^\d{4}$/u.test(String(code))?String(code):undefined;
+        throw Error('IMAGE_HTTP_'+response.status,cause?{cause}:undefined);
+      }
       if(response.status!==200)throw Error('IMAGE_OUTCOME_UNKNOWN');
       const results=response.body?.data;
-      const encoded=Array.isArray(results)&&results.length===1?results[0]?.b64_json:undefined;
-      const maxImageBytes=8*1024**2;
-      if(typeof encoded!=='string'||!encoded.length||encoded.length>Math.ceil(maxImageBytes/3)*4||encoded.length%4||!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded))
+      if(zhipu){
+        const url=zhipuDownloadUrl(Array.isArray(results)&&results.length===1?results[0]?.url:undefined);
+        const image=await request({method:'GET',url,binary:true,assertActive:guard});
+        guard();
+        if(image.status!==200)throw Error('IMAGE_DOWNLOAD_FAILED');
+        const bytes=image.body;
+        if(!Buffer.isBuffer(bytes)||!bytes.length||bytes.length>maxCoverBytes)throw Error('IMAGE_RESPONSE_INVALID');
+        const isPng=bytes.subarray(0,8).equals(Buffer.from('89504e470d0a1a0a','hex'));
+        const isJpeg=bytes[0]===0xff&&bytes[1]===0xd8;
+        const isWebP=bytes.toString('ascii',0,4)==='RIFF'&&bytes.toString('ascii',8,12)==='WEBP';
+        if(!isPng&&!isJpeg&&!isWebP)throw Error('IMAGE_RESPONSE_INVALID');
+        return bytes;
+      }
+      const image=Array.isArray(results)&&results.length===1?results[0]:undefined;
+      if(doubao&&(response.body?.model!==model||image?.size!==doubaoCoverSize))throw Error('IMAGE_RESPONSE_INVALID');
+      const encoded=image?.b64_json;
+      if(typeof encoded!=='string'||!encoded.length||encoded.length>Math.ceil(maxCoverBytes/3)*4||encoded.length%4||!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded))
         throw Error('IMAGE_RESPONSE_INVALID');
       const bytes=Buffer.from(encoded,'base64');
-      if(bytes.length>maxImageBytes||bytes[0]!==0xff||bytes[1]!==0xd8)throw Error('IMAGE_RESPONSE_INVALID');
+      if(bytes.length>maxCoverBytes||bytes[0]!==0xff||bytes[1]!==0xd8)throw Error('IMAGE_RESPONSE_INVALID');
       return bytes;
     });
   }

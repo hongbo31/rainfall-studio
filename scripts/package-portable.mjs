@@ -1,14 +1,26 @@
 // New-device package: runtime included; no developer paths, library or credentials.
 import fs from 'node:fs';
 import path from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
-const repo=process.cwd();
-execFileSync(process.execPath,['scripts/build-desktop.mjs'],{stdio:'inherit'});
-const output=execFileSync(process.execPath,['scripts/package-tme-candidate.mjs','--simple-publishing'],{encoding:'utf8'});
+const repo = fileURLToPath(new URL('..', import.meta.url));
+const mediaArg = process.argv.indexOf('--media-tools-dir');
+if (mediaArg >= 0 && (!process.argv[mediaArg + 1] || process.argv[mediaArg + 1].startsWith('--'))) {
+  throw Error('--media-tools-dir requires a directory');
+}
+const mediaSource = path.resolve(repo, mediaArg >= 0 ? process.argv[mediaArg + 1] : 'tools/ffmpeg');
+const mediaFiles = ['bin/ffmpeg.exe', 'bin/ffprobe.exe', 'LICENSE', 'README.txt'];
+for (const file of mediaFiles) {
+  if (!fs.statSync(path.join(mediaSource, file), {throwIfNoEntry: false})?.isFile()) {
+    throw Error('FFmpeg file missing: ' + path.join(mediaSource, file) + '. Set --media-tools-dir.');
+  }
+}
+execFileSync(process.execPath,['scripts/build-desktop.mjs'],{cwd:repo,stdio:'inherit'});
+const output=execFileSync(process.execPath,['scripts/package-tme-candidate.mjs','--simple-publishing'],{cwd:repo,encoding:'utf8'});
 const candidate=JSON.parse(output.trim().split(/\r?\n/).at(-1));
 const root=path.dirname(candidate.executable),app=path.join(root,'resources','app');
-const sourceFiles=execFileSync('git',['ls-files','-m','-o','--exclude-standard','-z'],{encoding:'utf8'}).split('\0').filter(Boolean);
+const sourceFiles=execFileSync('git',['ls-files','-m','-o','--exclude-standard','-z'],{cwd:repo,encoding:'utf8'}).split('\0').filter(Boolean);
 // Candidate builds inject an absolute testing data root. Never ship that bootstrap.
 fs.copyFileSync(path.join(repo,'build','main.cjs'),path.join(app,'build','main.cjs'));
 const packageFile=path.join(app,'package.json');
@@ -18,12 +30,9 @@ fs.writeFileSync(packageFile,JSON.stringify(pkg,null,2));
 const executable=path.join(root,'RainfallStudio.exe');
 fs.renameSync(candidate.executable,executable);
 fs.unlinkSync(path.join(root,'candidate-manifest.json'));
-const mediaArg=process.argv.indexOf('--media-tools-dir');
-const mediaSource=mediaArg>=0?path.resolve(process.argv[mediaArg+1]):'C:/ffmpeg/ffmpeg-8.1-essentials_build';
 const mediaDest=path.join(app,'tools','media');
 fs.mkdirSync(mediaDest,{recursive:true});
-for(const name of ['ffmpeg.exe','ffprobe.exe'])fs.copyFileSync(path.join(mediaSource,'bin',name),path.join(mediaDest,name));
-for(const name of ['LICENSE','README.txt'])fs.copyFileSync(path.join(mediaSource,name),path.join(mediaDest,name));
+for (const file of mediaFiles) fs.copyFileSync(path.join(mediaSource, file), path.join(mediaDest, path.basename(file)));
 const forbidden=['candidate-data','credentials','browser-sessions','production'];
 for(const name of forbidden)if(fs.existsSync(path.join(root,name)))throw Error('PRIVATE_DATA_IN_PACKAGE');
 const manifest={format:1,kind:'windows-x64-portable',version:pkg.version,sourceCommit:candidate.sourceCommit,
@@ -42,7 +51,7 @@ fs.writeFileSync(path.join(root,'README.txt'),[
  'Rainfall Studio '+pkg.version+' · Windows x64 免安装版',
  '保留整个文件夹，双击 RainfallStudio.exe。无需安装 Node.js、npm 或 Codex。',
  '作品和配置保存到当前 Windows 用户的 %APPDATA%\\RainfallStudio，与程序目录分开。',
- '首次使用：在配置中心设置艺人、模型和发布默认值；在账号管理添加账号并打开登录窗口。',
+ '首次使用时，在配置中心设置模型和下载目录，在账号管理添加账号和艺人。',
  'API 密钥在本机加密保存。新设备在配置中心保存自己的密钥。',
  '番茄自动上传需要 Google Chrome。封面可按首生成或从本地导入。',
  '计划中心可开启关闭窗口后后台运行与登录 Windows 后启动。电脑须开机联网，休眠或关机时不执行。',

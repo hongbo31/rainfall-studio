@@ -1,15 +1,16 @@
 import {TmeAiPrepareMetadataSchema} from "./tme-ai-metadata";
 import { z } from "zod";
 
-export const platformTargets = [
-  "netease",
-  "qishui",
-  "qqmusic",
-  "kugou",
-  "douyin",
-  "fanqie",
+export const publicationPlatforms = [
+  { id: "netease", label: "网易云音乐", handler: undefined },
+  { id: "qishui", label: "汽水音乐", handler: "qishui" },
+  { id: "qqmusic", label: "QQ 音乐", handler: "tme" },
+  { id: "kugou", label: "酷狗音乐", handler: "tme" },
+  { id: "douyin", label: "抖音视频", handler: undefined },
+  { id: "fanqie", label: "番茄音乐", handler: "fanqie" },
 ] as const;
-export type PlatformTarget = (typeof platformTargets)[number];
+export type PlatformTarget = (typeof publicationPlatforms)[number]["id"];
+export const platformTargets: readonly PlatformTarget[] = publicationPlatforms.map(platform => platform.id);
 export const PlatformTargetSchema = z.enum(platformTargets);
 export const PlatformConfigurationInputSchema = z.strictObject({
   target: PlatformTargetSchema,
@@ -155,6 +156,14 @@ export interface PublicationPendingTerms {
   createdAt: string;
   platformLabel: "腾讯音乐";
 }
+const publicationPreviewSchema = z.strictObject({
+  target: PlatformTargetSchema,
+  accountId: z.uuid().nullable(),
+  workId: z.uuid(),
+});
+export type PublicationPreviewInput = z.infer<typeof publicationPreviewSchema>;
+export type PublicationPreview = Pick<SimpleMaterialSnapshot, "title" | "recordingSlot"> & { issues: string[] };
+
 export const SimplePublishingSchemas = {
   "platformConfig.list": z.strictObject({}),
   "platformConfig.save": z.strictObject({
@@ -169,6 +178,7 @@ export const SimplePublishingSchemas = {
   "publish.selection.save": PublishSelectionSchema,
   "publish.metadata.save": z.strictObject({workId:z.uuid(),expectedRevision:z.number().int().positive(),metadata:TmeAiPrepareMetadataSchema.omit({title:true})}),
   "publish.reconcile": z.strictObject({id:z.uuid()}),
+  "publish.preview": publicationPreviewSchema,
   "publish.simple": PublishSelectionSchema.refine(
     (v) => v.workIds.length > 0,
     "请选择歌曲",

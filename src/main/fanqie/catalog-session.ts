@@ -1,30 +1,47 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
-import type {BrowserContext, Page} from 'playwright-core';
+import type {BrowserContext, Frame, Page} from 'playwright-core';
 import {z} from 'zod';
 import {readFanqieAccountUid, readFanqieArtists} from './identity';
 import {readFanqieCatalogPages} from './catalog';
-import {launchAccountBrowser} from '../browser-accounts';
+import {readFanqieDirectoryCatalog} from './catalog-lookup';
+import {isOfficialSignInRoute,launchAccountBrowser} from '../browser-accounts';
 import {openBackgroundOfficialPage} from '../background-page';
-import type {FanqieCatalog, FanqieCatalogReport} from '../../shared/fanqie-catalog';
+import {fanqieAccountTab, fanqieArtistUrl, fanqieProfileUrl as accountPage, withFanqieReadFrame} from './directory-page';
+import {fanqieOrigin} from '../../shared/fanqie';
+import type {AccountLoginState} from '../../shared/platform-accounts';
+import {FanqieCatalogRowError,type FanqieCatalog,type FanqieCatalogQuery,type FanqieCatalogReport} from '../../shared/fanqie-catalog';
+import {fanqieDownloadIssues} from '../../shared/fanqie-downloads';
+import {platformImageFailure} from '../../shared/platform-image';
+import type {FanqieDirectoryTracePort} from './directory-trace';
+import type {FanqieArtistPage} from './artist-creation';
+type AccountDocument = Page | Frame;
 type Options = {
   root: string; available: () => boolean; generation: () => number;
   launch?: (profile: string) => Promise<BrowserContext>;
-  account?: (page: Page) => Promise<{accountId: string}>;
+  account?: (page: AccountDocument) => Promise<{accountId: string}>;
   catalog?: (page: Page) => Promise<FanqieCatalog>;
-  artists?: (page: Page) => Promise<{artists:{artistId:string;name:string}[]}>;
+  artists?: (page: AccountDocument) => Promise<{artists:{artistId:string;name:string}[]}>;
   stateDirectory?: string;
   browserDirectory?: string;
   verifyAccount?: (accountKey: string) => void;
 };
 // Only the public locator/evaluate surface is exposed to the read-only adapters.
-function readPage(page: Page) {
+function readPage(page: AccountDocument) {
   return {url: async () => page.url(), playwright: page};
 }
 const actions = z.enum(['open', 'read', 'status', 'syncProfile']);
 const ProfileSchema=z.strictObject({accountKey:z.string().regex(/^[a-f0-9]{64}$/),maskedAccount:z.string(),observedAt:z.string(),artists:z.array(z.strictObject({artistId:z.string().regex(/^[1-9]\d{4,24}$/),name:z.string().min(1)}))});
 const empty = z.strictObject({});
+
+function fanqieSignInForm(page: AccountDocument) {
+  return page.locator('body')
+    .filter({has:page.getByPlaceholder('请输入手机号', {exact:true}).filter({visible:true})})
+    .filter({has:page.getByPlaceholder('请输入验证码', {exact:true}).filter({visible:true})})
+    .getByRole('button', {name:'登录/注册',exact:true}).filter({visible:true});
+}
+
 /** Dedicated application-owned Chrome session. Never imports another browser's cookies or profile. */
 export class FanqieCatalogSession {
   private context?: BrowserContext;
@@ -33,6 +50,7 @@ export class FanqieCatalogSession {
   private verifiedAccountKey?: string;
   private progress = '';
   private lastError: string | null = null;
+  private loginCheck?: { context: BrowserContext; generation: number; until: number; result: Promise<AccountLoginState> };
   constructor(private readonly options: Options) {}
   private stateDirectory() {
     return this.options.stateDirectory ?? path.join(this.options.root, 'production', 'fanqie');
@@ -47,14 +65,14 @@ export class FanqieCatalogSession {
     if (!this.options.available()) throw Error('PRODUCTION_REQUIRED');
     if (this.options.generation() !== generation) throw Error('WORKSPACE_CHANGED');
   }
-  mark(step: string, error: string | null = null) {
+  mark(step: string, error: string | null = null, location?: {page?: number; row: number}) {
     this.progress = step; this.lastError = error;
     const folder = this.options.stateDirectory &&
       this.options.stateDirectory !== path.join(this.options.root, 'production', 'fanqie')
       ? path.join(this.stateDirectory(), 'diagnostics') : path.join(this.options.root, 'diagnostics');
     fs.mkdirSync(folder, {recursive: true});
     // No page text, URLs, account IDs, file paths or credentials in diagnostics.
-    fs.writeFileSync(path.join(folder, 'fanqie-operation.json'), JSON.stringify({at: new Date().toISOString(), step, error}));
+    fs.writeFileSync(path.join(folder, 'fanqie-operation.json'), JSON.stringify({at: new Date().toISOString(), step, error, ...location}));
   }
   private profile(){
     try{return ProfileSchema.parse(JSON.parse(fs.readFileSync(path.join(this.stateDirectory(),'profile.json'),'utf8')));}catch{return null;}
@@ -68,9 +86,57 @@ export class FanqieCatalogSession {
       progress: this.progress, lastError: this.lastError, uploadAvailable: false as const,
     };
   }
+  loginState(): Promise<AccountLoginState> {
+    const context = this.context;
+    if (!context) return Promise.resolve('unknown');
+    const generation = this.options.generation();
+    const pages = context.pages().filter(page => !page.isClosed() && page.url().startsWith(fanqieOrigin + '/'));
+    const source = pages.find(page => !isOfficialSignInRoute(page.url(), fanqieOrigin));
+    if (!source && pages.length) {
+      this.loginCheck = undefined;
+      return Promise.resolve('expired');
+    }
+    if (this.loginCheck?.context === context && this.loginCheck.generation === generation && this.loginCheck.until > Date.now())
+      return this.loginCheck.result;
+    if (!source || this.busy) return Promise.resolve('unknown');
+    const guard = () => {
+      this.assertCurrent(generation);
+      if (this.context !== context) throw Error('FANQIE_BROWSER_CONNECTION_REQUIRED');
+    };
+    const check = (): Promise<AccountLoginState> => withFanqieReadFrame(source, guard, async page => {
+      const response = await page.goto(accountPage, {waitUntil:'domcontentloaded',timeout:8_000});
+      guard();
+      if (isOfficialSignInRoute(page.url(), fanqieOrigin) || (response?.status() === 401 && page.url().startsWith(fanqieOrigin + '/')))
+        return 'expired';
+      if (!this.options.account) {
+        const signIn = fanqieSignInForm(page);
+        const uid = page.getByText('UID', {exact:true}).filter({visible:true});
+        // The site may redirect after DOMContentLoaded or render login in place.
+        await uid.or(signIn).first().waitFor({state:'visible',timeout:8_000}).catch(error => {
+          if (!(error instanceof Error) || error.name !== 'TimeoutError') throw error;
+        });
+        guard();
+        if (isOfficialSignInRoute(page.url(), fanqieOrigin) ||
+            (page.url().startsWith(fanqieOrigin + '/') && await signIn.count())) return 'expired';
+        if (!await uid.count()) return 'unknown';
+      }
+      const { accountId } = await (this.options.account ?? (tab => readFanqieAccountUid(readPage(tab))))(page);
+      guard();
+      const saved = this.profile();
+      const key = createHash('sha256').update('fanqie:' + accountId).digest('hex');
+      return /^[1-9]\d{4,24}$/.test(accountId) && (!saved || saved.accountKey === key) ? 'valid' : 'unknown';
+    });
+    const result = check().catch((): AccountLoginState => 'unknown').then(state => {
+      if (this.loginCheck?.result === result)
+        this.loginCheck.until = Date.now() + (state === 'valid' ? 30_000 : 5_000);
+      return state;
+    });
+    this.loginCheck = { context, generation, until: Infinity, result };
+    return result;
+  }
   async verifyRestoredAccount(){
     return this.run(async(context,guard)=>{
-      const observed=await this.observeAccount(context,guard,async()=>null);
+      const observed=await this.observeAccount(context,guard,async()=>null,undefined,true);
       if(observed.accountKey!==this.profile()?.accountKey)throw Error('FANQIE_ACCOUNT_IDENTITY_MISMATCH');
       this.verifiedAccountKey=observed.accountKey;
       this.mark('登录已核对');
@@ -84,38 +150,92 @@ export class FanqieCatalogSession {
     this.busy = true;
     const guard = () => {this.assertCurrent(generation); if (this.context !== context) throw Error('FANQIE_BROWSER_CONNECTION_REQUIRED');};
     try {return await action(context, guard);}
-    catch (error) {this.mark('操作未完成', fanqieCatalogError(error).code); throw error;}
+    catch (error) {
+      const location=error instanceof FanqieCatalogRowError ? {page:error.page,row:error.row} : undefined;
+      this.mark('操作未完成', fanqieCatalogError(error).code, location);
+      throw error;
+    }
     finally {this.busy = false;}
+  }
+  async withArtistCreationPage<T>(action: (scope: FanqieArtistPage) => Promise<T>) {
+    const opened = !this.context;
+    if (opened) await this.ui('open');
+    return this.run(async (context, guard) => {
+      const pages = context.pages().filter(page => !page.isClosed());
+      const page = opened && pages.length === 1 ? pages[0] : await context.newPage();
+      const verifyAccount = async () => {
+        const observed = await withFanqieReadFrame(page, guard,
+          frame => this.observeAccountDocument(frame, page, guard, async () => null));
+        return observed.accountKey;
+      };
+      return action({
+        page, guard, verifyAccount, stateDirectory: this.stateDirectory(), mark: step => this.mark(step),
+        close: async () => {
+          if (page.isClosed()) return;
+          if (opened && context.pages().filter(tab => !tab.isClosed()).every(tab => tab === page)) await context.close();
+          else await page.close();
+        },
+      });
+    });
   }
   private async observeAccount<T>(
     context: BrowserContext,
     guard: () => void,
-    read: (page: Page, go: (url: string) => Promise<void>) => Promise<T>,
+    read: (document: AccountDocument, go: (url: string) => Promise<void>, page: Page) => Promise<T>,
+    trace?:FanqieDirectoryTracePort,
+    inPlace = false,
   ) {
     this.verifiedAccountKey = undefined;
     this.mark('正在读取番茄账号'); guard();
+    if (inPlace) {
+      const page = fanqieAccountTab(context);
+      return withFanqieReadFrame(page, guard, frame => this.observeAccountDocument(frame, page, guard, read, trace));
+    }
     const primary = context.pages().find(page => !page.isClosed());
     if (!primary) throw Error('FANQIE_BROWSER_CONNECTION_REQUIRED');
     const page = await openBackgroundOfficialPage(primary);
-    const go = async (url: string) => {guard(); await page.goto(url, {waitUntil: 'domcontentloaded', timeout: 20000}); guard();};
-    const accountPage = 'https://www.novelfm.com/creator/music/account/profile';
+    try {
+      return await this.observeAccountDocument(page, page, guard, read, trace);
+    } finally { await page.close().catch(() => {}); }
+  }
+  private async observeAccountDocument<T>(
+    document: AccountDocument,
+    page: Page,
+    guard: () => void,
+    read: (document: AccountDocument, go: (url: string) => Promise<void>, page: Page) => Promise<T>,
+    trace?: FanqieDirectoryTracePort,
+  ) {
+    const releaseTrace=trace?.watch(page);
+    let checkpoint='catalog:account';
+    const go = async (url: string) => {
+      guard();
+      checkpoint=url.endsWith('/ugc')?'catalog:existing':url.endsWith('/artist')?'catalog:artists':'catalog:account';
+      await trace?.trace(checkpoint,'begin',page);
+      await document.goto(url, {waitUntil: 'domcontentloaded', timeout: 20000});
+      guard();
+    };
     const readAccount = this.options.account ?? (p => readFanqieAccountUid(readPage(p)));
     try {
       await go(accountPage);
-      const { accountId } = await readAccount(page); guard();
+      const { accountId } = await readAccount(document); guard();
       if (!/^[1-9]\d{4,24}$/.test(accountId)) throw Error('FANQIE_ACCOUNT_ID_UNVERIFIED');
-      const value = await read(page, go); guard();
+      await trace?.trace('catalog:account','ok',page);
+      const value = await read(document, go, page); guard();
       await go(accountPage);
-      const after = await readAccount(page); guard();
+      const after = await readAccount(document); guard();
       if (accountId !== after.accountId) throw Error('FANQIE_CATALOG_SCOPE_CHANGED');
       const accountKey = createHash('sha256').update('fanqie:' + accountId).digest('hex');
       this.options.verifyAccount?.(accountKey);
+      await trace?.trace('catalog:account','ok',page);
       return { value, accountId, accountKey, maskedAccount: '***' + accountId.slice(-4) };
-    } finally {await page.close().catch(() => {});}
+    } catch(error) {
+      await trace?.trace(checkpoint,'error',page,undefined,error);
+      throw error;
+    } finally {releaseTrace?.();}
   }
-  private async readArtists(page: Page, go: (url: string) => Promise<void>) {
+  private async readArtists(page: AccountDocument, go: (url: string) => Promise<void>) {
     this.mark('正在核对署名');
-    await go('https://www.novelfm.com/creator/music/account/artist');
+    await go(fanqieArtistUrl);
     return (await (this.options.artists ?? (p => readFanqieArtists(readPage(p))))(page)).artists;
   }
   private saveProfile(input: z.input<typeof ProfileSchema>) {
@@ -126,30 +246,51 @@ export class FanqieCatalogSession {
     fs.writeFileSync(file + '.tmp', JSON.stringify(profile, null, 2));
     fs.renameSync(file + '.tmp', file);
   }
-  async inspect(context: BrowserContext, guard: () => void, withArtists = false) {
-    this.report = undefined;
-    const { value: { catalog, artists }, accountId, accountKey, maskedAccount } = await this.observeAccount(context, guard, async (page, go) => {
-      this.mark('正在读取已有作品');
-      await go('https://www.novelfm.com/creator/music/finished/ugc');
-      const catalog = await (this.options.catalog ?? (p => readFanqieCatalogPages(p,guard)))(page);
+  async inspect(context: BrowserContext, guard: () => void, withArtists = false, trace?:FanqieDirectoryTracePort,
+    queries?: readonly FanqieCatalogQuery[]) {
+    if (!queries) this.report = undefined;
+    const { value: { catalog, artists }, accountId, accountKey, maskedAccount } = await this.observeAccount(context, guard, async (document, go, page) => {
+      let catalog: FanqieCatalog;
+      if (queries) {
+        this.mark('正在核对本批作品');
+        await trace?.trace('catalog:batch-lookup','begin',page);
+        try {
+          catalog = await readFanqieDirectoryCatalog(document,guard,queries);
+        } catch(error) {
+          await trace?.trace('catalog:batch-lookup','error',page,undefined,error);
+          throw error;
+        }
+        await trace?.trace('catalog:batch-lookup','ok',page);
+      } else {
+        this.mark('正在读取已有作品');
+        await go('https://www.novelfm.com/creator/music/finished/ugc');
+        catalog = await (this.options.catalog ?? (p => readFanqieCatalogPages(p,guard)))(page);
+        await trace?.trace('catalog:existing','ok',page);
+      }
       if (catalog.source !== 'browser') throw Error('FANQIE_CATALOG_SOURCE_REQUIRED');
-      return { catalog, artists: withArtists ? await this.readArtists(page, go) : [] };
-    });
+      if(trace&&(!catalog.complete||catalog.rows.length!==catalog.total))throw Error('FANQIE_CATALOG_INCOMPLETE');
+      const artists=withArtists?await this.readArtists(document,go):[];
+      if(withArtists)await trace?.trace('catalog:artists','ok',page);
+      return { catalog, artists };
+    },trace,queries!==undefined);
     guard();
     const report = {...catalog, accountKey, maskedAccount};
     const folder = this.stateDirectory(); fs.mkdirSync(folder, {recursive: true});
-    const temp = path.join(folder, 'catalog.json.tmp'), target = path.join(folder, 'catalog.json');
-    fs.writeFileSync(temp, JSON.stringify(report, null, 2)); fs.renameSync(temp, target);
+    if (!queries) {
+      const temp = path.join(folder, 'catalog.json.tmp'), target = path.join(folder, 'catalog.json');
+      fs.writeFileSync(temp, JSON.stringify(report, null, 2)); fs.renameSync(temp, target);
+      this.report = report;
+    } else if (this.report && this.report.accountKey !== accountKey) this.report = undefined;
     if (withArtists) this.saveProfile({accountKey, maskedAccount, observedAt:report.observedAt, artists});
     else {
       const old = this.profile();
       if (old && old.accountKey !== accountKey) fs.unlinkSync(path.join(folder, 'profile.json'));
     }
     this.verifiedAccountKey = accountKey;
-    this.report = report; this.mark('作品读取完成');
+    this.mark(queries ? '本批作品核对完成' : '作品读取完成');
     return {accountId, catalog, report, artists};
   }
-  async ui(action: unknown, input: unknown = {}) {
+  async ui(action: unknown, input: unknown = {}, trace?:FanqieDirectoryTracePort) {
     const name = actions.parse(action); empty.parse(input);
     const generation = this.options.generation(); this.assertCurrent(generation);
     if (name === 'status') return this.status();
@@ -163,6 +304,7 @@ export class FanqieCatalogSession {
         if (this.report?.accountKey !== accountKey) this.report = undefined;
         this.saveProfile({accountKey, maskedAccount, artists, observedAt: new Date().toISOString()});
         this.verifiedAccountKey = accountKey;
+        this.loginCheck = undefined;
         this.mark('官网资料已同步');
         return {...this.status(), busy:false};
       });
@@ -189,12 +331,21 @@ export class FanqieCatalogSession {
             this.context = undefined;
             this.report = undefined;
             this.verifiedAccountKey = undefined;
+            this.loginCheck = undefined;
           }
         });
         this.assertCurrent(generation);
         const page = context.pages().find(p => !p.isClosed()) ?? await context.newPage();
         // A new session starts at Home. Never navigate an existing upload or contract editor.
-        if (page.url() === 'about:blank') await page.goto('https://www.novelfm.com/creator/music/home', {waitUntil: 'domcontentloaded', timeout: 20000});
+        const unwatch=trace?.watch(page);
+        try {
+          await trace?.trace('browser:home','begin',page);
+          if (page.url() === 'about:blank') await page.goto('https://www.novelfm.com/creator/music/home', {waitUntil: 'domcontentloaded', timeout: 20000});
+          await trace?.trace('browser:home','ok',page);
+        } catch(error) {
+          await trace?.trace('browser:home','error',page,undefined,error);
+          throw error;
+        } finally {unwatch?.();}
         this.mark('工作窗口已连接');
         this.assertCurrent(generation); return {...this.status(), busy: false};
       }
@@ -231,10 +382,29 @@ export function fanqieCatalogError(error: unknown) {
     FANQIE_IDENTITY_PAGE_REQUIRED: '请在番茄工作窗口完成登录后重试。',
     FANQIE_ACCOUNT_ID_UNVERIFIED: '未读到番茄账号，请核对登录状态。',
     FANQIE_CATALOG_FILTERED: '未读到完整作品列表，请重新读取。',
+    FANQIE_CATALOG_WORK_TITLE_UNVERIFIED: '官网作品列表中有一行读不到唯一的歌名，已暂停上传查重。',
+    FANQIE_CATALOG_WORK_ID_UNVERIFIED: '官网作品列表中有一行读不到有效作品 ID，已暂停上传查重。',
+    FANQIE_CATALOG_DUPLICATE_ID: '官网作品列表出现重复 ID，已暂停上传查重。',
+    FANQIE_CATALOG_STATUS_UNVERIFIED: '所选作品的官网状态待核对，已暂停签约或回执确认。',
     FANQIE_CATALOG_SCOPE_CHANGED: '番茄账号发生变化，请重新读取。',
     FANQIE_ACCOUNT_IDENTITY_MISMATCH: '当前登录与已绑定账号不一致，请在专属窗口登录原账号。',
     FANQIE_ACCOUNT_ALREADY_BOUND: '该番茄账号已在其他本地账号中绑定，请使用原账号。',
     ACCOUNT_PROVIDER_MISMATCH: '所选账号不属于这个平台。',
+    ACCOUNT_NOT_FOUND: '该平台账号已删除或不存在。',
+    ARTIST_ACCOUNT_MISMATCH: '该艺人已经不属于所选番茄账号，请刷新账号管理。',
+    REVISION_CONFLICT: '艺人或图片配置已更新，请重新确认后执行。',
+    FANQIE_ARTIST_SCOPE_CHANGED: '艺人资料或所选图像模型配置已变化，请重新确认。',
+    FANQIE_ARTIST_LOGIN_REQUIRED: '请在本次打开的番茄窗口登录，再点「艺人创建」。',
+    FANQIE_ARTIST_ROSTER_UNAVAILABLE: '未能打开番茄「艺人信息」或加载搜索框，请核对当前窗口后重试。',
+    FANQIE_ARTIST_NAME_REQUIRED: '请在艺人信息中填写歌手名称。',
+    FANQIE_ARTIST_SEARCH_UNVERIFIED: '未能核对番茄的艺人搜索结果，请检查登录和网络后重试。',
+    FANQIE_ARTIST_AVATAR_RESOLUTION: '番茄艺人头像至少为 1024 × 1024，请在艺人信息中调整封面分辨率。',
+    FANQIE_ARTIST_AVATAR_VOICE_REQUIRED: '请在艺人信息里设置男或女，以匹配头像。',
+    CREDENTIAL_NOT_CONFIGURED: '请在配置中心保存所选图像模型提供商的 API Key。',
+    FANQIE_ARTIST_AVATAR_UPLOAD: '番茄未确认头像上传，请核对建档窗口。',
+    FANQIE_ARTIST_FORM_CHANGED: '未能核对艺人名称、头像和全部角色，请检查番茄艺人窗口。',
+    FANQIE_ARTIST_CREATE_REJECTED: '番茄拒绝添加艺人，请查看官网表单提示。',
+    FANQIE_ARTIST_CREATE_UNCONFIRMED: '艺人提交结果待核对，请查看番茄艺人列表。',
     ACCOUNT_DIRECTORY_LINK: '账号存储目录无效。',
     FANQIE_BUNDLE_REQUIRED: '请先选择发布材料清单。',
     FANQIE_WORK_MATERIALS_REQUIRED: '所选版本缺少音频、封面或歌词，请先在作品库补齐。',
@@ -261,5 +431,8 @@ export function fanqieCatalogError(error: unknown) {
     FANQIE_UPLOAD_READBACK_TIMEOUT: '上传回显等待超时。已保留原页面，请核对结果，勿重新上传。',
     FANQIE_SAVED_WORK_READBACK_REQUIRED: '尚未找到唯一的新作品记录，请保留原页面核对，勿重复上传。',
   };
-  return {code, message: messages[code] ?? '番茄记录读取未完成，请核对工作窗口的登录状态和网络。'};
+  const location=error instanceof FanqieCatalogRowError && error.page ? `（第 ${error.page} 页第 ${error.row} 行）` : '';
+  const fallback = /^(?:IMAGE_|CREDENTIAL_|SECURE_STORAGE_|HTTP_TIMEOUT$|HTTP_REQUEST_FAILED$)/u.test(code) ? platformImageFailure(code).message :
+    '番茄记录读取未完成，请核对工作窗口的登录状态和网络。';
+  return {code, message: (messages[code] ?? fanqieDownloadIssues[code] ?? fallback)+location};
 }

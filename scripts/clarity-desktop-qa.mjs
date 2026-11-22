@@ -1,4 +1,5 @@
 import { _electron as electron, expect } from "@playwright/test";
+import { openCreationWork } from "./lib/open-creation-work.mjs";
 import electronPath from "electron";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
@@ -185,22 +186,10 @@ try {
   checks.push(
     "Home opens ideas; production saves idea without Key or fabricated AI output",
   );
-  await nav("本地模板");
-  await page
-    .getByRole("heading", { name: "用本地模板起草", exact: true })
-    .waitFor();
-  await page
-    .getByRole("button", { name: "定时创建本地模板草稿", exact: true })
-    .click();
-  await page
-    .getByRole("button", { name: "保存本地模板计划", exact: true })
-    .waitFor();
+  await expect(page.locator("aside nav").getByRole("button", { name: "手动模板", exact: true })).toHaveCount(0);
   assert.equal((await rpc("snapshot")).plans.length, 0);
-  checks.push(
-    "Template and old scheduled-draft copy are explicit; QA enables no schedules",
-  );
-  await nav("作品库");
-  await page.getByRole("heading", { name: work.title, exact: true }).click();
+  checks.push("Manual template navigation is absent");
+  await openCreationWork(page, work.id);
   const next = page.getByTestId("work-next-step");
   await expect(next).toContainText("试听并核对歌词与音频");
   await next
@@ -236,12 +225,12 @@ try {
     .getByRole("button", { name: "准备发布材料 →", exact: true })
     .click();
   await page
-    .getByRole("button", { name: "腾讯音乐人草稿通道 →", exact: true })
+    .getByRole("button", { name: "打开逐首资料工具", exact: true })
     .waitFor();
   assert((await page.getByText(work.title, { exact: true }).count()) > 0);
   assert.equal(await page.getByText(other.title, { exact: true }).count(), 0);
   await page
-    .getByRole("button", { name: "腾讯音乐人草稿通道 →", exact: true })
+    .getByRole("button", { name: "打开逐首资料工具", exact: true })
     .click();
   await page
     .getByRole("heading", { name: "客户端浏览器连接", exact: true })

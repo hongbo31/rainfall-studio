@@ -3,11 +3,11 @@ const {offlineAcceptanceEnabled,nodeHttpsTransport}=require('../build/offline-ac
 test('offline IPC allowlist excludes native, cloud, credentials, terms, generation and unknown actions',()=>{
  const {offlineAcceptanceInvocationAllowed:allowed}=require('../build/offline-acceptance.cjs');
  for(const channel of ['rainfall:tme-ai-submission','rainfall:tme-ai-prepare','rainfall:tme:live','rainfall:tme:run','rainfall:api-credential:write','rainfall:live-music','rainfall:mode','rainfall:official'])assert.equal(allowed(channel,['submit',{}]),false,channel);
- for(const method of ['publish.reconcile','unifiedPublish.submit','planAlbum.create','accountIdentity.connect','materials.enqueue','liveMusic.submit','publish.acceptTerms','unknown.method'])assert.equal(allowed('rainfall:call',[method,{}]),false,method);
- for(const method of ['snapshot','runtime','materials.scan','work.selectAudioVersion','publish.simple','publish.selection.save','platformConfig.setAccount'])assert.equal(allowed('rainfall:call',[method,{}]),true,method);
+ for(const method of ['publish.reconcile','publish.qishui.fill','unifiedPublish.submit','planAlbum.create','accountIdentity.connect','materials.enqueue','liveMusic.submit','publish.acceptTerms','unknown.method'])assert.equal(allowed('rainfall:call',[method,{}]),false,method);
+ for(const method of ['snapshot','runtime','materials.scan','work.selectAudioVersion','publish.preview','publish.simple','publish.selection.save','platformConfig.setAccount'])assert.equal(allowed('rainfall:call',[method,{}]),true,method);
  assert.equal(allowed('rainfall:call',['planCenter.fanqieStatus',{}]),true);
  assert.equal(allowed('rainfall:fanqie-upload',['status',{}]),true);
- for(const action of ['upload','publishBatch','reconcile'])assert.equal(allowed('rainfall:fanqie-upload',[action,{}]),false);
+ for(const action of ['upload','publishBatch','publishConfigured','reconcile'])assert.equal(allowed('rainfall:fanqie-upload',[action,{}]),false);
 });
 test('offline acceptance refuses non-temporary roots and requires an explicit marker',()=>{
  const prior={flag:process.env.RAINFALL_OFFLINE_ACCEPTANCE,root:process.env.RAINFALL_DATA_ROOT},root=fs.mkdtempSync(path.join(os.tmpdir(),'rainfall-offline-acceptance-'));

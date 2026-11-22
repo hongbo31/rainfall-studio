@@ -1,4 +1,5 @@
 import { _electron as electron, expect } from "@playwright/test";
+import { openCreationWork } from "./lib/open-creation-work.mjs";
 import electronPath from "electron";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -71,7 +72,7 @@ async function launch() {
   page.on("request", (r) => {
     if (/^https?:/.test(r.url())) external.push(r.url());
   });
-  await page.getByRole("heading", { name: "让故事，成为下一首歌。" }).waitFor();
+  await page.getByRole("heading", { name: "总览", exact: true }).waitFor();
   await app.evaluate(({ BrowserWindow }) =>
     BrowserWindow.getAllWindows()[0].setContentSize(1440, 1000),
   );
@@ -96,9 +97,8 @@ async function saveFile(file) {
 async function nav(name) {
   await page.getByRole("button", { name, exact: true }).click();
 }
-async function track() {
-  await nav("作品库");
-  await page.getByRole("heading", { name: title, exact: true }).click();
+async function track(workId) {
+  await openCreationWork(page, workId);
   await page.getByRole("heading", { name: title, exact: true }).waitFor();
 }
 try {
@@ -149,16 +149,16 @@ try {
   results.push(
     "DPAPI real encrypted roundtrip / identity binding / delete (synthetic secret only)",
   );
-  await nav("本地模板");
-  await page.getByLabel("歌名", { exact: true }).fill(title);
-  await page
-    .getByLabel("故事", { exact: true })
-    .fill("原创QA验证：雨停以后，在街角再次遇见。");
-  await page
-    .getByRole("button", { name: "用本地模板起草 →", exact: true })
-    .click();
-  await page.getByRole("heading", { name: title, exact: true }).waitFor();
-  const workId = (await snapshot()).works.find((w) => w.title === title).id;
+  const artistId = (await snapshot()).artists[0].id;
+  const workId = await page.evaluate(async ({ title, artistId }) => {
+    const result = await window.rainfall.call("work.save", {
+      title, artistId, story: "原创QA验证：雨停以后，在街角再次遇见。",
+      lyrics: "", prompt: "", parameters: {}, rights: "", ai: "unknown",
+    });
+    if (!result.ok) throw Error(result.error.message);
+    return result.value.id;
+  }, { title, artistId });
+  await track(workId);
   await page
     .getByLabel("编辑歌词")
     .fill("这是原创QA测试歌词\n雨停以后，你仍在这里");
@@ -196,7 +196,7 @@ try {
     .toBeGreaterThan(0.1);
   await page.getByRole("button", { name: "▷ 试听 B", exact: true }).click();
   await expect.poll(() => page.locator("#now").innerText()).toContain("B版");
-  results.push("UI create/edit/autosave, native import A/B, actual playback");
+  results.push("Fixture work edit/autosave, native import A/B, actual playback");
   await page.getByRole("button", { name: "保存版本", exact: true }).click();
   await page.getByRole("button", { name: "封面工作室 →", exact: true }).click();
   await openFile(cover);
@@ -241,13 +241,14 @@ try {
       (await snapshot()).bindings.some((b) => b.accountId === account.id),
     )
     .toBe(true);
-  await nav("作品库");
+  await nav("创作中心");
+  await page.getByRole("button", { name: "多选", exact: true }).click();
   await page.getByLabel("选择 " + title, { exact: true }).check();
   await page
     .getByRole("button", { name: "批量发布", exact: true })
     .click();
   await page
-    .locator(".destination")
+    .locator(".quick-platform")
     .filter({ hasText: "网易云音乐" })
     .getByRole("checkbox")
     .check();
@@ -255,12 +256,7 @@ try {
     .getByLabel("网易云音乐账号", { exact: true })
     .selectOption(account.id);
   await page
-    .getByRole("button", { name: "生成批次并预检 →", exact: true })
-    .click();
-  await page.getByRole("button", { name: "确认演练范围", exact: true }).click();
-  await page.getByRole("dialog").getByRole("checkbox").check();
-  await page
-    .getByRole("button", { name: "开始已确认演练", exact: true })
+    .getByRole("button", { name: "发布（本地模拟）", exact: true })
     .click();
   await expect
     .poll(
@@ -289,7 +285,7 @@ try {
   fs.unlinkSync(audioB);
   fs.unlinkSync(cover);
   await launch();
-  await track();
+  await track(workId);
   await page.getByRole("button", { name: "▷ 试听 A", exact: true }).click();
   await expect
     .poll(() => page.locator("audio").evaluate((a) => a.duration))

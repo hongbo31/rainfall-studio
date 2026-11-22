@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { hash, type Row } from "./database";
 import type { Studio } from "./studio";
 import { publicationPayload } from "./publication-payload";
+import { archivePublicationDownloads } from "./download-archive";
+import { workRecordingSinger } from "../shared/local-artist";
 import {
   assertAccountReference,
   listPlatformConfigurations,
@@ -17,6 +19,8 @@ import {
   type SimplePublicationRequest,
   type SimpleMaterialSnapshot,
   type PublicationPendingTerms,
+  type PublicationPreview,
+  type PublicationPreviewInput,
 } from "../shared/platform-config";
 
 const selectionKey = simpleSettingsPrefix + "selection:v1",
@@ -101,6 +105,7 @@ function material(
     Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : undefined;
   const artistId = w.artistId ?? c.artistId;
   const artist = artistId ? s.repo.maybe("artists", artistId) : null;
+  const credits = artist?.accountLocalArtist ? artist.profile : undefined;
   const account = accountId ? s.repo.maybe("accounts", accountId) : null;
   const nonblank = (value: unknown, fallback: string) =>
     typeof value === "string" && value.trim() ? value : fallback;
@@ -162,9 +167,9 @@ function material(
     },
     metadata: {
       artistId,
-      artistName: artist?.name ?? "",
-      lyricist: text("lyricist", c.lyricist),
-      composer: text("composer", c.composer),
+      artistName: workRecordingSinger(w, artist) ?? "",
+      lyricist: text("lyricist", c.lyricist || credits?.lyricist || ""),
+      composer: text("composer", c.composer || credits?.composer || ""),
       album: text("album", c.album),
       language: text("language", nonblank(w.config?.language, c.language)),
       genre: text("genre", nonblank(w.config?.genre, c.genre)),
@@ -373,6 +378,16 @@ export function checkSimplePublication(
 function termsSummary(_text: string) {
   return "请查看条款";
 }
+export function previewPublication(s: Studio, { target, accountId, workId }: PublicationPreviewInput): PublicationPreview {
+  const config = listPlatformConfigurations(s.repo).find(row => row.target === target)!;
+  const { materialSnapshot, issues } = checkSimplePublication(s, s.get("works", workId), target, config, accountId);
+  return {
+    title: materialSnapshot.title,
+    recordingSlot: materialSnapshot.recordingSlot,
+    issues: issues.filter(issue => issue !== materialSnapshot.terms?.termsText),
+  };
+}
+
 function storedRequests(s: Studio): SimplePublicationRequest[] {
   return s
     .all("settings")
@@ -529,7 +544,7 @@ export function listSimplePublicationRequests(
     }
   return result;
 }
-export function publishSimple(s: Studio, input: PublishSelection, enqueue = true) {
+export function publishSimple(s: Studio, input: PublishSelection, enqueue = true, publicationRunId?: string) {
   if (!input.workIds.length || !input.targets.length)
     throw Error("EMPTY_SELECTION");
   const selection = normalizeSelection(s, input),
@@ -563,6 +578,7 @@ export function publishSimple(s: Studio, input: PublishSelection, enqueue = true
       });
       prepared.push({ fingerprint, request });
     }
+  archivePublicationDownloads(s, prepared.map(({ request }) => ({ workId: request.workId, accountId: request.accountId })));
   return s.repo.transaction(() => {
     let reused = true;
     const requests = prepared.map(({ fingerprint, request }) => {
@@ -594,7 +610,7 @@ export function publishSimple(s: Studio, input: PublishSelection, enqueue = true
     });
     return {
       requests,
-      pipeline: s.mode === "production" && enqueue ? unifiedPublicationService(s).enqueue(requests) : [],
+      pipeline: s.mode === "production" && enqueue ? unifiedPublicationService(s).enqueue(requests, publicationRunId) : [],
       reused,
       rechecked: true,
       checkedAt: s.now().toISOString(),

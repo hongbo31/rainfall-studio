@@ -1,5 +1,7 @@
 # Windows 壳状态
 
+> 以下为历史原型记录。当前浏览器工作台请使用 [Start-Rainfall-Browser.bat](../Start-Rainfall-Browser.bat)。
+
 start.ps1 是 Windows 启动入口，运行本地 Node 服务，可用 -OpenBrowser 打开系统浏览器。它不是 Windows 原生客户端，也不是已打包 Electron 应用。
 
 electron-main.cjs 仅为未来安全隔离壳源代码草案，尚未构建/执行/验证。当前 ES 模块前端应通过 loopback 服务加载；打包阶段需把 host 改为内置服务或受控协议，完成 CSP、IPC 白名单、文件权限和签名评估。没有安装 Electron、没有下载依赖、没有生成 EXE/MSI。

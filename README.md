@@ -4,6 +4,10 @@
 
 # Rainfall Studio · Windows 音乐工作台
 
+从源码在浏览器打开正式工作台，请双击 [Start-Rainfall-Browser.bat](Start-Rainfall-Browser.bat)。Windows 上的 `npm start` 也调用同一个入口。
+
+浏览器预览默认在源码的同级目录 `../<源码目录名>-browser-dev` 准备依赖和运行快照。`RAINFALL_WEB_WORKSPACE`、`RAINFALL_NODE_DIR`、`RAINFALL_MEDIA_TOOLS` 和 `RAINFALL_WEB_DATA_ROOT` 都接受相对于项目根目录的路径，也可显式指定绝对路径。正式桌面库继续以当前用户的已验收指针为准。
+
 SOURCE_WINDOWS_HOST 当前源码 `0.7.0-preview.1` 新增持久生产流水线：本机每日候选、DeepSeek评分及有界改写、逐版本确认、作品/音乐/素材/待发布/回执与独立预算。沿用原桌面入口和数据根，验收后更新，不上传远端。缺Key、未核验音乐价格及真实投稿权限均具体阻塞；离线整链路不冒充真实服务联调。启动、能力矩阵和证据见 [0.7生产流程](docs/release/production-flow-0.7.md)。下文0.5.1安装包及远端Release为历史版本。
 
 这是当前产品源码的独立快照，用于在其他 Windows 设备克隆、构建和运行。仓库不包含原开发仓库的提交历史、现场验收记录、账号/作品数据、凭据、日志、依赖缓存或编译产物。
@@ -70,7 +74,9 @@ pwsh -NoProfile -File .\Build-Latest.ps1
 
 需要 Git for Windows、网络和本私有仓库的读取权限。脚本独立检出 GitHub `main`，安装锁定依赖并校验随包文件和运行组件。生成的 Windows x64 免安装 ZIP 带 SHA-256 文件，解压后打开 `RainfallStudio.exe`。
 
-本机使用 `H:\CodexData\Workspace\Rainfall-Studio\build`，成品放在其 `out` 子目录。可用 `-BuildRoot` 指定构建、验证与缓存目录，用 `-OutputDirectory` 单独指定成品目录。`-Local` 用于打包当前仓库已提交的版本。更新桌面客户端时先加 `-DeferCleanup`，切换入口后运行 `./Build-Latest.ps1 -CleanupInstalled`。脚本验证已安装版本后清理被替代的托管包、已结束的验证目录和可重建的构建缓存，保留在用版、回退版和正式数据。
+构建目录默认与源码目录同级，名为 `<源码目录名>-build`，成品放在其 `out` 子目录。
+`-BuildRoot` 或 `RAINFALL_BUILD_ROOT` 可指定构建、验证和缓存目录，`-OutputDirectory` 可单独指定成品目录。相对路径都以项目根目录为基准。
+`-Local` 用于打包当前仓库已提交的版本。更新桌面客户端时先加 `-DeferCleanup`，切换入口后用同一套路径配置运行 `./Build-Latest.ps1 -CleanupInstalled`。清理仅针对有构建记录的旧产物，保护在用版、回退版和正式数据。
 
 需要 Forge 安装器时可单独使用：
 
@@ -86,12 +92,9 @@ Forge 会重建 Electron 原生模块。完整应用目录通常位于 `out/Rain
 
 ## FFmpeg 与媒体功能
 
-音频探测、音视频封装目前使用 `src/core/assets.ts` 中的固定工具路径：
+Windows 客户端从程序目录的 `tools/media` 加载 `ffmpeg.exe` 和 `ffprobe.exe`。正式打包会随包附带，浏览器预览默认使用预览目录内的 `tools/media`，也可通过 `RAINFALL_MEDIA_TOOLS` 指定。
 
-- `C:\ffmpeg\ffmpeg-8.1-essentials_build\bin\ffmpeg.exe`
-- `C:\ffmpeg\ffmpeg-8.1-essentials_build\bin\ffprobe.exe`
-
-若已有安装位置不同，请在本地调整该文件的两个常量后重新构建；没有工具时相应媒体功能会报告阻塞，不会自动下载安装。仓库不附带 FFmpeg 二进制，分发时需核对其实际许可。
+直接运行 `scripts/package-portable.mjs` 时，把已解压的 FFmpeg 放在项目的 `tools/ffmpeg`，或用 `--media-tools-dir` 指定解压目录。目录应含 `bin`、`LICENSE` 和 `README.txt`。在隔离检出中运行需要真实媒体工具且把程序构建到 `output` 的回归测试时，将工具放在该检出的 `output/tools/media`。
 
 ## 数据与凭据
 

@@ -115,7 +115,7 @@ test('Core resolves only the chosen work version and detects changed lyrics with
  const {resolveFanqieWork}=require(process.env.RAINFALL_FANQIE_BUNDLE);
  const work={id:'00000000-0000-4000-8000-000000000003',title:'合成作品',assets:{audio_A:'a',audio_B:'b',cover:'c'},ai:'generated'};
  const assets={a:{id:'a',kind:'audio',sha256:h('A'),bytes:1},b:{id:'b',kind:'audio',sha256:h('B'),bytes:1},c:{id:'c',kind:'image',sha256:h('C'),bytes:1}};
- let lyrics='原歌词';const studio={mode:'production',get:(table,id)=>table==='works'?work:assets[id],locate:id=>({file:path.join(dir,id)}),lyricService:()=>({forWork:()=>({cleaned:lyrics})})};
+ let lyrics='原歌词';const studio={mode:'production',repo:{maybe:()=>undefined},get:(table,id)=>table==='works'?work:assets[id],locate:id=>({file:path.join(dir,id)}),lyricService:()=>({forWork:()=>({cleaned:lyrics})})};
  const first=resolveFanqieWork(studio,{workId:work.id,variant:'B'});assert.equal(first.audio.sha256,h('B'));assert.equal(work.assets.audio_A,'a');
  lyrics='修改歌词';assert.notEqual(resolveFanqieWork(studio,{workId:work.id,variant:'B'}).fingerprint,first.fingerprint);
  assert.throws(()=>resolveFanqieWork(studio,{workId:work.id,variant:'B',file:'untrusted'}));
@@ -232,6 +232,32 @@ test('configured batch uses each work artist’s credits and skips existing work
  const second=await broker.ui('publishBatch',request);assert.equal(second.batch.state,'complete');assert.equal(uploads,2);assert.equal(f.current.catalog.rows.length,2);
 });
 
+test('scheduled upload with contract preparation disabled retains the unsigned receipt',async()=>{
+ for(const configuredPreference of [false,true]){
+  const f=uploadFixture(),workId='00000000-0000-4000-8000-000000000001',fingerprint=h('upload-only');
+  f.options.session.status=()=>({connected:true,report:f.current.report});
+  f.options.work=async selection=>({...selection,artistId:workId,title:f.raw.title,ai:'generated',fingerprint});
+  f.options.materials=async()=>Object.fromEntries(Object.entries(f.raw.files).map(([role,name])=>{
+   const file=path.join(f.root,name),bytes=fs.readFileSync(file);return [role,{file,bytes:bytes.length,sha256:h(bytes)}];
+  }));
+  let tabsClosed=0;
+  const execute=f.options.execute;
+  f.options.execute=async(...args)=>({...await execute(...args),closeUploadPage:async()=>{tabsClosed++;}});
+  const broker=new FanqieUploadBroker(f.options);
+  await broker.ui('saveConfiguration',{version:1,authors:f.raw.authors,useWorkMaterials:true,publicationConsent:true,
+   ...(configuredPreference?{authorizationPreference:{mode:'exclusive',platforms:['fanqie_music'],confirmContractManually:true}}:{})});
+  const {configurationHash}=await broker.ui('configuration');
+  const request={runId:'00000000-0000-4000-8000-000000000005',accountKey:f.current.report.accountKey,
+   configurationHash,prepareContract:false,items:[{workId,variant:'A',fingerprint}]};
+  const result=await broker.publishScheduledBatch(request,async()=>{});
+  assert.equal(result.batch.state,'complete',JSON.stringify(result.batch));
+  assert.equal(result.batch.authorization,undefined);
+  assert.equal(result.batch.items[0].result.result.officialRecord.stage,'contract_pending');
+  assert.equal(f.calls(),1);
+  assert.equal(tabsClosed,1);
+ }
+});
+
 test('packaged Chrome lookup finds system installation before a missing per-user channel',()=>{
  const {fanqieChromeLaunchOptions}=require(path.join(path.dirname(process.env.RAINFALL_FANQIE_BUNDLE),'upload.cjs'));
  const installed='C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
@@ -251,4 +277,31 @@ test('scheduled upload refuses changed configuration, account or work before any
   const input={workId,variant:'A',accountKey:kind==='account'?h('other'):f.current.report.accountKey,configurationHash:kind==='configuration'?h('other'):config.configurationHash,fingerprint:kind==='work'?h('other'):h('source')};
   await assert.rejects(broker.publishScheduled(input,async()=>{if(kind==='stopped')throw Error('STOP_REQUESTED')}));assert.equal(f.calls(),0);assert.equal(broker.status().busy,false);
  }
+});
+
+test('scheduled graph upload preserves the chosen version in every resolution and on resuming',async()=>{
+ const f=uploadFixture(),workId='00000000-0000-4000-8000-000000000007',runId='00000000-0000-4000-8000-000000000008';
+ const selection={workId,variant:'B',useVersionMetadata:true};
+ const checked=[];
+ const source={...selection,title:'计划 B 版',lyrics:'实际歌词',ai:'generated',fingerprint:h('selected version')};
+ f.options.work=async value=>{assert.deepEqual(value,selection);return source;};
+ f.options.materials=async(_root,value)=>{assert.equal(value.title,source.title);return loadFanqieBundle(f.manifest).assets;};
+ f.options.session.status=()=>({connected:true,report:f.current.report});
+ f.options.session.inspect=async()=>{
+  const snapshot=structuredClone(f.current),record=f.current.catalog.rows[0];
+  if(record){record.stage='reviewing';record.officialStatus='审核中';}
+  return snapshot;
+ };
+ const broker=new FanqieUploadBroker(f.options);
+ await broker.ui('saveConfiguration',{version:1,authors:f.raw.authors,useWorkMaterials:true,publicationConsent:true,
+  authorizationPreference:{mode:'exclusive',platforms:['fanqie_music'],confirmContractManually:true}});
+ const {configurationHash}=await broker.ui('configuration');
+ const input={runId,accountKey:f.current.report.accountKey,configurationHash,items:[{...selection,fingerprint:source.fingerprint}]};
+ const result=await broker.publishScheduledBatch(input,async id=>{checked.push(id);});
+ assert.equal(result.batch.state,'complete',JSON.stringify(result.batch));
+ assert.equal(result.batch.items[0].result.result.officialRecord.title,source.title);
+ assert.equal(result.batch.authorization[0].phase,'already_processed');
+ assert.ok(checked.includes(workId));
+ await broker.publishScheduledBatch(input,async()=>{});
+ assert.equal(f.calls(),1);
 });

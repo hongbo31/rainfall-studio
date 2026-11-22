@@ -31,7 +31,7 @@ export class FanqieBatch {
     if(state?.state!=='complete'||state.accountKey!==accountKey||!state.authorization?.length)return;
     const results=state.authorization.map(record=>{
       const observed=rows.find(row=>row.id===record.id&&row.title===record.title);
-      return observed&&observed.stage!=='contract_pending'
+      return observed&&observed.stage!=='contract_pending'&&observed.stage!=='unknown'
         ? {...record,status:observed.officialStatus,phase:'already_processed' as const}
         : record;
     });

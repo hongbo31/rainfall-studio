@@ -1,44 +1,45 @@
+import { connectBrowserStudio, isBrowserStudio, studioMediaUrl } from "./browser-studio";
+import { workVersionTitle, type WorkVersion, type WorkVersionSlot } from "../shared/work-versions";
+import { isConfiguredDownloadKind } from "../shared/download-archive";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 import "./ui-system.css";
 import "./plan-center.css";
+import "./loading-indicator.css";
 import "./themes.css";
 import "./account-style.css";
 import { initializeTheme } from "./theme";
 import ThemeToggle from "./components/ThemeToggle";
 import PlanCenter from "./pages/PlanCenter";
-import Materials from './pages/Materials';
 import HelpHint from "./components/HelpHint";
 import { clientVersionLabel } from "./client-version";
 import { Context, Badge } from "./context";
 import Overview from "./pages/Overview";
-import Create from "./pages/Create";
-import Library from "./pages/Library";
 import Track from "./pages/Track";
 import CoverStudio from "./pages/CoverStudio";
 import PublishCenter from "./pages/PublishCenter";
 import Insights from "./pages/Insights";
 import ConfigurationCenter from "./pages/ConfigurationCenter";
 import PlatformAccounts from "./pages/PlatformAccounts";
+import PlatformManagement from "./pages/PlatformManagement";
 import { createSelectionWriter } from "./publish-selection";
-import {
-  platformTargets,
-  type PlatformTarget,
-  type PublishSelection,
-} from "../shared/platform-config";
+import type { PublishSelection } from "../shared/platform-config";
 import ChatCreation from "./pages/ChatCreation";
+import { emptyCreationEditor, type CreationEditor } from "./components/CreationWorkspace";
+import LyricWriting from "./pages/LyricWriting";
 import BrowserPublishWorkbench from "./pages/BrowserPublishWorkbench";
+import RemoteAssist from "./pages/RemoteAssist";
 initializeTheme();
 const pages = [
-  ['materials','▦','素材列表'],
-  ["plans", "◷", "计划中心"],
   ["chat", "♫", "创作中心"],
+  ["lyric-writing", "✦", "AI作词"],
+  ["platform-management", "◇", "平台管理"],
+  ["plans", "◷", "计划中心"],
+  ["publish", "▤", "任务中心"],
   ["overview", "◫", "总览"],
-  ["create", "✎", "手动模板"],
-  ["library", "▤", "作品库"],
   ["cover", "▧", "封面工作室"],
-  ["publish", "↗", "发布中心"],
   ["insights", "▥", "数据看板"],
+  ["remote-assist", "▣", "远控"],
   ["platform-accounts", "◎", "账号管理"],
   ["accounts", "⚙", "配置中心"],
 ];
@@ -47,15 +48,13 @@ function App() {
     [runtime, setRuntime] = useState<any>({}),
     [page, setPage] = useState("overview"),
     [id, setId] = useState(""),
+    [creationEditors, setCreationEditors] = useState<Record<string, CreationEditor>>({}),
     [publishSelection, setSelectionState] = useState<PublishSelection>({
       workIds: [],
       targets: [],
       accountOverrides: {},
     }),
-    [configurationTarget, setConfigurationTarget] =
-      useState<PlatformTarget>("netease"),
-    [configurationCategory, setConfigurationCategory] = useState<"platforms" | "artists">("platforms"),
-    [configurationAccount, setConfigurationAccount] = useState(""),
+    [configurationCategory, setConfigurationCategory] = useState<"models" | "inbox" | "diagnostics">("models"),
     [toast, setToast] = useState(""),
     [audio, setAudio] = useState<any>(null),
     [fatal, setFatal] = useState(""),
@@ -119,19 +118,21 @@ function App() {
       window.removeEventListener("unhandledrejection", unhandled);
     };
   }, []);
-  const call = useCallback(async (method: string, input: any = {}) => {
+  const call = useCallback(async (method: string, input: any = {}, { refreshSnapshot = true } = {}) => {
     const r = await window.rainfall.call(method, input);
     if (!r.ok) {
-      notify(r.error.message);
+      if (refreshSnapshot) notify(r.error.message);
       throw Object.assign(Error(r.error.message),{code:r.error.code});
     }
-    await refresh();
+    if (refreshSnapshot) await refresh();
     return r.value;
   }, [notify, refresh]);
   const native = async (p: Promise<any>, success: string) => {
     const r = await p;
     if (!r.ok) {
-      notify(r.error.message);
+      const coverError = r.error.code === "COVER_VERSION_DUPLICATE_IMAGE" ? "A、B 两版需要使用不同的封面。" :
+        r.error.code === "COVER_VERSION_AUDIO_REQUIRED" ? "请先导入 B 版音频。" : null;
+      notify(coverError ?? r.error.message);
       return;
     }
     if (r.value === null) return;
@@ -144,24 +145,22 @@ function App() {
       "本地文件已导入",
     );
   const exportArtifact = (kind: string, input: any = {}) =>
-    native(window.rainfall.exportFile(kind, input), "文件已保存到所选位置");
-  const go = (p: string, workId?: string, accountId?: string) => {
+    native(window.rainfall.exportFile(kind, input), isConfiguredDownloadKind(kind) ? "文件已保存到下载目录" : "文件已保存到所选位置");
+  const go = (p: string, workId?: string) => {
     setPage(p);
     if (p === "accounts") {
-      setConfigurationCategory(workId === "artists" ? "artists" : "platforms");
-      setConfigurationAccount(accountId ?? "");
-      if (platformTargets.includes(workId as PlatformTarget))
-        setConfigurationTarget(workId as PlatformTarget);
-    } else if (p === "platform-accounts") setId(workId ?? "");
+      setConfigurationCategory(workId === "inbox" || workId === "diagnostics" ? workId : "models");
+    } else if (p === "platform-accounts" || p === "plans") setId(workId ?? "");
     else if (workId) setId(workId);
     window.scrollTo(0, 0);
   };
-  const play = (w: any, slot = "audio_A") => {
-    if (!w.assets[slot]) {
+  const play = (w: WorkVersion, slot: WorkVersionSlot = "audio_A") => {
+    const asset = w.assets?.[slot];
+    if (!asset) {
       notify("这首作品还没有导入该音频版本");
       return;
     }
-    setAudio({ id: w.assets[slot], title: w.title, slot });
+    setAudio({ id: asset, title: workVersionTitle(w, slot), slot });
   };
   useEffect(() => {
     if (audio && player.current) {
@@ -195,6 +194,9 @@ function App() {
     exportArtifact,
   };
   const title = pages.find((x) => x[0] === page)?.[2] || "作品详情";
+  const updateCreation = (fields: Partial<CreationEditor>) => setCreationEditors(editors => ({
+    ...editors, [data.mode]: { ...(editors[data.mode] ?? emptyCreationEditor), ...fields },
+  }));
   return (
     <Context.Provider value={context}>
       {runtime.previewFixture&&<div className="plan-fixture-ribbon">离线交互演示 · 全部账号与数据为隔离测试样本</div>}
@@ -256,11 +258,12 @@ function App() {
               aria-label="工作区模式"
               value={data.mode}
               onChange={async (e) => {
+                const nextMode = e.currentTarget.value as 'production' | 'simulation';
                 setSwitching(true);
                 try {
                   await selectionWriter.current.flush();
                 } catch {}
-                const r = await window.rainfall.setMode(e.target.value as any);
+                const r = await window.rainfall.setMode(nextMode);
                 if (!r.ok) {
                   setSwitching(false);
                   notify(r.error.message);
@@ -285,30 +288,41 @@ function App() {
               <option value="production">真实本地库</option>
               <option value="simulation">隔离模拟演练</option>
             </select>
+            {!isBrowserStudio() && <button onClick={() => {
+              void window.rainfall.openOfficial("browserStudio").then(result => {
+                if (!result.ok) notify(result.error.message);
+              }).catch(() => notify("无法打开浏览器工作台"));
+            }}>浏览器工作台</button>}
             <button onClick={() => exportArtifact("backup")}>↗ 备份导出</button>
           </div>
         </header>
         <div id="content">
-          {page === 'materials' ? <Materials /> : page === "plans" ? (
-            <PlanCenter initialRunId={id} />
+          <RemoteAssist key={data.mode} open={page === "remote-assist"} onOpen={() => go("remote-assist")} />
+          {page === "remote-assist" ? null : page === "plans" ? (
+            <PlanCenter key={data.mode} initialRunId={id} />
           ) : page === "chat" ? (
-            <ChatCreation />
+            <ChatCreation key={data.mode} draft={creationEditors[data.mode] ?? emptyCreationEditor} update={updateCreation} />
+          ) : page === "lyric-writing" ? (
+            <LyricWriting key={data.mode} onTransfer={({title,alternateTitle,style,lyrics}) => {
+              updateCreation(lyrics === undefined
+                ? { title, alternateTitle, style, lyrics: "", songType: "instrumental", musicConsent: "" }
+                : { title, alternateTitle, style, lyrics, songType: "vocal", musicConsent: "" });
+              go("chat");
+            }} />
+          ) : page === "platform-management" ? (
+            <PlatformManagement key={data.mode} />
           ) : page === "overview" ? (
             <Overview />
-          ) : page === "create" ? (
-            <Create />
-          ) : page === "library" ? (
-            <Library />
           ) : page === "track" && data.works.some((w: any) => w.id === id) ? (
             <Track key={id} id={id} />
           ) : page === "cover" ? (
             <CoverStudio key={id} initialId={id} />
           ) : page === "publish" ? (
-            <PublishCenter />
+            <PublishCenter key={data.mode} />
           ) : page === "insights" ? (
             <Insights />
           ) : page === "accounts" ? (
-            <ConfigurationCenter initialTarget={configurationTarget} initialCategory={configurationCategory} initialAccountId={configurationAccount} />
+            <ConfigurationCenter initialCategory={configurationCategory} />
           ) : page === "platform-accounts" ? (
             <PlatformAccounts key={data.mode + ":" + id} initialProvider={id}/>
           ) : (
@@ -325,7 +339,7 @@ function App() {
           <HelpHint label="试听说明">
             {audio
               ? "受管本地文件 · 试听不改变发布音频"
-              : "在作品详情选择试听 A / B；已导入的音频会保留"}
+              : "在作品列表或详情选择试听 A / B"}
           </HelpHint>
         </div>
         <audio
@@ -333,7 +347,7 @@ function App() {
           id="audio"
           controls={!!audio}
           hidden={!audio}
-          src={audio ? "media://asset/" + audio.id : undefined}
+          src={audio ? studioMediaUrl("media://asset/" + audio.id) : undefined}
           onError={() =>
             audio && notify("音频缺失、损坏或格式不支持，请重新导入。")
           }
@@ -346,4 +360,10 @@ function App() {
     </Context.Provider>
   );
 }
-createRoot(document.getElementById("root")!).render(window.rainfall?<App/>:<BrowserPublishWorkbench/>);
+const root = createRoot(document.getElementById("root")!);
+if (document.querySelector('meta[name="rainfall-browser-studio"]') && !connectBrowserStudio()) {
+  root.render(<div className="boot"><div className="brand">◒ Rainfall Studio</div>
+    <p>请使用启动文件重新打开浏览器工作台。</p></div>);
+} else {
+  root.render(window.rainfall ? <App /> : <BrowserPublishWorkbench />);
+}

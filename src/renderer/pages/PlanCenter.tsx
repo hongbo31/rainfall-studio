@@ -1,49 +1,131 @@
-import React, {useEffect, useState} from 'react';
-import {useStudio} from '../context';
+import React, {useEffect, useRef, useState} from 'react';
+import {useStudio, useStudioRequest, localMusicians, names} from '../context';
 import HelpNote from '../components/HelpNote';
-import GenerationRoutes,{defaultRoutes} from '../components/GenerationRoutes';
+import GenerationRoutes from '../components/GenerationRoutes';
 import PlanMusicFields from '../components/PlanMusicFields';
 import MusicStylePicker from '../components/MusicStylePicker';
 import PlanFanqieFields from '../components/PlanFanqieFields';
-import AutomationRuntime from '../components/AutomationRuntime';
 import ProviderPlanStatus from '../components/ProviderPlanStatus';
 import PlanRunAssets from '../components/PlanRunAssets';
 import PlanAlbumFields from '../components/PlanAlbumFields';
 import PlanAlbumOperations from '../components/PlanAlbumOperations';
-import type {PlanCenterPlan, PlanCenterList} from '../../shared/plan-center';
+import PlanWorkflowForm, {PlanWorkflowSummary, planWorkflowLabel} from '../components/PlanWorkflowForm';
+import PlanLyricReview from '../components/PlanLyricReview';
+import QishuiPublisher from '../components/QishuiPublisher';
+import LoadingIndicator from '../components/LoadingIndicator';
+import {usePlanCenterData} from '../use-plan-center-data';
+import type {PlanWorkflowPublicationStatus} from '../../shared/plan-workflow-publication';
+import {planExecutionMessage as message,planStageLabels as stageLabels} from '../plan-execution-labels';
+import {isLocalPublicationWorkflow,workflowPublicationPlatforms} from '../../shared/plan-workflow-graph';
+import {browserMusicProviders,workflowBrowserMusic} from '../../shared/plan-workflow-fields';
+import {planRunActive} from '../../shared/plan-center';
+import {canResumeLyricResponse} from '../../shared/lyric-writing';
+import {workflowNodesCatalog} from '../../shared/platform-directory';
+import type {PlanCenterPlan, PlanCenterPlanInput, PlanCenterRunDetail, PlanCenterRun, PlanCenterStageAttempt, PlanRunSummary} from '../../shared/plan-center';
 
-const states:Record<string,string>={running:'执行中',waiting:'等待素材或外部结果',blocked:'已阻塞',stopping:'正在停止后续步骤',stopped:'已停止本次',completed:'本次已完成',failed:'失败',dispatching:'已发送请求',submitted:'已提交',reviewing:'审核中',published:'已上架',rejected:'已驳回',unknown:'结果未知，待对账',succeeded:'阶段完成',waiting_external_dot:'等待 dot 素材',model_pending:'等待模型评估',model_blocked:'评估已阻塞',model_passed:'模型评估达标',model_failed:'未达质量阈值'};
-const reasons:Record<string,string>={COVER_REQUIRED:'等待专属封面',TEXT_BATCH_DUPLICATE:'本首与同批歌曲重复，改写次数已用完',INSTRUMENTAL_MUSIC_REQUIRED:'纯音乐需要开启谱乐生成',THEME_REQUIRED:'请先填写创作主题',FANQIE_UPLOAD_PENDING:'等待上传番茄',FANQIE_MATERIALS_CHANGED:'作品材料已变化，请核对',RESTART_RECONCILE_REQUIRED:'上传结果待核对',ACTIVE_RUN:'该计划已有未结束的执行',SUMMARY_CONFLICT:'确认摘要已变化，请重新确认',TEXT_GRANT_REQUIRED:'请先配置文本模型价格并授权本次额度',LEGACY_CONFIGURATION_REQUIRED:'旧计划需要在统一中心补全配置',LEGACY_CONFIGURATION_REVIEW_REQUIRED:'请核对并补全迁移计划',COVER_REFRESH_REQUIRED:'歌词已改写，等待与新版本匹配的封面',MANUAL_MUSIC_IMPORT_INTEGRATION_UNAVAILABLE:'计划中的手动音频关联待接入',DOT_EXTERNAL_TRIGGER_UNAVAILABLE:'dot 暂无客户端触发接口，等待已配置渠道交付',MODEL_EVALUATION_CONFIGURATION_REQUIRED:'请配置文本模型和授权额度',TEXT_AUTHORIZATION_REQUIRED:'文本模型额度尚未授权',ALBUM_CATALOG_INTEGRATION_UNAVAILABLE:'真实专辑目录待接入',ALBUM_CREATE_INTEGRATION_UNAVAILABLE:'新建专辑待接入',ALBUM_APPEND_INTEGRATION_UNVERIFIED:'追加专辑能力未验证',LIVE_MODEL_CATALOG_REQUIRED:'供应商实时可用模型尚未核实',SUNO_OFFICIAL_API_UNVERIFIED:'Suno 官方生成接口未核实',PULE_URL_REQUIRED:'等待谱乐 AI 的准确网址',PUBLICATION_EXECUTOR_UNAVAILABLE:'平台提交能力待接入',VIDEO_PUBLISH_INTEGRATION_UNAVAILABLE:'抖音视频发布待接入',PLAN_RUN_ACTIVE:'该计划已有未结束的执行',REVISION_CONFLICT:'计划已修改，请刷新后重新确认',PLAN_CONFIRMATION_STALE:'配置已变化，请重新确认',MATERIALS_REQUIRED:'等待完整发布材料'};
-Object.assign(reasons,{ROUTE_DEFAULT_CHANGED:'默认配置已变化，请编辑计划并重新核对授权',ROUTE_PROFILE_CHANGED:'配置版本已变化，请重新核对',TEXT_ROUTE_REQUIRED:'请选择默认歌词与提示词配置',IMAGE_ROUTE_REQUIRED:'请选择封面图片方式',MUSIC_ROUTE_REQUIRED:'请选择音乐生成配置',IMAGE_ADAPTER_UNAVAILABLE:'图片 API 待接入，请选择外部导入',EXISTING_AUDIO_ROUTE_REQUIRED:'此计划使用生成路线，绑定已有作品请新建“绑定已有音频”计划',EXISTING_AUDIO_BINDING_REQUIRED:'请选择并绑定已有作品音频',MANAGED_MUSIC_WORK_SCOPE:'作品归属或内容已变化，请核对原作品',LYRICS_MISMATCH:'作品歌词与本项最终稿不一致',TITLE_MISMATCH:'作品标题与本项最终稿不一致',ARTIST_MISMATCH:'作品作者不一致',MATERIALS_LOCKED:'材料已进入发布队列，当前版本已锁定',RIGHTS_ATTESTATION_REQUIRED:'请确认本版材料和授权依据',MUSIC_GRANT_REQUIRED:'请选择音乐账号、模型、预算并明确授权',MUSIC_OUTCOME_UNKNOWN:'原生成任务结果未知，等待核对',STOPPED_BEFORE_MUSIC_DISPATCH:'已在音乐请求派发前停止'});
-const message=(s?:string)=>s?(reasons[s]??states[s]??s):'';
-const active=(s:string)=>!['completed','failed','stopped'].includes(s);
-const weekdays=['一','二','三','四','五','六','日'];
-function artistIdentity(artistId:string,catalog:any){return Object.entries(catalog?.dot?.artistRefs??{}).find(([,id])=>id===artistId)?.[0]??'';}
-function newPlan(artistId:string,catalog:any,instrumental=false):PlanCenterPlan {
- const d=catalog?.generationDefaults?.roles??{};const text=catalog?.profiles.find((p:any)=>p.id===d.text),music=catalog?.profiles.find((p:any)=>p.id===d.music);
- return {id:crypto.randomUUID(),revision:1,title:'每日音乐创作',artistId,origin:'plan',routing:structuredClone(defaultRoutes),storyContext:{storyBeat:'',storyStage:''},enabled:false,timezone:'Asia/Shanghai',schedule:{kind:'daily',localTime:'09:00'},count:10,theme:'',styleTemplate:'',distinctLyrics:true,songType:instrumental?'instrumental':'vocal',outputs:{lyrics:!instrumental,cover:true,music:instrumental},material:{source:'provider',channel:'',identity:''},text:{threshold:75,maxRewrites:2,maxScoreRetries:2,consent:false,profileId:text?.id,profileRevision:text?.revision,modelId:text?.modelId??undefined},music:{route:music?.providerId==='yourmusic'?'pule':music?.providerId==='suno'?'suno_official':'manual',profileId:music?.id,profileRevision:music?.revision,modelId:music?.modelId??undefined,versionPolicy:'first',consent:false},publishTargets:[],catchUp:{mode:'latest',limit:1},authorization:{text:false,music:false,publish:false},needsConfiguration:[]};
+const runSources: Record<PlanCenterRun['source'], string> = {
+ publication_task:'任务中心', scheduled:'定时', directory:'目录', debug:'调试', manual:'手动',
+};
+const timeFormat = new Intl.DateTimeFormat('zh-CN', {
+ timeZone:'Asia/Shanghai', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hourCycle:'h23',
+});
+const formatTime=(stamp:string)=>timeFormat.format(new Date(stamp));
+const archiveSetupIssues = ['DOWNLOAD_ROOT_REQUIRED','DOWNLOAD_ROOT_INVALID','DOWNLOAD_ROOT_UNAVAILABLE','DOWNLOAD_ROOT_CHANGED'];
+const modelSetupIssues = ['TEXT_ROUTE_REQUIRED','IMAGE_ROUTE_REQUIRED','MUSIC_ROUTE_REQUIRED','TEXT_PROFILE_OR_PRICE_REQUIRED','WORKFLOW_TEXT_PROVIDER_REQUIRED','WORKFLOW_MUSIC_PROVIDER_REQUIRED'];
+type RetryConfirmation = {plan:PlanCenterPlan; run:PlanCenterRun; attempt:PlanCenterStageAttempt};
+type PendingAction = {kind:'edit'; id:string} | {kind:'save'|'command'|'retry-cleanup'};
+const errorCode=(error:unknown)=>error instanceof Error?(error as Error & {code?:string}).code??error.message:'';
+const providerTextNeedsNewRun=(run:PlanCenterRun,attempt:PlanCenterStageAttempt)=>
+ run.snapshot.material.source==='provider'&&['text_generate','text_score'].includes(attempt.stage);
+const lyricScoreFailure=(attempt:PlanCenterStageAttempt)=>attempt.stage==='lyric_write'&&attempt.reason==='LYRIC_SCORE_BELOW_THRESHOLD';
+const lyricReviewFailure=(attempt:PlanCenterStageAttempt)=>attempt.stage==='lyric_write'&&attempt.reason==='LYRIC_REVIEW_INVALID'&&!!attempt.externalTaskId;
+const lyricResponseFailure=(attempt:PlanCenterStageAttempt)=>attempt.stage==='lyric_write'&&!!attempt.externalTaskId&&canResumeLyricResponse(attempt.reason);
+function retryStageLabel(run:PlanCenterRun,attempt:PlanCenterStageAttempt){
+ if(lyricReviewFailure(attempt))return '重新评分（按服务计费）';
+ if(lyricResponseFailure(attempt))return '继续作词（按服务计费）';
+ if(lyricScoreFailure(attempt))return '采用最高分稿并继续（按服务计费）';
+ if(run.snapshot.workflow?.graph&&['lyric_write','music_submit'].includes(attempt.stage))return '重试（按服务计费）';
+ return '重试此阶段';
 }
-function scheduleLabel(p:PlanCenterPlan){return p.schedule.kind==='daily'?`每天 ${p.schedule.localTime}`:p.schedule.kind==='weekly'?`每周 ${p.schedule.weekdays.map(n=>weekdays[n-1]).join('、')} ${p.schedule.localTime}`:`${p.schedule.date} ${p.schedule.localTime}`;}
+function isLatestFailedStage(attempt:PlanCenterStageAttempt,attempts:PlanCenterStageAttempt[]){
+ return ['failed','not_found'].includes(attempt.state)&&!attempts.some(other=>
+  other.itemId===attempt.itemId&&other.stage===attempt.stage&&(other.ordinal>attempt.ordinal||other.state==='succeeded'));
+}
+function artistIdentity(artistId:string,catalog:any){return Object.entries(catalog?.dot?.artistRefs??{}).find(([,id])=>id===artistId)?.[0]??'';}
 export default function PlanCenter({initialRunId=""}:{initialRunId?:string}){
- const {data,call,notify,go}=useStudio();
- const [rows,setRows]=useState<PlanCenterList|null>(null),[catalog,setCatalog]=useState<any>(null),[editing,setEditing]=useState<PlanCenterPlan|null>(null),[isNew,setNew]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(''),[confirm,setConfirm]=useState<any>(null),[selected,setSelected]=useState(initialRunId),[legacyHistory,setLegacyHistory]=useState<any>(null),[execution,setExecution]=useState<any>(null),[dotExport,setDotExport]=useState<any>(null);
- const refresh=async()=>{const [r,c,x,d,identities,fanqie]=await Promise.all([call('planCenter.list'),call('planCenter.catalog'),call('planCenter.status'),call('generationConfig.read'),call('accountIdentity.list'),call('planCenter.fanqieStatus')]);setRows(r);setCatalog({...c,generationDefaults:d,identityBindings:identities});setExecution({...x,fanqie});};
- useEffect(()=>{void refresh().catch(e=>setError(e.message));const timer=setInterval(()=>void refresh().catch(()=>{}),4000);return()=>clearInterval(timer)},[]);
- const act=async(fn:()=>Promise<any>)=>{setBusy(true);setError('');try{await fn();await refresh()}catch(e:any){setError(message(e.code??e.message))}finally{setBusy(false)}};
- const [directories,setDirectories]=useState<any[]>([]),[directoryId,setDirectoryId]=useState('');
- const loadDirectories=async()=>{try{const status=await call('directoryTasks.status');setDirectories(status.sources);return status.sources as any[]}catch{return [] as any[]}};
- useEffect(()=>{void loadDirectories()},[]);
- useEffect(()=>{if(initialRunId)setSelected(initialRunId)},[initialRunId]);
- const chooseTaskDirectory=()=>act(async()=>{const source=await call('directoryTasks.chooseDirectory',{});if(source){await loadDirectories();setDirectoryId(source.id)}});
+ const {data,notify,go}=useStudio();
+ const call=useStudioRequest();
+ const workflowCatalog:typeof workflowNodesCatalog=data.platformWorkflow?.nodes??workflowNodesCatalog;
+ const platformLabel=(platform:string)=>workflowCatalog.find(node=>node.id==='publish:'+platform)?.label??names[platform]??platform;
+ const [editing,setEditing]=useState<PlanCenterPlan|null>(null),[catalog,setCatalog]=useState<any>();
+ const [pending,setPending]=useState<PendingAction>(),[actionError,setError]=useState('');
+ const [selected,setSelected]=useState(''),[dotExport,setDotExport]=useState<any>(null);
+ const [workflowEditor,setWorkflowEditor]=useState<{plan?:PlanCenterPlan}|null>(null);
+ const [search,setSearch]=useState('');
+ const [detail,setDetail]=useState<PlanCenterPlan|null>(null);
+ const [deleting,setDeleting]=useState<PlanCenterPlan|null>(null);
+ const [retryConfirm,setRetryConfirm]=useState<RetryConfirmation|null>(null);
+ const inFlight=useRef(false);
+ const startRequests=useRef(new Map<string,{summaryHash:string;requestId:string}>());
+ const detailDialog=useRef<HTMLElement>(null);
+ const detailBody=useRef<HTMLDivElement>(null);
+ const {dashboard,history,run:runQuery,refresh}=usePlanCenterData(detail?.id,selected);
+ const runDetail=runQuery.value;
+ const problem=actionError||errorCode(dashboard.error);
+ const error=message(problem);
+ const busy=!!pending;
+ const saving=pending?.kind==='save';
+ const openedLink=useRef('');
+ useEffect(()=>{
+  if(!initialRunId){openedLink.current='';return;}
+  if(!dashboard.value||openedLink.current===initialRunId)return;
+  const plan=dashboard.value.find(row=>row.plan.id===initialRunId)?.plan;
+  openedLink.current=initialRunId;
+  setDetail(plan??null);
+  setSelected(plan?'':initialRunId);
+ },[initialRunId,dashboard.value]);
+ useEffect(()=>{
+  if(detail||!initialRunId||selected!==initialRunId||runDetail?.run.id!==initialRunId)return;
+  const run=runDetail.run;
+  setDetail(dashboard.value?.find(row=>row.plan.id===run.planId)?.plan??run.snapshot);
+ },[initialRunId,selected,detail,runDetail,dashboard.value]);
+ useEffect(()=>{
+  if(!detailDialog.current)return;
+  if(detailBody.current)detailBody.current.scrollTop=0;
+  detailDialog.current.focus({preventScroll:true});
+ },[detail?.id,selected,deleting]);
+ const act=async(fn:()=>Promise<unknown>, options:{pending?:PendingAction;reload?:boolean}={})=>{
+  if(inFlight.current)return;
+  inFlight.current=true;
+  setPending(options.pending??{kind:'command'});setError('');
+  try{await fn();if(options.reload!==false)await refresh()}catch(error){setError(errorCode(error)||'OPERATION_FAILED')}
+  finally{inFlight.current=false;setPending(undefined)}
+ };
+ const readEditorCatalog=async()=>{
+  const [catalog,identityBindings]=await Promise.all([call('planCenter.catalog',{includeWorks:false}),call('accountIdentity.list')]);
+  return {...catalog,identityBindings};
+ };
  const patch=(value:Partial<PlanCenterPlan>)=>setEditing(p=>p?{...p,...value}:p);
  const patchRoutes=(routing:any,profiles:any[],defaults:any)=>{if(!editing)return;const resolved=(role:string)=>profiles.find(p=>p.id===(routing[role].source==='default'?defaults.roles[role]:routing[role].profileId));const t=resolved('text'),m=resolved('music');patch({routing,text:{...editing.text,profileId:t?.id,profileRevision:t?.revision,modelId:t?.modelId??undefined,consent:false},music:{...editing.music,route:m?.providerId==='yourmusic'?'pule':m?.providerId==='suno'?'suno_official':'manual',profileId:m?.id,profileRevision:m?.revision,modelId:m?.modelId??undefined,consent:false},authorization:{...editing.authorization,text:false,music:false}})};
- const currentRun=rows?.runs.find(r=>r.id===selected);
- const fanqieBatch=execution?.fanqie?.filter((job:any)=>job.runId===selected&&job.batchSize)??[];
+ const currentRun=runDetail?.run;
+ const fanqieCleanup=runDetail?.fanqieCleanup;
+ const cleanupNote=fanqieCleanup==='recycled'?'FANQIE_DOWNLOAD_CLEANUP_RECOVERED':
+  fanqieCleanup==='queued'?'FANQIE_DOWNLOAD_CLEANUP_PENDING':undefined;
+ const execution=runDetail?.execution;
+ const currentBrowserMusic=workflowBrowserMusic(currentRun?.snapshot.workflow);
+ const taskExecution=currentRun?.source==='publication_task';
+ const localRun=isLocalPublicationWorkflow(currentRun?.snapshot.workflow?.graph);
+ const workflowPublication:PlanWorkflowPublicationStatus|undefined=execution?.workflowPublications?.find((entry:PlanWorkflowPublicationStatus)=>entry.runId===selected);
+ const graphFanqieIds=new Set(workflowPublication?.dispatch?.fanqieIds??[]);
+ const fanqieBatch=execution?.fanqie?.filter((job:any)=>(job.runId===selected||graphFanqieIds.has(job.id))&&job.batchSize)??[];
  const awaitingSignature=fanqieBatch.filter((job:any)=>job.authorization==='awaiting_signature');
- const canResumeBatch=fanqieBatch.length>0&&fanqieBatch.length===fanqieBatch[0].batchSize&&fanqieBatch.every((job:any)=>job.state==='unknown');
+ const resumableBatches=[...new Set<string>(fanqieBatch.map((job:any)=>job.runId))].filter(id=>{
+  const batch=fanqieBatch.filter((job:any)=>job.runId===id);
+  return batch.length===batch[0].batchSize&&batch.every((job:any)=>job.state==='unknown');
+ });
  const promptMode=editing?.material.source==='pule_prompt';
  const instrumental=editing?.songType==='instrumental';
- const editorArtist=data.artists.find((a:any)=>a.id===editing?.artistId);
+ const editorArtist=localMusicians(data, editing?.artistId).find(a=>a.id===editing?.artistId);
  const selectSongType=(songType:'vocal'|'instrumental',changes:Partial<PlanCenterPlan>={})=>{
   if(!editing)return;
   const pure=songType==='instrumental';
@@ -54,37 +136,320 @@ export default function PlanCenter({initialRunId=""}:{initialRunId?:string}){
    authorization:{...editing.authorization,text:false,music:false,publish:false},
   });
  };
- const runItems=rows?.items.filter(i=>i.runId===selected)??[];
- const save=()=>act(async()=>{if(!editing)return;const saved=await call('planCenter.save',{plan:{...editing,needsConfiguration:[]},expectedRevision:isNew?null:editing.revision});setEditing(null);if(directoryId){const sources=await loadDirectories(),source=sources.find(row=>row.id===directoryId);if(!source)throw Error('DIRECTORY_SOURCE_NOT_FOUND');try{await call('directoryTasks.save',{id:source.id,expectedRevision:source.revision,planId:saved.id,planRevision:saved.revision,intervalSeconds:source.intervalSeconds,readiness:source.readiness})}catch{throw Error('计划已保存，目录绑定未完成。请在配置中心重新绑定。')}}notify(directoryId?'计划与目录已保存，扫描保持暂停':'计划已保存')});
+ const runItems=runDetail?.items??[];
+ const savePlan=(plan:PlanCenterPlanInput,expectedRevision:number|null,close:()=>void)=>act(async()=>{
+  await call('planCenter.save',{plan:{...plan,enabled:false,needsConfiguration:[]},expectedRevision});
+  await dashboard.refresh();
+  close();notify('计划已保存');
+ },{pending:{kind:'save'},reload:false});
+ const save=()=>editing&&savePlan(editing,editing.revision,()=>setEditing(null));
+ const editWorkflow=(plan?:PlanCenterPlan)=>{setError('');setWorkflowEditor({plan});};
+ const saveWorkflow=(plan:PlanCenterPlanInput)=>savePlan(plan,workflowEditor?.plan?.revision??null,()=>setWorkflowEditor(null));
+ const openEdit=(plan:PlanCenterPlan)=>act(async()=>{
+  const current:PlanCenterPlan=await call('planCenter.read',{id:plan.id});
+  setDetail(null);setSelected('');
+  if(current.workflow){editWorkflow(current);return;}
+  setCatalog(current.creationDraft?undefined:await readEditorCatalog());
+  setEditing({...structuredClone(current),...(current.material.source==='provider'?{distinctLyrics:true as const}:{})});
+ },{pending:{kind:'edit',id:plan.id},reload:false});
+ const openDetail=(plan:PlanCenterPlan,runId='')=>act(async()=>{
+  setDetail(await call('planCenter.read',{id:plan.id}));
+  setSelected(runId);setDotExport(null);
+ });
+ const openBlockedExecution=(plan:PlanCenterPlan,summary:PlanRunSummary)=>act(async()=>{
+  const {run,items,stageAttempts:attempts}:PlanCenterRunDetail=await call('planCenter.runDetail',{runId:summary.id});
+  items.sort((a,b)=>a.ordinal-b.ordinal);
+  const blockedItem=items.find(item=>['blocked','unknown','failed','not_found'].includes(item.state));
+  const attempt=attempts.find(attempt=>attempt.itemId===blockedItem?.id&&
+   attempt.state===blockedItem.state&&isLatestFailedStage(attempt,attempts)&&!providerTextNeedsNewRun(run,attempt));
+  if(attempt)setRetryConfirm({plan,run,attempt});
+  else {setDetail(plan);viewRun(run.id);}
+ },{reload:false});
+ const confirmBlockedExecution=(confirmation:RetryConfirmation)=>act(async()=>{
+  await call('planCenter.retry',{attemptId:confirmation.attempt.id});
+  setDetail(confirmation.plan);
+  viewRun(confirmation.run.id);
+  setRetryConfirm(null);
+ });
+ const startExecution=(plan:PlanCenterPlan)=>act(async()=>{
+  const preview:{planRevision:number;summaryHash:string;summary:{routeIssue?:string}}=await call('planCenter.preview',{id:plan.id});
+  if(preview.planRevision!==plan.revision){
+   await dashboard.refresh();
+   throw Error('PLAN_CONFIRMATION_STALE');
+  }
+  if((plan.material.source==='creation'||plan.workflow)&&preview.summary.routeIssue)throw Error(preview.summary.routeIssue);
+  const graph=plan.workflow?.graph;
+  const previous=startRequests.current.get(plan.id);
+  const requestId=previous?.summaryHash===preview.summaryHash?previous.requestId:crypto.randomUUID();
+  startRequests.current.set(plan.id,{summaryHash:preview.summaryHash,requestId});
+  const run=await call('planCenter.run',{id:plan.id,expectedRevision:preview.planRevision,summaryHash:preview.summaryHash,
+   requestId,source:plan.workflow&&!graph?'debug':'manual',
+   ...(graph&&!isLocalPublicationWorkflow(graph)?{confirmGeneration:true}:{}),
+   ...(workflowPublicationPlatforms(graph).length?{confirmPublication:true}:{})});
+  startRequests.current.delete(plan.id);
+  setDetail(plan);
+  viewRun(run.id);
+ });
  const addTarget=()=>{if(!editing)return;patch({publishTargets:[...editing.publishTargets,{platform:'qqmusic',accountId:'',enabled:true,album:{mode:'new',title:''}}]})};
+ const query=search.trim().toLocaleLowerCase();
+ const visiblePlans=dashboard.value?.filter(({plan})=>plan.title.toLocaleLowerCase().includes(query))
+  .sort((a,b)=>Date.parse(b.plan.createdAt??'1970-01-01')-Date.parse(a.plan.createdAt??'1970-01-01'))??[];
+ const detailRow=dashboard.value?.find(({plan})=>plan.id===detail?.id);
+ const listedDetail=detailRow?.plan;
+ const detailPlan=detail&&listedDetail&&listedDetail.revision>detail.revision?listedDetail:detail;
+ const detailRuns=history.value?.runs??[];
+ const runIndex=detailRuns.findIndex(run=>run.id===selected);
+ const detailActive=detailRow?.active;
+ const deletionRow=dashboard.value?.find(({plan})=>plan.id===deleting?.id);
+ const deleteHasActive=deletionRow?.deleteBlocked;
+ const deleteStopsRun=deletionRow?.stopsOnDelete;
+ const legacyHistory=Object.entries(history.value?.legacyHistory??{})
+  .filter(([,records])=>Array.isArray(records)&&records.length>0);
+ const errorNotice=error&&<div role="alert" className="plan-error">
+  <span>{error}</span>
+  {archiveSetupIssues.includes(problem)&&<button type="button" onClick={()=>go('accounts','inbox')}>打开下载目录</button>}
+  {problem==='DOWNLOAD_ACCOUNT_REQUIRED'&&<button type="button" onClick={()=>go('platform-accounts')}>打开账号管理</button>}
+  {modelSetupIssues.includes(problem)&&<button type="button" onClick={()=>go('accounts','models')}>打开模型 API</button>}
+ </div>;
+ const viewRun=(id:string)=>{setSelected(id);setDotExport(null);setError('');};
+ const closeDetail=()=>{setDetail(null);viewRun('');};
+ const leaveRun=()=>{if(taskExecution)go('publish');else viewRun('');};
+ const openDelete=(plan:PlanCenterPlan)=>{setError('');setDeleting(plan);};
+ const cancelDelete=()=>{setError('');setDeleting(null);};
+ const stopButton=(run:PlanRunSummary,label='停止后续步骤')=><button type="button" disabled={busy||run.stopRequested}
+  onClick={()=>void act(()=>call('planCenter.stop',{runId:run.id}))}>{label}</button>;
+ const showGenerationCost=visiblePlans.some(({plan})=>plan.workflow
+  ?!isLocalPublicationWorkflow(plan.workflow.graph)
+  :plan.authorization.text||plan.authorization.music);
+ const showPublicationConsent=visiblePlans.some(({plan})=>workflowPublicationPlatforms(plan.workflow?.graph).length>0);
  return <section className="plan-center" aria-label="计划中心">
-  <div className="plan-heading"><div><span className="plan-eyebrow">RAIN​​FALL / AUTOMATION</span><h1>计划中心</h1><p className="muted">把创作节奏放在一处</p></div><button className="primary" onClick={()=>{setNew(true);setDirectoryId('');setEditing(newPlan(data.artists[0]?.id??'',catalog,data.artists[0]?.defaults?.voice==='instrumental'));setError('')}}>＋ 新建计划</button></div>
-  <AutomationRuntime/>
-  <div className="plan-toolbar"><span>北京时间 · Asia/Shanghai</span><HelpNote label="运行与停止">客户端运行时调度，关闭期间默认只补最近一次。两首代表两个独立主题，供应商 A/B 是同一首的版本。停止本次不关闭未来计划，也不能撤回已提交的外部请求。</HelpNote><button className="link-button" onClick={()=>go('accounts')}>账号与 API 配置 →</button></div>
-  {error&&<p role="alert" className="plan-error">{error}</p>}
-  {rows?.migration&&rows.migration.entries.length>0&&<details className="plan-migration"><summary>旧计划迁移记录</summary><p>状态：{rows.migration.state==='applied'?'已接管旧调度':'已回滚'} · 保留原启停状态与历史</p>{rows.migration.entries.map(e=><div key={e.planId}><span>{e.kind} / {e.sourceId}</span><button className="link-button" onClick={()=>void act(async()=>setLegacyHistory({title:e.sourceId,data:await call('planCenter.legacyHistory',{id:e.planId})}))}>查看旧执行记录</button></div>)}<HelpNote label="回滚条件">仅在没有新增运行且迁移记录未发生冲突时支持回滚，避免恢复出新旧双调度。</HelpNote><button disabled={busy||rows.migration.state!=='applied'} onClick={()=>void act(()=>call('planCenter.rollbackMigration'))}>回滚本次迁移</button></details>}
-  <div className="plan-stats"><div><strong>{rows?.plans.length??0}</strong><span>计划</span></div><div><strong>{rows?.plans.filter(p=>p.enabled).length??0}</strong><span>已启用</span></div><div><strong>{rows?.runs.filter(r=>active(r.state)).length??0}</strong><span>进行中</span></div></div>
-  {!rows?.plans.length&&<div className="plan-empty"><h2>安排下一首作品</h2><p>设置时间、独立歌曲数量和素材渠道，再逐步接通执行能力。</p><button onClick={()=>{setNew(true);setDirectoryId('');setEditing(newPlan(data.artists[0]?.id??'',catalog,data.artists[0]?.defaults?.voice==='instrumental'))}}>创建第一个计划</button></div>}
-  <div className="plan-list">{rows?.plans.map(p=>{const runs=rows.runs.filter(r=>r.planId===p.id),running=runs.find(r=>active(r.state)),last=running??runs.at(-1),items=last?rows.items.filter(i=>i.runId===last.id):[];const completed=items.filter(i=>i.state==='completed').length;return <article className="plan-card" key={p.id}>
-   <div className="plan-card-head"><span className={'plan-status '+(p.enabled?'on':'')}>{p.enabled?'已启用':'已停用'}</span><span className="muted">{scheduleLabel(p)}</span><span className="plan-card-actions"><button aria-label={`立即执行 ${p.title}`} title={running?'已有执行，请先查看当前状态':'立即执行'} disabled={busy||!!running} onClick={()=>void act(async()=>{const preview=await call('planCenter.preview',{id:p.id});if(preview.planRevision!==p.revision){await refresh();throw Error('PLAN_CONFIRMATION_STALE')}setConfirm({plan:{...p,...preview.summary},preview})})}>▶</button><button disabled={busy} onClick={()=>{setNew(false);setDirectoryId(directories.find(row=>row.planId===p.id)?.id??'');setEditing({...structuredClone(p),...(p.material.source==='provider'?{distinctLyrics:true as const}:{})});setError('')}}>编辑</button><button disabled={busy} onClick={()=>void act(()=>call('planCenter.toggle',{id:p.id,expectedRevision:p.revision,enabled:!p.enabled}))}>{p.enabled?'停用计划':'启用计划'}</button></span></div>
-   <h2>{p.title}</h2><div className="plan-tags"><span>{p.count} 首独立歌曲</span>{p.outputs.lyrics&&<span>歌词</span>}{(p.outputs.cover||p.material.source==='pule_prompt')&&<span>专属封面</span>}{p.outputs.music&&<span>音乐 · {catalog?.routes.find((r:any)=>r.id===p.music.route)?.label??p.music.route}</span>}<span>{p.authorization.publish?'自动发布已配置':'不自动发布'}</span></div>
-   {last&&<div className="plan-progress"><button className="link-button" onClick={()=>setSelected(last.id)}>{message(last.state)} · 已完成 {completed}/{items.length}</button><span>{message(last.reason)}</span>{running&&<button disabled={busy||running.stopRequested} onClick={()=>void act(()=>call('planCenter.stop',{runId:running.id}))}>{running.stopRequested?'已请求停止':'停止后续步骤'}</button>}</div>}
-   {!!p.needsConfiguration.length&&<p className="plan-warning">{p.needsConfiguration.map(message).join(' · ')}</p>}
-   {!!runs.length&&<details><summary>执行历史（{runs.length}）</summary>{runs.slice().reverse().map(r=><button className="plan-history" key={r.id} onClick={()=>setSelected(r.id)}>{r.source==='scheduled'?'定时':r.source==='directory'?'目录':r.source==='debug'?'调试':'手动'} · {new Date(r.createdAt).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})} · {message(r.state)}</button>)}</details>}
-  </article>})}</div>
-  {currentRun&&<section className="plan-card plan-run-detail" aria-label="本次执行详情"><div className="section-title"><h2>本次执行</h2><button onClick={()=>setSelected('')}>收起</button></div><PlanAlbumOperations run={currentRun} items={runItems} busy={busy} act={act}/><p>{message(currentRun.state)} · 配置快照 v{currentRun.planRevision} · {currentRun.snapshot.count} 首</p>{awaitingSignature.length>0&&<p role="status">番茄合同待签署 · {awaitingSignature.length} 首</p>}{canResumeBatch&&<p role="status">番茄批次待核对 · {message(fanqieBatch[0].reason)} <button disabled={busy} onClick={()=>void act(()=>call('planCenter.retryFanqie',{runId:selected}))}>继续番茄批次</button></p>}{runItems.map(item=><div className="plan-item-detail" key={item.id}><h3>独立主题 {item.ordinal}</h3><p>{message(item.state)} {message(item.reason)}</p><details><summary>材料与版本</summary><code>{item.expectedExternalItemId}</code><pre>{JSON.stringify({artistSnapshot:currentRun.snapshot.artistSnapshot,storyContext:currentRun.snapshot.storyContext,routeSnapshot:currentRun.snapshot.routeSnapshot,theme:currentRun.snapshot.theme,styleTemplate:currentRun.snapshot.styleTemplate,independentThemeOrdinal:item.ordinal,outputs:currentRun.snapshot.outputs,externalItemId:item.expectedExternalItemId},null,2)}</pre><p>渠道：{currentRun.snapshot.material.source} · {currentRun.snapshot.material.channel||'待配置'}</p>{!!item.material?.finalDraftId&&<><h4>模型评估对应稿件</h4><p>{String(item.material.title??'')} · {String(item.material.finalDraftId)}</p><pre>{String(item.material.lyrics??'')}</pre></>}{item.versions.map(v=><p key={v.version}>版本 {v.version} · {v.assetId??v.externalId??'待返回'}</p>)}</details>{rows?.stageAttempts.filter(a=>a.itemId===item.id).map(a=><div className="plan-stage-row" key={a.id}><span>{a.stage} · {message(a.state)} {message(a.reason)} {a.externalTaskId&&`· 外部任务 ${a.externalTaskId}`}</span>{['failed','not_found'].includes(a.state)&&!currentRun.stopRequested&&(currentRun.snapshot.material.source==='provider'&&['text_generate','text_score'].includes(a.stage)?<HelpNote label="重新执行">停止本次计划后重新执行；文本阶段暂不支持单独重试，新执行需重新核对额度。</HelpNote>:<button disabled={busy} onClick={()=>void act(()=>call('planCenter.retry',{attemptId:a.id}))}>重试此阶段</button>)}{a.state==='unknown'&&<HelpNote label="等待对账">结果未知时禁止直接重试，需要适配器核对原供应商任务。当前未接通的对账能力不能用人工伪造成功替代。</HelpNote>}</div>)}{rows?.publishAttempts.filter(a=>a.itemId===item.id).map(a=><p key={a.id}>{a.platform} / {a.accountId} · {message(a.state)} {message(a.reason)}</p>)}<ProviderPlanStatus status={execution?.providerText?.find((job:any)=>job.itemId===item.id)}/><PlanRunAssets item={item} run={currentRun} catalog={catalog} status={execution} busy={busy} act={act}/></div>)}</section>}
-  {currentRun?.snapshot.material.source==='dot'&&<div className="plan-dot-export"><button disabled={busy} onClick={()=>void act(async()=>{const result=await call('planCenter.exportDotRequests');setDotExport(result)})}>导出 dot 请求清单</button>{dotExport&&<p role="status">本地请求清单：<code>{dotExport.file}</code> · {dotExport.requestCount} 项；桥投影：{dotExport.bridgeProjection?.state??'未配置'}</p>}</div>}
-  {legacyHistory&&<div className="plan-modal-backdrop"><section role="dialog" aria-modal="true" aria-label="旧执行历史" className="plan-confirm"><div className="section-title"><h2>旧执行历史</h2><button onClick={()=>setLegacyHistory(null)}>关闭历史</button></div><p>{legacyHistory.title}</p>{Object.entries(legacyHistory.data).map(([kind,entries])=><details key={kind}><summary>{kind} · {Array.isArray(entries)?entries.length:0} 条</summary><pre>{JSON.stringify(entries,null,2)}</pre></details>)}</section></div>}
-  {editing&&<div className="plan-modal-backdrop"><section role="dialog" aria-modal="true" aria-labelledby="plan-edit-title" className="plan-editor"><div className="section-title"><h2 id="plan-edit-title">{isNew?'新建计划':'编辑计划'}</h2><button onClick={()=>setEditing(null)}>关闭</button></div><form onSubmit={e=>{e.preventDefault();void save()}}>
+  <div className="plan-heading"><h1>计划中心</h1><button className="primary" disabled={busy} onClick={()=>editWorkflow()}>＋ 新建计划</button></div>
+  <div className="plan-toolbar">
+   <input type="search" aria-label="搜索计划名称" placeholder="搜索计划名称" value={search} onChange={event=>setSearch(event.target.value)}/>
+   <HelpNote label="运行与停止">停止后续步骤后，已提交的外部请求仍会更新结果。</HelpNote>
+   {(showGenerationCost||showPublicationConsent)&&<span className="muted" id="plan-execution-notice">
+    {showGenerationCost&&'生成按服务计费。'}
+    {showPublicationConsent&&'执行发布计划即确认已核对发布权、AI 标注和歌词。'}
+   </span>}
+  </div>
+  {!workflowEditor&&!editing&&!detail&&!retryConfirm&&!deleting&&errorNotice}
+  {!detail&&selected&&runQuery.loading&&<p role="status"><LoadingIndicator label="正在读取执行结果…" /></p>}
+  {!detail&&selected&&!!runQuery.error&&<p className="plan-error" role="alert">{message(errorCode(runQuery.error))}</p>}
+  <div className="plan-table-frame">
+   <table className="plan-table" aria-label="计划列表" aria-busy={dashboard.loading}>
+    <thead><tr><th scope="col">名称</th><th scope="col">创建时间</th><th scope="col">执行结果</th><th scope="col">操作</th></tr></thead>
+    <tbody>
+     {visiblePlans.map(({plan,active:running,latest:recent,deleteBlocked:locked})=>{
+      const latest=running??recent;
+      const blockedRun=running?.state==='blocked'&&!running.stopRequested?running:undefined;
+      const opening=pending?.kind==='edit'&&pending.id===plan.id;
+      return <tr key={plan.id} id={`plan-${plan.id}`}>
+       <th scope="row">{plan.title}</th>
+       <td>{plan.createdAt?<time dateTime={plan.createdAt} title="北京时间">{formatTime(plan.createdAt)}</time>:'—'}</td>
+       <td><span className={latest?`plan-run-status is-${latest.state}`:'plan-run-status'}>{latest?message(latest.state):'未执行'}</span></td>
+       <td><div className="plan-row-actions">
+        {running&&!blockedRun?stopButton(running,'停止'):<button type="button" disabled={busy}
+         aria-describedby={showGenerationCost||showPublicationConsent?'plan-execution-notice':undefined}
+         onClick={()=>blockedRun?openBlockedExecution(plan,blockedRun):void startExecution(plan)}>立刻执行</button>}
+        <button type="button" disabled={busy} aria-busy={opening} onClick={()=>void openEdit(plan)}>
+         {opening?<LoadingIndicator label="正在读取…" />:'编辑'}
+        </button>
+        <button type="button" disabled={busy} onClick={()=>void openDetail(plan)}>详情</button>
+        <button type="button" className="plan-delete-button" disabled={busy||locked}
+         title={locked?'执行结束后可删除':undefined} onClick={()=>openDelete(plan)}>删除</button>
+       </div></td>
+      </tr>;
+     })}
+     {visiblePlans.length===0&&<tr><td colSpan={4} className="plan-table-empty" role="status">
+      {dashboard.loading?<LoadingIndicator label="正在读取计划…" />:dashboard.value
+       ?(dashboard.value.length===0?'暂无计划':'未找到匹配的计划')
+       :<><span>计划列表读取失败</span> <button type="button" onClick={()=>void dashboard.refresh()}>重试</button></>}
+     </td></tr>}
+    </tbody>
+   </table>
+  </div>
+  {detailPlan&&!deleting&&<div className="plan-modal-backdrop">
+   <section ref={detailDialog} tabIndex={-1} className="plan-editor plan-detail-dialog scroll-panel" role="dialog"
+    aria-modal="true" aria-labelledby="plan-detail-title"
+    onKeyDown={event=>{
+     if(event.key!=='Escape'||event.defaultPrevented||busy)return;
+     if(event.target instanceof Element&&event.target.closest('[role="dialog"]')!==event.currentTarget)return;
+     if(selected)leaveRun();else closeDetail();
+    }}>
+    <div className="section-title"><h2 id="plan-detail-title">计划详情</h2><button type="button" disabled={busy} onClick={closeDetail}>关闭</button></div>
+    <div ref={detailBody} className="scroll-panel-body">
+    <h3 className="plan-detail-name">{detailPlan.title}</h3>
+    {errorNotice}
+    {!selected&&<>
+     <div className="plan-detail-meta">
+      {detailPlan.createdAt&&<time dateTime={detailPlan.createdAt}>{formatTime(detailPlan.createdAt)}</time>}
+      {!isLocalPublicationWorkflow(detailPlan.workflow?.graph)&&<span>{detailPlan.count} 首独立歌曲</span>}
+      {detailPlan.outputs.cover&&<span>生成封面</span>}
+      {detailPlan.authorization.publish&&<span>{detailPlan.workflow?.graph?'已授权计划发布':'自动发布已配置'}</span>}
+     </div>
+     <PlanWorkflowSummary plan={detailPlan} profiles={data.platformWorkflow?.profiles??[]}
+      artistName={localMusicians(data,detailPlan.artistId).find(artist=>artist.id===detailPlan.artistId)?.name}/>
+     {!!detailPlan.needsConfiguration.length&&<p className="plan-warning">{detailPlan.needsConfiguration.map(message).join(' · ')}</p>}
+     <div className="plan-detail-history">
+      <div className="section-title">
+       <h3>执行记录（共 {detailRuns.length} 次）</h3>
+       {detailActive&&stopButton(detailActive)}
+      </div>
+      {history.loading?<p role="status"><LoadingIndicator label="正在读取执行记录…" /></p>:
+       history.error?<p role="alert">执行记录读取失败 <button type="button" onClick={()=>void history.refresh()}>重试</button></p>:
+       detailRuns.length===0?<p className="muted">暂无执行记录</p>:<ol className="plan-run-list">
+       {detailRuns.map((run,index)=><li key={run.id}><button type="button" className="plan-history" disabled={busy} onClick={()=>viewRun(run.id)}>
+         <strong>第 {detailRuns.length-index} 次执行</strong>
+         <span className={`plan-run-status is-${run.state}`}>{message(run.state)}</span>
+         <time dateTime={run.createdAt}>{formatTime(run.createdAt)}</time>
+         <span className="muted">{runSources[run.source]}{run.local?' · 目录上传':` · 已完成 ${run.completed}/${run.count}`}</span>
+        </button></li>)}
+      </ol>}
+      {legacyHistory.length>0&&<details className="plan-migration">
+       <summary>迁移前的记录</summary>
+       {legacyHistory.map(([kind,records])=><details key={kind}>
+        <summary>{({runs:'计划执行',steps:'执行步骤',occurrences:'触发记录',records:'生产记录'} as Record<string,string>)[kind]??kind}（{records.length}）</summary>
+        <pre>{JSON.stringify(records,null,2)}</pre>
+       </details>)}
+      </details>}
+     </div>
+     {listedDetail&&<div className="plan-editor-footer">
+      <button type="button" className="plan-delete-button" disabled={busy||detailRow?.deleteBlocked} onClick={()=>openDelete(detailPlan)}>删除</button>
+     </div>}
+    </>}
+    {selected&&<div className="plan-run-navigation">
+     <button type="button" disabled={busy} onClick={leaveRun}>{taskExecution?'返回任务中心':'返回执行记录'}</button>
+    </div>}
+    {selected&&runQuery.loading&&<p role="status"><LoadingIndicator label="正在读取执行结果…" /></p>}
+    {selected&&!!runQuery.error&&<p role="alert">执行结果读取失败 <button type="button" onClick={()=>void runQuery.refresh()}>重试</button></p>}
+    {currentRun&&<section className="plan-run-detail" aria-label="执行结果" key={currentRun.id}>
+     <div className="section-title">
+      <h3>{taskExecution?'任务执行记录':runIndex<0?'执行记录':`第 ${detailRuns.length-runIndex} 次执行`}</h3>
+      {!taskExecution&&planRunActive(currentRun)&&stopButton(currentRun)}
+     </div>
+     <p className="plan-detail-meta"><time dateTime={currentRun.createdAt}>{formatTime(currentRun.createdAt)}</time>
+      <span>{runSources[currentRun.source]}</span></p>
+     <p>{message(currentRun.state)} · 配置快照 v{currentRun.planRevision}{!localRun&&` · ${currentRun.snapshot.count} 首`}</p>
+     {cleanupNote?<p role="status">{message(cleanupNote)}</p>:currentRun.reason&&<p>{message(currentRun.reason)}</p>}
+     {runDetail?.fanqieDiagnostics&&
+      <button type="button" disabled={busy} onClick={()=>void act(()=>call('planCenter.openFanqieDiagnostics',{runId:currentRun.id}),{reload:false})}>
+       打开执行日志
+      </button>}
+     {localRun&&currentRun.reason&&archiveSetupIssues.includes(currentRun.reason)&&
+      <button type="button" onClick={()=>go('accounts','inbox')}>打开下载目录</button>}
+     {fanqieCleanup==='pending'&&
+      <button type="button" disabled={busy} onClick={()=>void act(()=>call('planCenter.retryFanqieCleanup',{runId:currentRun.id}),{pending:{kind:'retry-cleanup'}})}>
+       {pending?.kind==='retry-cleanup'?<LoadingIndicator label="正在移入回收站…" />:'重试回收'}
+      </button>}
+     {localRun&&!fanqieCleanup&&!currentRun.stopRequested&&['waiting','blocked'].includes(currentRun.state)&&
+      <button type="button" disabled={busy} onClick={()=>void act(()=>call('planCenter.retryFanqieDirectory',{runId:currentRun.id}))}>
+       核对番茄回执并继续
+      </button>}
+     {currentRun.snapshot.workflow&&<p>{planWorkflowLabel(currentRun.snapshot.workflow.graph,workflowCatalog)}</p>}
+     {!localRun&&currentRun.snapshot.publishTargets.some(target=>target.enabled)&&
+      <PlanAlbumOperations run={currentRun} items={runItems} busy={busy} act={act}/>}
+     {workflowPublication&&<div className="plan-workflow-publication" aria-label="发布节点状态">
+      <p role="status">{currentRun.stopRequested?'已停止后续发布':message(workflowPublication.detail)}</p>
+      {!!(workflowPublication.dispatch?.tmeIds.length||workflowPublication.dispatch?.fanqieIds.length)&&
+       <button type="button" onClick={()=>go('publish')}>打开任务中心</button>}
+     </div>}
+     {awaitingSignature.length>0&&<p role="status">番茄合同待签署 · {awaitingSignature.length} 首</p>}
+     {!currentRun.stopRequested&&resumableBatches.map(runId=><p key={runId} role="status">番茄批次待核对 · {message(fanqieBatch.find((job:any)=>job.runId===runId)?.reason)}
+      <button disabled={busy} onClick={()=>void act(()=>call('planCenter.retryFanqie',{runId}))}>继续番茄批次</button>
+     </p>)}
+     {runItems.map(item=><div className="plan-item-detail" key={item.id}><h3>{currentRun.snapshot.creationDraft?.title??(typeof item.material?.title==='string'?item.material.title:'独立主题 '+item.ordinal)}</h3><p>{message(item.state)} {message(item.reason)}</p>
+      {!currentRun.stopRequested&&workflowPublication?.qishui.filter(job=>job.workId===item.workId).map(job=>
+       <QishuiPublisher key={`${job.runId}:${job.accountId}:${job.workId}`} plan={job} />)}
+      {currentRun.snapshot.workflow&&item.material?.source==='workflow'&&<details><summary>AI作词结果</summary>
+       <p>歌名一 · {String(item.material.title??'')}</p>
+       <p>歌名二 · {String(item.material.alternateTitle??'')}</p>
+       <strong>风格描述</strong><pre>{String(item.material.musicPrompt)}</pre>
+       {currentRun.snapshot.songType!=='instrumental'&&<><strong>歌词</strong><pre>{String(item.material.lyrics)}</pre></>}
+      </details>}
+      <details><summary>材料与版本</summary>
+      {currentRun.snapshot.creationDraft && <div className="plan-linked-assets">
+       <h4>创作任务内容</h4>
+       <p>{currentRun.snapshot.songType==='instrumental'?'纯音乐':'带歌词'}</p>
+       <strong>风格描述</strong>
+       <pre>{currentRun.snapshot.creationDraft.style}</pre>
+       {currentRun.snapshot.songType!=='instrumental'&&<>
+        <p>歌手性别 · {currentRun.snapshot.creationDraft.vocalGender==='male'?'男声':currentRun.snapshot.creationDraft.vocalGender==='female'?'女声':'不限'}</p>
+        <strong>歌词</strong>
+        <pre>{currentRun.snapshot.creationDraft.lyrics}</pre>
+       </>}
+      </div>}
+      {currentRun.downloadFolders?.map(folder => <p key={folder.accountId + ":" + (folder.audioVersion ?? folder.name)}>
+       下载目录 · <code>{folder.root.replace(/[\\/]+$/u,'')}{folder.root.includes('\\')?'\\':'/'}{folder.name}</code>
+      </p>)}
+      <code>{item.expectedExternalItemId}</code><pre>{JSON.stringify({artistSnapshot:currentRun.snapshot.artistSnapshot,storyContext:currentRun.snapshot.storyContext,routeSnapshot:currentRun.snapshot.routeSnapshot,theme:currentRun.snapshot.theme,styleTemplate:currentRun.snapshot.styleTemplate,independentThemeOrdinal:item.ordinal,outputs:currentRun.snapshot.outputs,externalItemId:item.expectedExternalItemId},null,2)}</pre><p>渠道：{currentRun.snapshot.material.source} · {currentRun.snapshot.material.channel||'待配置'}</p>{!!item.material?.finalDraftId&&<><h4>模型评估对应稿件</h4><p>{String(item.material.title??'')} · {String(item.material.finalDraftId)}</p><pre>{String(item.material.lyrics??'')}</pre></>}{item.versions.map(v=><p key={v.version}>版本 {v.version} · {v.assetId??v.externalId??'待返回'}</p>)}</details>{runDetail?.stageAttempts.filter(a=>a.itemId===item.id).map(a=>{
+     const reviewFailure=lyricReviewFailure(a)||lyricResponseFailure(a);
+     const reviewAvailable=a.stage==='lyric_write'&&currentRun.snapshot.songType!=='instrumental'&&
+      (reviewFailure||lyricScoreFailure(a)||a.state==='succeeded'||a.state==='unknown'||a.reason==='TEXT_CONTENT_FILTERED');
+       const mayRetry=!currentRun.stopRequested&&isLatestFailedStage(a,runDetail.stageAttempts);
+       return <React.Fragment key={a.id}>
+        <div className="plan-stage-row">
+         <span>{stageLabels[a.stage]??a.stage} · {message(a.state)} {message(a.reason)}
+          {a.externalTaskId&&` · ${a.stage==='lyric_write'?'作词任务':'外部任务'} ${a.externalTaskId}`}</span>
+         {mayRetry&&(providerTextNeedsNewRun(currentRun,a)
+          ? <HelpNote label="重新执行">停止本次计划后重新执行。文本阶段暂不支持单独重试，新执行需重新核对额度。</HelpNote>
+          : <button disabled={busy} onClick={()=>{
+           if(reviewFailure){setError('');setRetryConfirm({plan:detailPlan,run:currentRun,attempt:a});}
+           else void act(()=>call('planCenter.retry',{attemptId:a.id}));
+          }}>
+          {retryStageLabel(currentRun,a)}</button>)}
+         {a.state==='unknown'&&(currentRun.snapshot.workflow?.graph&&a.stage==='music_submit'
+          ? currentBrowserMusic
+           ? <button type="button" onClick={()=>go('platform-accounts',currentBrowserMusic.provider)}>
+              打开{browserMusicProviders[currentBrowserMusic.provider].label}账号管理</button>
+           : <button disabled={busy} onClick={()=>void act(()=>call('planCenter.checkMusicReceipt',{attemptId:a.id}))}>核对生成回执</button>
+          : <HelpNote label="等待对账">结果未知，请核对原供应商任务。</HelpNote>)}
+        </div>
+      {reviewAvailable&&a.externalTaskId&&<PlanLyricReview jobId={a.externalTaskId}/>}
+       </React.Fragment>;
+      })}{runDetail?.publishAttempts.filter(a=>a.itemId===item.id).map(a=><p key={a.id}>{a.platform} / {a.accountId} · {message(a.state)} {message(a.reason)}</p>)}<ProviderPlanStatus status={execution?.providerText?.find((job:any)=>job.itemId===item.id)}/><PlanRunAssets item={item} run={currentRun} catalog={runDetail?.catalog} status={execution} busy={busy} act={act}/></div>)}
+     {currentRun.snapshot.material.source==='dot'&&<div className="plan-dot-export">
+      <button disabled={busy} onClick={()=>void act(async()=>setDotExport(await call('planCenter.exportDotRequests')))}>导出 dot 请求清单</button>
+      {dotExport&&<p role="status">本地请求清单：<code>{dotExport.file}</code> · {dotExport.requestCount} 项 · 桥投影 {dotExport.bridgeProjection?.state??'未配置'}</p>}
+     </div>}
+    </section>}
+    </div>
+   </section>
+  </div>}
+  {deleting&&<div className="plan-modal-backdrop">
+   <section className="plan-confirm" role="dialog" aria-modal="true" aria-labelledby="plan-delete-title"
+    onKeyDown={event=>{if(event.key==='Escape'&&!busy)cancelDelete();}}>
+    <h2 id="plan-delete-title">删除计划？</h2>
+    <p>删除「{deleting.title}」后{deleteStopsRun?'，本次阻塞的执行会停止':''}，计划将从列表移除。已有作品和执行记录会保留。</p>
+    {errorNotice}
+    {deleteHasActive&&<p className="plan-warning" role="status">执行结束后可删除。</p>}
+    <div className="plan-editor-footer">
+     <button autoFocus type="button" disabled={busy} onClick={cancelDelete}>取消</button>
+     <button type="button" className="plan-delete-button" disabled={busy||deleteHasActive} onClick={()=>void act(async()=>{
+      await call('planCenter.delete',{id:deleting.id,expectedRevision:deleting.revision});
+      setDeleting(null);closeDetail();notify('计划已删除');
+     })}>确认删除</button>
+    </div>
+   </section>
+  </div>}
+  {workflowEditor&&<PlanWorkflowForm key={workflowEditor.plan?.id??'new'} initial={workflowEditor.plan} busy={busy} error={error} onClose={()=>{setWorkflowEditor(null);setError('')}} onSave={plan=>void saveWorkflow(plan)}/>}
+  {editing?.material.source==='creation'&&<div className="plan-modal-backdrop">
+   <section role="dialog" aria-modal="true" aria-labelledby="plan-creation-edit-title" className="plan-editor plan-creation-editor scroll-panel">
+    <div className="section-title"><h2 id="plan-creation-edit-title">编辑计划</h2><button type="button" disabled={busy} onClick={()=>setEditing(null)}>关闭</button></div>
+    <form className="scroll-panel-body" onSubmit={event=>{event.preventDefault();void save();}}>
+     <label>名称<input required maxLength={200} value={editing.title} onChange={event=>patch({title:event.target.value})}/></label>
+     {errorNotice}
+     <div className="plan-editor-footer"><button type="button" disabled={busy} onClick={()=>setEditing(null)}>取消</button><button type="submit" className="primary" disabled={busy||!editing.title.trim()} aria-busy={saving}>{saving?<LoadingIndicator label="正在保存…" />:'保存计划'}</button></div>
+    </form>
+   </section>
+  </div>}
+  {editing&&editing.material.source!=='creation'&&<div className="plan-modal-backdrop"><section role="dialog" aria-modal="true" aria-labelledby="plan-edit-title" className="plan-editor scroll-panel"><div className="section-title"><h2 id="plan-edit-title">编辑计划</h2><button onClick={()=>setEditing(null)}>关闭</button></div><form className="scroll-panel-body" onSubmit={e=>{e.preventDefault();void save()}}>
    <div className="form-grid"><label>计划名称<input aria-label="计划名称" required maxLength={200} value={editing.title} onChange={e=>patch({title:e.target.value})}/></label><label>艺人<select aria-label="计划艺人" required value={editing.artistId} onChange={e=>{
  const artistId=e.target.value,material={...editing.material,identity:artistIdentity(artistId,catalog)};
- const artist=data.artists.find((a:any)=>a.id===artistId);
+ const artist=localMusicians(data, editing.artistId).find(a=>a.id===artistId);
  if(editing.material.source==='provider')selectSongType(artist?.defaults?.voice==='instrumental'?'instrumental':'vocal',{artistId,material});
  else patch({artistId,material,authorization:{...editing.authorization,publish:false}});
-}}><option value="">请选择</option>{data.artists.map((a:any)=><option key={a.id} value={a.id}>{a.name}</option>)}</select></label><label>独立歌曲数量<input aria-label="独立歌曲数量" type="number" min={1} max={20} value={editing.count} onChange={e=>patch({count:Number(e.target.value)})}/></label></div>
-   <fieldset><legend>时间安排</legend><div className="form-grid"><label>执行频率<select aria-label="执行频率" value={editing.schedule.kind} onChange={e=>patch({schedule:e.target.value==='weekly'?{kind:'weekly',localTime:editing.schedule.localTime,weekdays:[1]}:e.target.value==='once'?{kind:'once',localTime:editing.schedule.localTime,date:new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'})}:{kind:'daily',localTime:editing.schedule.localTime}})}><option value="daily">每天</option><option value="weekly">每周</option><option value="once">指定日期</option></select></label><label>北京时间<input aria-label="北京时间" type="time" required value={editing.schedule.localTime} onChange={e=>patch({schedule:{...editing.schedule,localTime:e.target.value}})}/></label>{editing.schedule.kind==='once'&&<label>执行日期<input aria-label="执行日期" type="date" required value={editing.schedule.date} onChange={e=>patch({schedule:{kind:'once',localTime:editing.schedule.localTime,date:e.target.value}})}/></label>}<label>离线补跑<select aria-label="离线补跑" value={editing.catchUp.mode} onChange={e=>patch({catchUp:{...editing.catchUp,mode:e.target.value as any}})}><option value="latest">只补最近一次</option><option value="skip">跳过</option><option value="bounded">有限补跑</option></select></label>{editing.catchUp.mode==='bounded'&&<label>最多补跑<input aria-label="最多补跑" type="number" min={1} max={5} value={editing.catchUp.limit} onChange={e=>patch({catchUp:{...editing.catchUp,limit:Number(e.target.value)}})}/></label>}</div>{editing.schedule.kind==='weekly'&&<div className="plan-weekdays">{weekdays.map((day,i)=><label key={day}><input type="checkbox" checked={(editing.schedule as any).weekdays.includes(i+1)} onChange={e=>{const s=editing.schedule as any;patch({schedule:{...s,weekdays:e.target.checked?[...s.weekdays,i+1]:s.weekdays.filter((n:number)=>n!==i+1)}})}}/>周{day}</label>)}</div>}</fieldset>
+}}><option value="">请选择</option>{localMusicians(data, editing.artistId).map((a:any)=><option key={a.id} value={a.id}>{a.name}</option>)}</select></label><label>独立歌曲数量<input aria-label="独立歌曲数量" type="number" min={1} max={20} value={editing.count} onChange={e=>patch({count:Number(e.target.value)})}/></label></div>
    {editing.routing&&<GenerationRoutes value={editing.routing} onChange={patchRoutes} disabled={busy}/>}
-   <fieldset><legend>任务目录</legend><div className="form-grid"><label>本地 / 同步文件夹<select aria-label="任务目录" value={directoryId} onChange={e=>setDirectoryId(e.target.value)}><option value="">暂不绑定新目录</option>{directories.map(source=><option value={source.id} key={source.id}>{source.root}</option>)}</select></label><div><button type="button" disabled={busy} onClick={()=>void chooseTaskDirectory()}>选择本地/同步文件夹</button><p className="muted">{directoryId?'保存计划后绑定，扫描保持暂停':'可选'}</p></div></div></fieldset>
    <fieldset><legend>创作内容</legend>{(editing.material.source==='provider'||promptMode)&&<label>歌曲类型<select aria-label="计划歌曲类型" value={editing.songType??'vocal'} onChange={e=>selectSongType(e.target.value==='instrumental'?'instrumental':'vocal')}><option value="vocal">人声歌曲</option><option value="instrumental">纯音乐</option></select></label>}{editorArtist&&<small>发行艺人 {editorArtist.name} · 人声偏好 {({female:'女声',male:'男声',duet:'对唱',instrumental:'纯音乐'} as Record<string,string>)[editorArtist.defaults?.voice]??'未设置'}</small>}<div className="plan-checkboxes">{(['lyrics','cover','music'] as const).map((key,i)=><label key={key}><input aria-label={['生成歌词','生成封面','生成音乐'][i]} disabled={promptMode||instrumental||(key==="lyrics"&&editing.material.source==="provider")} type="checkbox" checked={key==="lyrics"&&instrumental?false:promptMode||editing.outputs[key]} onChange={e=>patch({outputs:{...editing.outputs,[key]:e.target.checked}})}/>{['歌词','封面','音乐'][i]}</label>)}</div><label>本次故事<textarea aria-label="计划本次故事" value={editing.storyContext?.storyBeat??''} maxLength={10000} onChange={e=>patch({storyContext:{storyStage:editing.storyContext?.storyStage??'',storyBeat:e.target.value}})}/></label><label>{promptMode?'主题方向（每行一项，按天轮换）':'主题方向'}<textarea aria-label="主题方向" value={editing.theme} onChange={e=>patch({theme:e.target.value})}/></label><MusicStylePicker label="曲风模板" value={editing.styleTemplate} inherited={editorArtist?.defaults?.genre} maxLength={4000} onChange={styleTemplate=>patch({styleTemplate})}/><div className="form-grid"><label>内容渠道<select aria-label="内容渠道" value={editing.material.source} onChange={e=>{
      const source=e.target.value as PlanCenterPlan['material']['source'];
      const usePule=source==='pule_prompt';
@@ -93,10 +458,27 @@ export default function PlanCenter({initialRunId=""}:{initialRunId?:string}){
        ...(usePule?{outputs:{lyrics:true,music:true,cover:true},...(editing.routing&&profile?{routing:{...editing.routing,music:{source:'override',profileId:profile.id}}}:{})}:{}),authorization:{text:false,music:false,publish:false}});
    }}>{promptMode&&<option value="pule_prompt">谱乐 · 快速生成（旧计划）</option>}<option value="provider">文本提供商生成</option><option value="dot">dot · Drive 素材交付</option><option value="manual">手动导入</option></select></label><label hidden={editing.material.source==='provider'||promptMode}>收件通道<input aria-label="收件通道" value={editing.material.channel} onChange={e=>patch({material:{...editing.material,channel:e.target.value}})}/></label><label hidden={editing.material.source==='provider'||promptMode}>收件艺人身份<select aria-label="收件艺人身份" value={editing.material.identity} onChange={e=>patch({material:{...editing.material,identity:e.target.value}})}><option value="">请选择配置中的身份</option>{Object.entries(catalog?.dot?.artistRefs??{}).filter(([,artist])=>artist===editing.artistId).map(([ref])=><option key={ref} value={ref}>{ref}</option>)}</select></label></div>{editing.material.source!=='provider'&&!promptMode&&<HelpNote label="dot 桥接">客户端目前不能直接触发外部 dot 任务。执行后会显示准确请求 ID；由所选 dot 渠道生成并写入已授权 incoming，再通过 receipts 确认。不会替换成 Work 生成。</HelpNote>}</fieldset>
    {!promptMode&&!instrumental&&<fieldset><legend>自动质量评估</legend><div className="form-grid"><label hidden={!!editing.routing}>文本模型配置<select aria-label="文本模型配置" value={editing.text.profileId??''} onChange={e=>{const p=catalog?.profiles.find((p:any)=>p.id===e.target.value);patch({text:{...editing.text,profileId:p?.id,profileRevision:p?.revision,modelId:p?.modelId??undefined,maxOutputTokens:2048,consent:false},authorization:{...editing.authorization,text:false}})}}><option value="">待配置</option>{catalog?.profiles.filter((p:any)=>p.kind==='text'&&(editing.material.source==='provider'?['deepseek','doubao'].includes(p.providerId):p.providerId==='deepseek')).map((p:any)=><option key={p.id} value={p.id}>{p.label} · {p.modelId??'未选模型'}</option>)}</select></label><label>及格分<input aria-label="及格分" type="number" min={0} max={100} value={editing.text.threshold} onChange={e=>patch({text:{...editing.text,threshold:Number(e.target.value)}})}/></label><label>最多改写<input aria-label="最多改写" type="number" min={0} max={2} value={editing.text.maxRewrites} onChange={e=>patch({text:{...editing.text,maxRewrites:Number(e.target.value)}})}/></label><label>评分错误重试<input aria-label="评分错误重试" type="number" min={0} max={2} value={editing.text.maxScoreRetries} onChange={e=>patch({text:{...editing.text,maxScoreRetries:Number(e.target.value)}})}/></label><label>{editing.material.source==='provider'?'本次计划总额度（'+(catalog?.profiles.find((p:any)=>p.id===editing.text.profileId)?.textPricing?.currency??'配置币种未设置')+'，所有歌曲共享）':'每日文本总额度（USD 估算）'}<input aria-label="文本额度" type="number" min={0.000001} max={100} step={0.000001} value={editing.text.budgetMicros?editing.text.budgetMicros/1e6:''} onChange={e=>patch({text:{...editing.text,budgetMicros:e.target.value?Math.round(Number(e.target.value)*1e6):undefined,consent:false},authorization:{...editing.authorization,text:false}})}/></label></div><label className="check"><input aria-label="授权文本模型额度" type="checkbox" checked={editing.authorization.text} onChange={e=>patch({text:{...editing.text,consent:e.target.checked},authorization:{...editing.authorization,text:e.target.checked}})}/>{editing.material.source==='provider'?'允许所选文本提供商在本次计划共享额度内生成歌词、提示词、评分和有限改写':'允许导入歌词在此每日额度内自动评分和有限改写'}</label><HelpNote label="评分范围">歌词40%、曲风提示词30%、两者一致性30%。结构规则与模型质量分分开。模型分是自动意见，不是客观保证，也不评价音频审美或代替平台审核。改写不覆盖原稿，封面将标记需更新。</HelpNote></fieldset>}
-   {editing.outputs.music&&<PlanMusicFields plan={editing} catalog={catalog} patch={changes=>{if(editing.routing&&changes.music?.profileId&&changes.music.profileId!==editing.music.profileId)patch({...changes,routing:{...editing.routing,music:{source:'override',profileId:changes.music.profileId}}});else patch(changes)}} busy={busy} refreshModels={()=>void act(async()=>{await call('planCenter.refreshModels',{profileId:editing.music.profileId,expectedRevision:editing.music.profileRevision});notify('账号历史证据已刷新；当前可用性仍待供应商确认')})}/>}
+   {editing.outputs.music&&<PlanMusicFields plan={editing} catalog={catalog} patch={changes=>{if(editing.routing&&changes.music?.profileId&&changes.music.profileId!==editing.music.profileId)patch({...changes,routing:{...editing.routing,music:{source:'override',profileId:changes.music.profileId}}});else patch(changes)}} busy={busy} refreshModels={()=>void act(async()=>{await call('planCenter.refreshModels',{profileId:editing.music.profileId,expectedRevision:editing.music.profileRevision});setCatalog(await readEditorCatalog());notify('账号历史证据已刷新；当前可用性仍待供应商确认')})}/>}
    <PlanFanqieFields key={data.mode + ":" + editing.id} plan={editing} patch={patch}/><details><summary>其他平台设置</summary><fieldset><legend>平台发布</legend><label className="check"><input aria-label="自动发布" type="checkbox" checked={editing.authorization.publish} onChange={e=>patch({authorization:{...editing.authorization,publish:e.target.checked}})}/>自动发布</label><HelpNote label="发布要求">按平台及账号核对专辑目录与能力；追加准备复用原发布队列，版权、条款与正式提交仍在原流程确认。缺少校准合同或账号会话时展示具体原因。</HelpNote>{editing.publishTargets.map((target,index)=>{const pc=catalog?.platforms.find((p:any)=>p.id===target.platform);const update=(changes:any)=>patch({publishTargets:editing.publishTargets.map((t,i)=>i===index?{...t,...changes}:t)});return <div className="plan-publish-target" key={index}><div className="form-grid"><label>发布平台<select aria-label={`发布平台 ${index+1}`} value={target.platform} onChange={e=>update({platform:e.target.value,accountId:'',album:{mode:'new',title:''}})}>{catalog?.platforms.map((p:any)=><option key={p.id} value={p.id} disabled={p.albumAdapterImplemented===false}>{p.label}{p.albumAdapterImplemented===false?' · 未实现，已禁用':''}{p.delivery==='video'?' · 视频':''}</option>)}</select></label><label>平台账号<select aria-label={`平台账号 ${index+1}`} required value={target.accountId} onChange={e=>update({accountId:e.target.value,album:{mode:'new',title:''}})}><option value="">请选择</option>{catalog?.accounts.filter((a:any)=>pc?.accountProviders.includes(a.provider)).map((a:any)=><option key={a.id} value={a.id}>{a.label} · {a.authStatus??'状态待核实'}</option>)}</select></label><label>远端艺人身份映射<select aria-label={`身份映射 ${index+1}`} value={target.identityBindingId??''} onChange={e=>update({identityBindingId:e.target.value||undefined})}><option value="">未绑定 · 自动发布保持阻塞</option>{catalog?.identityBindings?.filter((b:any)=>b.artistId===editing.artistId&&b.accountId===target.accountId&&b.bindingState==='bound').map((b:any)=><option key={b.id} value={b.id}>{b.artistDisplayName} · {b.remoteArtistId} · {b.loginState==='valid'?'近期核对有效':'登录待核对'}</option>)}</select></label></div>{pc?.albumAdapterImplemented===false&&<p className="plan-warning" role="status">此平台专辑适配器尚未实现，查询、新建和追加均已禁用。</p>}<PlanAlbumFields target={target} index={index} update={update} busy={busy}/><button type="button" onClick={()=>patch({publishTargets:editing.publishTargets.filter((_,i)=>i!==index)})}>移除此账号</button></div>})}<button type="button" onClick={addTarget}>＋ 添加平台账号与专辑</button></fieldset></details>
-   <div className="plan-editor-footer"><button type="button" onClick={()=>setEditing(null)}>取消</button><button className="primary" disabled={busy} type="submit">保存计划</button></div>
+   {errorNotice}
+   <div className="plan-editor-footer"><button type="button" disabled={busy} onClick={()=>setEditing(null)}>取消</button><button className="primary" disabled={busy||!editing.artistId} aria-busy={saving} type="submit">{saving?<LoadingIndicator label="正在保存…" />:'保存计划'}</button></div>
   </form></section></div>}
-  {confirm&&<div className="plan-modal-backdrop"><section className="plan-confirm" role="dialog" aria-modal="true" aria-labelledby="plan-confirm-title"><h2 id="plan-confirm-title">立即执行此计划？</h2><h3>{confirm.plan.title}</h3><dl><dt>数量</dt><dd>{confirm.plan.count} 首独立歌曲</dd><dt>内容渠道</dt><dd>{confirm.plan.material.source}</dd><dt>音乐渠道</dt><dd>{confirm.plan.outputs.music?(catalog?.routes.find((r:any)=>r.id===confirm.plan.music.route)?.label??confirm.plan.music.route):'不生成音乐'}</dd><dt>自动发布</dt><dd>{confirm.plan.authorization.publish?'开启':'关闭'}</dd></dl>{confirm.plan.publishTargets.filter((t:any)=>t.enabled).map((t:any)=><p key={`${t.platform}-${t.accountId}`}>{catalog?.platforms.find((p:any)=>p.id===t.platform)?.label??t.platform} · {catalog?.accounts.find((a:any)=>a.id===t.accountId)?.label??t.accountId} · {t.album.mode==='existing'?`已有专辑 ${t.album.albumId}`:`新建专辑 ${t.album.title}`}</p>)}<p className="muted">本次执行不会改变定时时间。</p><div className="plan-editor-footer"><button disabled={busy} onClick={()=>setConfirm(null)}>取消</button><button className="primary" disabled={busy} onClick={()=>void act(async()=>{const run=await call('planCenter.run',{id:confirm.plan.id,expectedRevision:confirm.preview.planRevision,summaryHash:confirm.preview.summaryHash,requestId:crypto.randomUUID(),source:'manual'});setSelected(run.id);setConfirm(null)})}>确认立即执行</button></div></section></div>}
+  {retryConfirm&&<div className="plan-modal-backdrop">
+   <section className="plan-confirm" role="dialog" aria-modal="true" aria-labelledby="plan-retry-title">
+    <h2 id="plan-retry-title">继续本次执行？</h2>
+    <h3>{retryConfirm.plan.title}</h3>
+    <p>{stageLabels[retryConfirm.attempt.stage]??retryConfirm.attempt.stage} · {message(retryConfirm.attempt.reason??retryConfirm.attempt.state)}</p>
+    {lyricReviewFailure(retryConfirm.attempt)&&<p>将使用已保存的歌词重新评分。</p>}
+    {lyricResponseFailure(retryConfirm.attempt)&&<p>从本次失败的作词步骤继续，保留已有稿件和评分。</p>}
+    {(retryConfirm.run.snapshot.authorization.text||retryConfirm.run.snapshot.authorization.music||
+      retryConfirm.run.snapshot.routeSnapshot?.image.capability==='image_api')&&<p>继续执行可能产生服务费用。</p>}
+    {errorNotice}
+    <div className="plan-editor-footer">
+     <button type="button" disabled={busy} onClick={()=>{setRetryConfirm(null);setError('');}}>取消</button>
+     <button type="button" className="primary" disabled={busy} onClick={()=>void confirmBlockedExecution(retryConfirm)}>
+      {retryStageLabel(retryConfirm.run,retryConfirm.attempt)}</button>
+    </div>
+   </section>
+  </div>}
  </section>;
 }

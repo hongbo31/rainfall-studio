@@ -1,10 +1,11 @@
+import { launchHeadlessChromium } from "./lib/headless-chromium.mjs";
 // Real Chromium DOM with locally fulfilled, explicitly labelled fixture pages. No live Tencent traffic.
 import {chromium} from 'playwright-core';import {build} from 'esbuild';
 import fs from 'node:fs';import path from 'node:path';import assert from 'node:assert/strict';
 const bundle=await build({entryPoints:['src/main/tme/page-overlays.ts'],bundle:true,platform:'node',format:'esm',write:false});
 const {TmePageOverlayGuard}=await import('data:text/javascript;base64,'+Buffer.from(bundle.outputFiles[0].text).toString('base64'));
 const out=path.resolve('output/playwright/native-popup-fixtures-'+Date.now());fs.mkdirSync(out,{recursive:true});
-const browser=await chromium.launch({executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true});
+const browser=await launchHeadlessChromium(chromium);
 const checks=[],screens=[];let fulfilled=0;
 const scope=async()=>({subject:'isolated-local-fixture',binding:'owned-fresh-browser',materials:'no-real-song'});
 const home='https://y.tencentmusic.com/#/user/musician/index';

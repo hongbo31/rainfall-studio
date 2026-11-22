@@ -1,3 +1,4 @@
+import { launchHeadlessChromium } from "./lib/headless-chromium.mjs";
 // Real production React controls in headless Chrome, with every request intercepted.
 import { build } from "esbuild";
 import { chromium, expect } from "@playwright/test";
@@ -173,9 +174,7 @@ const rpc = async (method, input) => {
 };
 let browser;
 try {
-  browser = await chromium.launch({
-    executablePath: "C:/Program Files/Google/Chrome/Application/chrome.exe",
-    headless: true,
+  browser = await launchHeadlessChromium(chromium, {
     args: [
       "--no-startup-window",
       "--disable-background-networking",

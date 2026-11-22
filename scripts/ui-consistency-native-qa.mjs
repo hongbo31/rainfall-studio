@@ -1,6 +1,7 @@
 // Authorized native acceptance of the real packaged Electron with its existing library.
 // No fixture bridge, service calls, edits, generation, consent, or submission.
 import { _electron as electron, expect } from "@playwright/test";
+import { openCreationWork } from "./lib/open-creation-work.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import assert from "node:assert/strict";
@@ -141,7 +142,7 @@ try {
       };
     },
   );
-  await page.getByRole("button", { name: "作品库", exact: true }).waitFor();
+  await page.getByRole("button", { name: "创作中心", exact: true }).waitFor();
   runtime = await call("runtime");
   assert.equal(runtime.root, backup.dataRoot);
   assert.equal(runtime.mode, "production");
@@ -177,27 +178,25 @@ try {
   });
   const names = [
     "总览",
-    "本地模板",
-    "作品库",
     "封面工作室",
     "发布中心",
     "数据看板",
     "配置中心",
-    "AI 聊天创作",
+    "创作中心",
   ];
   for (const name of names) {
     await page.getByRole("button", { name, exact: true }).click();
     await layout(name);
-    if (name === "作品库") {
+    if (name === "创作中心") {
       await page
-        .getByRole("textbox", { name: "搜索作品", exact: true })
+        .getByRole("searchbox", { name: "搜索作品", exact: true })
         .waitFor();
-      await expect(page.locator(".page-head h1")).toHaveText("作品库");
+      await expect(page.locator(".page-head h1")).toHaveText("创作中心");
       await expect(page.locator(".page-head .eyebrow")).toHaveCount(0);
     }
     await shot(name + "-native");
   }
-  const header = await page.locator(".header-right > *").evaluateAll((ns) =>
+  const header = await page.locator(".header-right > :not(.theme-toggle)").evaluateAll((ns) =>
     ns.map((n) => {
       const r = n.getBoundingClientRect(),
         s = getComputedStyle(n);
@@ -210,41 +209,31 @@ try {
       };
     }),
   );
-  assert.equal(header.length, 3);
+  assert.equal(header.length, 4);
   assert(header.every((x) => x.height === 36 && x.font === "13px"));
   assert.equal(new Set(header.map((x) => x.y)).size, 1);
   checks.push({
-    name: "Red-box header three controls align at 36px / 13px",
+    name: "Header controls align at 36px / 13px",
     measurements: header,
   });
   await page.getByRole("button", { name: "配置中心", exact: true }).click();
-  for (const platform of [
-    "网易云音乐",
-    "QQ 音乐",
-    "汽水音乐",
-    "酷狗音乐",
-    "抖音视频",
-  ]) {
-    await page.getByRole("tab", { name: platform, exact: true }).click();
-    await expect(
-      page.getByRole("region", { name: platform + "配置", exact: true }),
-    ).toBeVisible();
-  }
-  for (const tab of ["模型 API", "艺人与预算", "诊断与历史", "发布平台"]) {
+  const configurationTabs = ["模型 API", "提示词管理", "下载目录", "诊断与历史", "外观"];
+  await expect(page.getByRole("tablist", { name: "配置分类" }).getByRole("tab")).toHaveText(configurationTabs);
+  for (const tab of configurationTabs) {
     await page.getByRole("tab", { name: tab, exact: true }).click();
     await layout("配置中心/" + tab);
   }
   checks.push({
-    name: "All five platform configuration tabs and four categories open without changing saved settings",
+    name: "The five remaining configuration categories open without changing saved settings",
   });
-  await page.getByRole("button", { name: "作品库", exact: true }).click();
-  const search = page.getByRole("textbox", { name: "搜索作品", exact: true });
+  await page.getByRole("button", { name: "创作中心", exact: true }).click();
+  const search = page.getByRole("searchbox", { name: "搜索作品", exact: true });
   await search.fill("不存在的验收关键词");
-  await expect(page.locator(".library-table tbody tr[data-work-id]")).toHaveCount(0);
+  await expect(page.locator(".creation-work-items [data-work-id]")).toHaveCount(0);
   await search.fill("");
-  await page
-    .getByRole("button", { name: new RegExp("示例作品A.*温柔恋爱流行") })
-    .click();
+  const sampleWork = (await call("snapshot")).works.find(work => work.title === "示例作品A");
+  assert.ok(sampleWork);
+  await openCreationWork(page, sampleWork.id);
   await layout("作品详情");
   await expect
     .poll(() =>
@@ -330,12 +319,12 @@ try {
         BrowserWindow.getAllWindows()[0].setContentSize(size.w, size.h),
       { w, h },
     );
-    await page.getByRole("button", { name: "作品库", exact: true }).click();
+    await page.getByRole("button", { name: "创作中心", exact: true }).click();
     await layout(w + "x" + h);
     const bounds = await version().boundingBox(),
       player = await page.locator("footer").boundingBox();
     assert(bounds.y + bounds.height < player.y);
-    await shot("library-" + w + "x" + h + "-native");
+    await shot("creation-" + w + "x" + h + "-native");
   }
   assert.equal(errors.length, 0);
   assert.equal(await app.evaluate(() => globalThis.__qaBlockedHttp), 0);

@@ -2,6 +2,8 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Context, PageHead } from "../../src/renderer/context";
 import PublishCenter from "../../src/renderer/pages/PublishCenter";
+import PublicationTaskEditor from "../../src/renderer/components/PublicationTaskEditor";
+import type { PublicationTask } from "../../src/shared/publication-tasks";
 
 export const song = {
   id: "song-a",
@@ -61,4 +63,16 @@ export function renderPageHead() {
   return renderToStaticMarkup(
     <PageHead title="测试页面" sub="仅在帮助中阅读的说明" />,
   );
+}
+export function renderPublicationTaskEditor() {
+  const plans = [{ id: "plan-a", title: "关联计划甲", revision: 1 }, { id: "plan-b", title: "关联计划乙", revision: 3 }];
+  const initial: PublicationTask = {
+    id: "task-a", title: "发布任务", enabled: true, revision: 1, cursor: "2026-11-19T03:00:00Z", consent: true,
+    execution: { kind: "scheduled", unit: "month", day: 31, localTime: "09:00" },
+    steps: [{ kind: "plans", planIds: plans.map(row => row.id) },
+      { kind: "publish", targets: [{ platform: "qqmusic", accountId: "account-a" }] }],
+  };
+  return renderToStaticMarkup(<Context.Provider value={{ data: {
+    accounts: [{ id: "account-a", name: "腾讯账号", provider: "tme" }],
+  } } as any}><PublicationTaskEditor initial={initial} plans={plans} busy={false} onSave={() => {}} onClose={() => {}} /></Context.Provider>);
 }

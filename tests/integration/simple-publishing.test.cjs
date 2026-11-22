@@ -67,6 +67,27 @@ const input = (f, targets = ["netease"]) => ({
   targets,
   accountOverrides: {},
 });
+test("platform automation preview checks one target and leaves the library and publishing queue untouched", async () => {
+  const f = setup();
+  try {
+    const account = await configured(f, "douyin");
+    const request = { target: "douyin", accountId: account.id, workId: f.work.id };
+    const settingsBefore = f.s.all("settings");
+    const result = await f.s.call("publish.preview", request);
+    assert.equal(result.title, f.work.title);
+    assert.equal(result.recordingSlot, "audio_A");
+    assert.ok(result.issues.includes("缺少视频"));
+    assert.ok(result.issues.includes("缺少音频"));
+    assert.ok(!result.issues.includes("缺少账号"));
+    await assert.rejects(f.s.call("publish.preview", { ...request, target: "netease" }), /TARGET_ACCOUNT_MISMATCH/);
+    const withoutAccount = await f.s.call("publish.preview", { ...request, accountId: null });
+    assert.ok(withoutAccount.issues.includes("缺少账号"));
+    assert.deepEqual(f.s.all("settings"), settingsBefore);
+    assert.deepEqual(f.s.all("operations"), []);
+  } finally {
+    f.s.close();
+  }
+});
 test("versioned migration is additive, preserves old bytes/schema3 and is idempotent", async () => {
   const f = setup();
   let next;

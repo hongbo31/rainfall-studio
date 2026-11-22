@@ -7,6 +7,7 @@ import { pipeline } from "node:stream/promises";
 import { Repository } from "./database";
 import { assetPath, digest } from "./assets";
 import type { Studio } from "./studio";
+import {publicationRunActive,publicationRunKey,publicationTaskKey} from '../shared/publication-tasks';
 export async function zip(
   destination: string,
   files: { name: string; file?: string; text?: string }[],
@@ -280,6 +281,13 @@ export async function restore(s: Studio, source: string) {
         if (!names.has(rel)) throw Error("ASSET_NOT_IN_MANIFEST");
       }
       candidate.db.prepare("DELETE FROM approvals").run();
+      for (const table of ["lyricJobs", "inspirationJobs"] as const) {
+        for (const job of candidate.all(table)) {
+          if (job.state === "ready" || job.state === "dispatching") {
+            candidate.save(table, { ...job, state: job.state === "ready" ? "stopped" : "unknown", reason: "RESTORED_REQUIRES_REVIEW" });
+          }
+        }
+      }
       for(const row of candidate.all('settings').filter(r=>r.id.startsWith('tme-ai-prepare:grant:')))
         candidate.save('settings',{...row,value:{...row.value,suspended:true,suspensionReason:'RESTORED_REQUIRES_REVIEW'}});
       for(const row of candidate.all('settings').filter(r=>r.id.startsWith('tme-ai-prepare:job:')))
@@ -288,6 +296,14 @@ export async function restore(s: Studio, source: string) {
         candidate.save('settings',{...row,value:{...row.value,enabled:false,authorizationRevision:null}});
       for(const row of candidate.all('settings').filter(r=>r.id.startsWith('plan-center:plan:')))
         candidate.save('settings',{...row,value:{...row.value,enabled:false}});
+      for(const row of candidate.all('settings')){
+        if(row.id.startsWith(publicationTaskKey))candidate.save('settings',{...row,value:{...row.value,enabled:false}});
+        if(row.id.startsWith(publicationRunKey)&&publicationRunActive(row.value.state)){
+          const at=s.now().toISOString(),detail='RESTORED_REQUIRES_REVIEW';
+          candidate.save('settings',{...row,value:{...row.value,state:'stopped',detail,updatedAt:at,
+            logs:[...row.value.logs,{at,state:'stopped',detail}]}});
+        }
+      }
       for(const row of candidate.all('settings').filter(r=>r.id.startsWith('plan-center:run:')))
         if(!['completed','stopped'].includes(row.value.state))candidate.save('settings',{...row,value:{...row.value,stopRequested:true,state:'stopping',reason:'RESTORED_REQUIRES_REVIEW'}});
       for(const row of candidate.all('settings').filter(r=>r.id.startsWith('plan-center:stage:')))

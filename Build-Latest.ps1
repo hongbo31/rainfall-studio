@@ -54,28 +54,21 @@ function Get-BuildArchive($Url, $Sha256, $MirrorUrl) {
 }
 
 $repository = 'https://github.com/hongbo31/rainfall-studio.git'
-$hWorkspace = 'H:\CodexData\Workspace\Rainfall-Studio'
 $pointerFile = Join-Path $env:LOCALAPPDATA 'RainfallStudioLauncher/verified-desktop.json'
 $desktop = if (Test-Path -LiteralPath $pointerFile -PathType Leaf) {
   Get-Content -LiteralPath $pointerFile -Raw | ConvertFrom-Json
 }
-$onH = (Test-Path -LiteralPath $hWorkspace -PathType Container) -or
-  $desktop.packageRoot -like 'H:\CodexData\*'
-if (!$OutputDirectory) {
-  $OutputDirectory = if ($BuildRoot) { Join-Path $BuildRoot 'out' }
-    elseif ($onH) { Join-Path $hWorkspace 'build/out' }
-    else { Join-Path $PSScriptRoot 'out' }
-}
 if (!$BuildRoot) {
-  $BuildRoot = if ($onH) { Join-Path $hWorkspace 'build' }
-    else { Join-Path $env:LOCALAPPDATA 'RainfallStudioBuild' }
+  $BuildRoot = Join-Path (Split-Path $PSScriptRoot -Parent) ((Split-Path $PSScriptRoot -Leaf) + '-build')
 }
-$buildRoot = Get-RainfallAbsolutePath ($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($BuildRoot))
-$output = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)
-$output = Get-RainfallAbsolutePath $output
+$buildRoot = Get-RainfallAbsolutePath ([IO.Path]::GetFullPath($BuildRoot, $PSScriptRoot))
+$output = if ($OutputDirectory) {
+  Get-RainfallAbsolutePath ([IO.Path]::GetFullPath($OutputDirectory, $PSScriptRoot))
+} else {
+  Join-Path $buildRoot 'out'
+}
 foreach ($directory in @($buildRoot, $output)) {
-  if (($onH -and [IO.Path]::GetPathRoot($directory) -ne 'H:\') -or
-      $directory -match '(?i)(^|[\\/])2026-10-15([\\/]|$)') { throw "构建路径不符合本机存储规则：$directory" }
+  if ($directory -match '(?i)(^|[\\/])2026-10-15([\\/]|$)') { throw "构建路径不符合本机存储规则：$directory" }
   foreach ($protected in @($desktop.packageRoot, $desktop.dataRoot, $desktop.backupRoot)) {
     if ($protected -and (Test-RainfallPathOverlap $directory $protected)) { throw "构建路径与正式数据或交付目录重叠：$directory" }
   }
@@ -128,7 +121,7 @@ $verified = $false
 $ownsRun = $false
 $originalPath = $env:Path
 $originalEnvironment = @{}
-foreach ($name in @('TEMP', 'TMP', 'ELECTRON_CACHE', 'ELECTRON_SKIP_BINARY_DOWNLOAD')) {
+foreach ($name in @('TEMP', 'TMP', 'ELECTRON_CACHE', 'ELECTRON_SKIP_BINARY_DOWNLOAD', 'RAINFALL_SMS_APK_DIR')) {
   $originalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 try {
@@ -216,6 +209,11 @@ try {
     [IO.Compression.ZipFile]::ExtractToDirectory($mediaArchive, $scratch)
 
     Write-Host '[4/6] 构建 Windows 免安装版'
+    $env:RAINFALL_SMS_APK_DIR = if ($originalEnvironment['RAINFALL_SMS_APK_DIR']) {
+      [IO.Path]::GetFullPath($originalEnvironment['RAINFALL_SMS_APK_DIR'], $PSScriptRoot)
+    } else {
+      Join-Path $buildRoot 'android-sms'
+    }
     $buildOutput = @(Invoke-BuildCommand $node @('scripts/package-portable.mjs', '--media-tools-dir', (Join-Path $scratch $mediaName)) '打包失败')
     $built = $buildOutput[-1] | ConvertFrom-Json
     $package = Get-RainfallArtifactChild (Join-Path $source 'out') $built.root

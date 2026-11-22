@@ -1,10 +1,31 @@
 import HelpNote from "../components/HelpNote";
-import React from "react";
+import React, { useState } from "react";
 import { useStudio, PageHead, WorkCard, Badge, label } from "../context";
 import { accountSupportsTarget, type PlatformAccount } from "../../shared/platform-accounts";
 import { platformTargets } from "../../shared/platform-config";
 export default function Overview() {
-  const { data, go } = useStudio();
+  const { data, go, call, selected } = useStudio();
+  const [seriesTitle, setSeriesTitle] = useState("");
+  const [seriesStory, setSeriesStory] = useState("");
+  const [savingSeries, setSavingSeries] = useState(false);
+  const [seriesError, setSeriesError] = useState("");
+  const workTitles = new Map<string, string>(data.works.map((work: { id: string; title: string }) => [work.id, work.title]));
+  const seriesWorkIds = (selected ?? []).filter(id => workTitles.has(id));
+  const saveSeries = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (savingSeries || !seriesTitle.trim()) return;
+    setSavingSeries(true);
+    setSeriesError("");
+    try {
+      await call("series.save", { title: seriesTitle.trim(), story: seriesStory, workIds: seriesWorkIds });
+      setSeriesTitle("");
+      setSeriesStory("");
+    } catch (error) {
+      setSeriesError(error instanceof Error ? error.message : "无法保存系列");
+    } finally {
+      setSavingSeries(false);
+    }
+  };
   const r = data.resources;
   const needsPublicationAccount =
     data.mode === "production" &&
@@ -21,17 +42,11 @@ export default function Overview() {
             {needsPublicationAccount && (
               <button className="primary" onClick={() => go("platform-accounts")}>绑定平台账号</button>
             )}
-            {data.works.length ? (
-              <>
-                <button className={createButtonClass} onClick={() => go("chat")}>聊聊新想法</button>
-                <button onClick={() => go("create")}>用本地模板起草</button>
-                <button onClick={() => go("library")}>整理已有作品</button>
-              </>
-            ) : (
-              <>
-                <button className={createButtonClass} onClick={() => go("create")}>创建第一首作品</button>
-                <button onClick={() => go("chat")}>先聊聊想法</button>
-              </>
+            <button className={createButtonClass} onClick={() => go("chat")}>
+              {data.works.length ? "聊聊新想法" : "创建第一首作品"}
+            </button>
+            {data.works.length > 0 && (
+              <button onClick={() => go("chat")}>整理已有作品</button>
             )}
           </div>
         }
@@ -77,13 +92,34 @@ export default function Overview() {
         <div>
           <h2>{data.series[0]?.title || "系列与专辑"}</h2>
           {data.series[0]?.story && <p>{data.series[0].story}</p>}
-          <button onClick={() => go("library")}>管理系列 ↗</button>
         </div>
         <div className="series-art">雨</div>
       </section>
+      <details className="panel">
+        <summary>管理系列</summary>
+        {data.series.map((series: { id: string; title: string; story?: string; workIds: string[] }) => (
+          <div className="row" key={series.id}>
+            <div><b>{series.title}</b>{series.story && <small>{series.story}</small>}
+              <p>{series.workIds.map(id => workTitles.get(id)).filter(Boolean).join(" → ")}</p></div>
+            <Badge>{series.workIds.length} 首</Badge>
+          </div>
+        ))}
+        <form onSubmit={event => void saveSeries(event)}>
+          <div className="form-grid">
+            <label>新系列 / 专辑名<input value={seriesTitle} required onChange={event => setSeriesTitle(event.target.value)} /></label>
+            <label>故事线<input value={seriesStory} onChange={event => setSeriesStory(event.target.value)} /></label>
+          </div>
+          <div className="button-row">
+            <button type="button" onClick={() => go("chat")}>选择作品</button>
+            <span>{seriesWorkIds.length ? seriesWorkIds.map(id => workTitles.get(id)).join(" → ") : "已选 0 首"}</span>
+            <button type="submit" disabled={savingSeries || !seriesTitle.trim()}>按当前选择顺序建立系列</button>
+          </div>
+          {seriesError && <p role="alert">{seriesError}</p>}
+        </form>
+      </details>
       <div className="section-title">
         <h2>最近作品</h2>
-        <button onClick={() => go("library")}>查看全部 →</button>
+        <button onClick={() => go("chat")}>查看全部 →</button>
       </div>
       {data.works.length ? (
         <div className="work-grid">
@@ -92,7 +128,7 @@ export default function Overview() {
           ))}
         </div>
       ) : (
-        <div className="panel empty">暂无作品。可用本地模板新建。</div>
+        <div className="panel empty">暂无作品。</div>
       )}
       <div className="split section-gap">
         <div className="panel">

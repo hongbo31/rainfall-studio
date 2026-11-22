@@ -1,10 +1,9 @@
 // Offline portable candidate using the already-installed Electron runtime. No installer or rebuild/download.
 import fs from 'node:fs';import path from 'node:path';import {execFileSync} from 'node:child_process';import {build} from 'esbuild';
+import { stageRemoteAssistApk } from '../src/main/remote-assist-apk.ts';
 import {createHash} from 'node:crypto';
+if(process.argv.includes('--material-workbench'))throw Error('MATERIAL_WORKBENCH_RETIRED');
 const repo=process.cwd(),commit=execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
-const changedSourceFiles=execFileSync('git',['ls-files','-m','-o','--exclude-standard','-z'],{encoding:'utf8'}).split('\0').filter(Boolean).sort();
-const sourceState={baseCommit:commit,uncommittedChanges:changedSourceFiles.length>0,files:changedSourceFiles.map(name=>({path:name,sha256:fs.existsSync(name)?createHash('sha256').update(fs.readFileSync(name)).digest('hex'):null}))};
-const sourceFingerprint=createHash('sha256').update(JSON.stringify(sourceState)).digest('hex');
 const connectionCheck=process.argv.includes('--connection-check');
 const musicLive=process.argv.includes('--music-live');
 const simplePublish=process.argv.includes('--simple-publish');
@@ -13,20 +12,20 @@ const beijingTmeAi=process.argv.includes('--beijing-tme-ai');
 const deepCopy=process.argv.includes('--deep-copy');
 const dotBridge=process.argv.includes('--dot-bridge');
 const albumService=process.argv.includes('--album-service');
-const materialWorkbench=process.argv.includes('--material-workbench');
 const planCenter=process.argv.includes('--plan-center')||albumService;
 const uiConsistency=process.argv.includes('--ui-consistency')||deepCopy;
 const simplePublishing=process.argv.includes('--simple-publishing')||uiConsistency||dotBridge||planCenter;
 const productionFlow=process.argv.includes('--production-flow')||beijingTmeAi||simplePublishing;
 if([simplePublish,musicLive,connectionCheck,nightly,productionFlow].filter(Boolean).length>1)throw Error('CANDIDATE_SCOPE_CONFLICT');
 const purpose=albumService?'album-service':planCenter?'unified-plan-center':dotBridge?'dot-delivery-bridge':deepCopy?'deep-copy-cleanup':uiConsistency?'ui-consistency':simplePublishing?'simple-publishing':beijingTmeAi?'beijing-tme-ai':productionFlow?'production-flow':nightly?'nightly-workflow':simplePublish?'simple-publish':musicLive?'music-live-once':connectionCheck?'api-connection':'tme-readiness';
-const dest=path.resolve('out',(materialWorkbench?'material-workbench':purpose)+'-'+commit.slice(0,12)+'-'+Date.now());
+const dest=path.resolve('out',purpose+'-'+commit.slice(0,12)+'-'+Date.now());
 if(!dest.startsWith(path.join(repo,'out')+path.sep)||fs.existsSync(dest))throw Error('FRESH_WORKSPACE_OUTPUT_REQUIRED');
 const runtime=path.resolve('node_modules/electron/dist'),app=path.join(dest,'resources','app');
 await fs.promises.cp(runtime,dest,{recursive:true});await fs.promises.mkdir(app,{recursive:true});
 const filter=p=>!p.endsWith('.map')&&!/\.(pdb|obj|ilk|lib|tlog)$/i.test(p);
 await fs.promises.mkdir(path.join(app,'build'),{recursive:true});
 for(const name of ['main.cjs','core.cjs','preload.cjs','tme-uia-host.ps1','tme-ai-uia-host.ps1','uia-grid.ps1','dot-rename-exclusive.ps1','dot-volume-facts.ps1','dot-inbox-host.cjs'])await fs.promises.copyFile(path.join('build',name),path.join(app,'build',name));
+await stageRemoteAssistApk('build', path.join(app, 'build'));
 await fs.promises.cp('build/ui',path.join(app,'build','ui'),{recursive:true,filter});
 await fs.promises.cp('assets',path.join(app,'assets'),{recursive:true});
 const pkg=JSON.parse(fs.readFileSync('package.json','utf8'));fs.writeFileSync(path.join(app,'package.json'),JSON.stringify({...pkg,name:'rainfall-studio-tme-candidate',productName:'Rainfall Studio · 独立联调候选',version:(nightly||productionFlow)?pkg.version:simplePublish?'0.5.3-simple-publish.1':musicLive?'0.5.2-music-live-once.3':connectionCheck?'0.5.1-api-connection.2':'0.5.1-tme-readiness.1',scripts:undefined,devDependencies:undefined,config:undefined},null,2));
@@ -51,7 +50,7 @@ if(simplePublish)fs.writeFileSync(path.join(dest,'README.txt'),'Rainfall Studio 
 if(nightly)fs.writeFileSync(path.join(dest,'README.txt'),'Rainfall Studio '+pkg.version+'\r\n完整便携Windows桌面包，保留整个目录。正常使用原桌面 Rainfall Studio 音乐客户端.lnk，由验证指针显式复用现有数据根；不要从本包默认空库代替原库。\r\n新增DeepSeek逐轮预算文本通道、持久任务与未知冻结、dot人工选入、原单下载重试、腾讯官方页面观察记录。没有内置免费Codex图像API。\r\n真实DeepSeek需用户填写Key和逐轮预算；当前仅离线传输夹具回归，不等于真实模型联调。Codex/Claude适配器未连接。生产定时生成、模型评分和自动投稿未接通。\r\n本曲A已在腾讯AI页面通过资料校验，正式提交等待新三年非独家授权确认；审核中和已上架分别核实。\r\n没有安装新软件、复制凭据、追加收费音乐生成或远端推送。\r\n');
 if(productionFlow)fs.writeFileSync(path.join(dest,'README.txt'),'Rainfall Studio '+pkg.version+' Windows桌面便携包\r\n保留整个目录。验收后使用原桌面 Rainfall Studio 音乐客户端.lnk，由验证指针复用原有数据根；不要用本包默认空库代替现有作品库。\r\n新增持久生产流水线：每日候选、规则或DeepSeek评分、最多两次改写、逐版本确认、作品与原音频导入、待发布任务、真实执行器回执端口。默认停在候选/待发布；应用关闭不运行，历史漏跑不补扣费。\r\nDeepSeek需用户Key及明确文本预算，真实联调未做。谱乐自动收费需验证单次价格上界，当前明确阻塞，可官方生成后导入。腾讯投稿缺唯一身份、AI路由写入契约及新条款授权，真实投稿阻塞；官网观察不作执行回执。\r\n整链路验收使用隔离离线夹具，不代表已真实生成或发布。dot为人工文件交接，封面为Codex辅助导出/导入，无免费图像API声明。\r\n不安装新软件、不复制凭据、不推远端。\r\n');
 if(beijingTmeAi)fs.writeFileSync(path.join(dest,'README.txt'),'Rainfall Studio '+pkg.version+' Windows桌面便携包\r\n使用原桌面 Rainfall Studio 音乐客户端.lnk，由验证指针保留原数据根。完整保留本目录。\r\n日程默认北京时间09:00（Asia/Shanghai，01:00 UTC）；应用关闭时不执行。实际计划迁移及验收见docs/release/beijing-tme-ai-0.7.1.md。\r\n腾讯AI独立准备执行器：现有已批准A、官方绑定信息指纹、当前浏览器窗口、材料核对、本地封面选择与裁剪、专辑本地材料快照、下一步预检和新条款预览。没有接受条款、正式提交或签约动作。绑定指纹不是Tencent UID/OAuth；本地文件哈希不是远端字节验证。\r\n可选官网保存的未知结果保留且不重试；本地专辑材料快照不代表官网保存回执。异常必须核对，禁止通用重复上传。\r\nDeepSeek尚缺用户Key，未进行真实模型调用；本地模板与规则评分明确标注。谱乐本轮未追加收费生成。其他平台正式投稿仍待接入。\r\n不安装软件、不复制凭据、不推送远端。\r\n');
-if(simplePublishing)fs.writeFileSync(path.join(dest,'README.txt'),'Rainfall Studio '+pkg.version+' Windows桌面便携包\r\n使用原桌面 Rainfall Studio 音乐客户端.lnk，保留整个目录。原数据库与素材由验证指针复用。\r\n发布中心：选歌曲、选平台/账号、发布检查。配置中心：各平台默认资料、模型API、艺人与预算、诊断历史。\r\n当前平台自动投稿未接通；本地检查与待条款状态不等于发布完成。本曲三年条款未接受。\r\n原生诊断仅保存本机；无自动上传。没有新增收费、正式提交、安装软件或复制凭据。\r\n');
+if(simplePublishing)fs.writeFileSync(path.join(dest,'README.txt'),'Rainfall Studio '+pkg.version+' Windows桌面便携包\r\n使用原桌面 Rainfall Studio 音乐客户端.lnk，保留整个目录。原数据库与素材由验证指针复用。\r\n在账号管理维护账号与艺人，在配置中心设置模型 API 与下载目录，在发布中心维护发布任务。\r\n发布结果以平台回执为准。签署合同前需本人确认。\r\n');
 if(uiConsistency)fs.writeFileSync(path.join(dest,'README.txt'),'Rainfall Studio '+pkg.version+' Windows便携候选包\r\n全局界面字体、控件尺寸和说明整理。仅完成后台回归与无头界面验证；未启动本包原生客户端、未完成原快捷方式启动/播放/单实例验收。\r\n原桌面入口仍为已验收的0.8.0；本包不会自动启动或修改它。不要将本包默认空candidate-data替代原作品库。\r\n当前用户要求后台开发、不弹窗。待允许原生验收后，仍须按docs/release/desktop-delivery-policy.md备份并显式复用verified-desktop.json中的原dataRoot。\r\n保留整个包目录。未安装软件、创建凭据、付费生成或平台提交，原资料库和条款不变。\r\n');
 if(deepCopy)fs.writeFileSync(path.join(dest,'README.txt'),'Rainfall Studio '+pkg.version+' 文案修复候选\r\n仅后台构建与无头验证，未启动原生窗口。当前桌面仍使用已验收0.8.1，未修改其快捷方式或数据根。\r\n本包移除作品详情下一步教学卡与重复说明；说明改为可键盘访问的帮助或折叠记录，费用/协议实际确认保持。\r\n不得用本包默认空candidate-data代替原库；仅在用户另行允许原生验收且通过后按desktop-delivery-policy.md更新原入口。\r\n完整保留整个目录；未收费生成、接受条款、正式投稿或推送远程Git。\r\n');
 if(dotBridge)fs.writeFileSync(path.join(dest,'README.txt'),'Rainfall Studio '+pkg.version+' 独立便携候选\r\nSource commit: '+commit+'\r\n本轮未启动候选窗口、未覆盖正式安装或快捷方式。请完整保留目录。\r\n独立数据目录: '+data+'\r\n新增可信同步项目 incoming 到私有收件箱的桥接与数据库回执回传；实际路径只存于独立本机配置，不在源代码中猜测盘符。\r\n支持窗口关闭期间的限时无窗口收件验收宿主，不注册开机启动或计划任务；不执行其他业务 tick。\r\n每日 dot 创作由父会话负责，客户端不调用 Work/CLI/DeepSeek 代写；不自动生成音乐或发布。\r\n既有专辑真实写入仍被锁定；已存在的正式记录禁止重复投递。\r\n真实云端创作包尚待验收，格式 fixture 不是作品。本候选尚未完成打包后原生视觉验收。\r\n');
@@ -85,28 +84,6 @@ if(albumService){
  fs.appendFileSync(path.join(dest,'README.txt'),'\r\nAlbum service '+pkg.version+': scoped catalog/bindings, durable create/append operations, explicit confirmation and original-key reconciliation are implemented. Read-only directory observations were checked in one existing logged-in session; write algorithms and multi-page cases were tested with intercepted fixtures. Published and unpublished album directories have guarded full pagination; pending-song references have guarded cursor pagination; production create/result contracts and production append write integration remain uncalibrated. Other platform album adapters are explicitly disabled. See docs/album-service-status.md and docs/dot-drive-protocol.md. No Library save is claimed.\r\n');
  const programFiles=['RainfallStudioCandidate.exe','resources/app/package.json',...['main.cjs','core.cjs','preload.cjs','dot-inbox-host.cjs','dot-rename-exclusive.ps1','dot-volume-facts.ps1','tme-ai-uia-host.ps1','tme-uia-host.ps1','uia-grid.ps1'].map(name=>'resources/app/build/'+name),...fs.readdirSync(path.join(dest,'resources/app/build/ui'),{recursive:true}).filter(name=>fs.statSync(path.join(dest,'resources/app/build/ui',name)).isFile()).map(name=>'resources/app/build/ui/'+name.split(path.sep).join('/'))];
  manifest.integrity=programFiles.sort().map(name=>({path:name,sha256:createHash('sha256').update(fs.readFileSync(path.join(dest,name))).digest('hex')}));
- fs.writeFileSync(path.join(dest,'candidate-manifest.json'),JSON.stringify(manifest,null,2));
-}
-if(materialWorkbench){
- Object.assign(manifest,{sourceState,sourceFingerprint,sourceCommitIsExact:!sourceState.uncommittedChanges});
- fs.cpSync('templates/material-import',path.join(dest,'Material-Import-Template'),{recursive:true});
- if(fs.existsSync('docs/acceptance/2026-10-20-generic-material-import.md'))fs.copyFileSync('docs/acceptance/2026-10-20-generic-material-import.md',path.join(dest,'docs','generic-material-import-acceptance.md'));
- fs.copyFileSync('docs/acceptance/2026-10-20-provider-gates-readonly.md',path.join(dest,'docs','provider-gates-readonly.md'));
- fs.mkdirSync(path.join(app,'scripts'),{recursive:true});
- fs.copyFileSync('scripts/seed-material-electron-acceptance.cjs',path.join(app,'scripts','seed-material-electron-acceptance.cjs'));
- fs.copyFileSync('scripts/material-acceptance-launch.ps1',path.join(dest,'Start-Offline-Material-Acceptance.ps1'));
- if(fs.existsSync('output/publish-material-feedback/comparison.json')){
-  const evidence=path.join(dest,'docs','publication-feedback-comparison');fs.mkdirSync(evidence,{recursive:true});
-  for(const name of ['comparison.json','comparison.md','baseline.tap','candidate.tap','fixed.tap'])fs.copyFileSync(path.join('output/publish-material-feedback',name),path.join(evidence,name));
- }
- Object.assign(manifest,{materialWorkbenchImplemented:true,genericMaterialImportImplemented:true,materialImportFormats:['per-song-folder','rainfall-materials.json','song-map-001-100.json'],materialImportPolicy:'preview-repair-explicit-confirm; explicit root rebind; duplicates require acknowledgment',materialSourcePolicy:'explicit selected directory; read only',materialGenerationSubmitEnabled:false,materialGenerationFeeProof:false,fixtureLifecycleVerified:true,formalPublication:false,realMusicGenerationRequested:false,nativeGuiLaunched:false,installedOrDesktopReplaced:false,accepted:false,acceptancePending:'Native visual acceptance and real provider/official platform integration were not performed. Production material generation remains blocked by absent supplier fee enforcement.'});
- fs.copyFileSync('docs/superpowers/specs/2026-10-20-material-workbench-design.md',path.join(dest,'docs','material-workbench-design.md'));
- fs.copyFileSync('docs/acceptance/2026-10-20-material-workbench.md',path.join(dest,'docs','material-workbench-acceptance.md'));
- fs.writeFileSync(path.join(dest,'candidate-manifest.json'),JSON.stringify(manifest,null,2));
- fs.appendFileSync(path.join(dest,'README.txt'),'\r\nMaterial workbench: explicit read-only source scan, frozen cover and A/B audio lifecycle, existing publication center. Real material generation is blocked because supplier-enforced fee evidence is unavailable. No real API, upload, terms acceptance, official submission, GUI launch, installation or desktop promotion was performed. See docs/material-workbench-acceptance.md.\r\n');
- fs.appendFileSync(path.join(dest,'README.txt'),'\r\nGeneric import: see Material-Import-Template for the ordinary per-song folder template and Chinese instructions. Scanning is preview-only; repair and explicitly confirm before import. Start-Offline-Material-Acceptance.ps1 accepts an ordinary source directory (configured only, no automatic import); the known100-song collection additionally seeds clearly marked fixture audio for offline playback checks. See docs/generic-material-import-acceptance.md and docs/provider-gates-readonly.md.\r\n');
- const materialFiles=['Start-Offline-Material-Acceptance.ps1','resources/app/scripts/seed-material-electron-acceptance.cjs','docs/generic-material-import-acceptance.md','docs/provider-gates-readonly.md',...fs.readdirSync(path.join(dest,'Material-Import-Template'),{recursive:true}).filter(name=>fs.statSync(path.join(dest,'Material-Import-Template',name)).isFile()).map(name=>'Material-Import-Template/'+name.split(path.sep).join('/'))];
- for(const name of materialFiles)manifest.integrity.push({path:name,sha256:createHash('sha256').update(fs.readFileSync(path.join(dest,name))).digest('hex')});
  fs.writeFileSync(path.join(dest,'candidate-manifest.json'),JSON.stringify(manifest,null,2));
 }
 console.log(JSON.stringify(manifest));

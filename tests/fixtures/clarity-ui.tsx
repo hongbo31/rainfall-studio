@@ -3,7 +3,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { Context } from "../../src/renderer/context";
 import Insights from "../../src/renderer/pages/Insights";
 import Overview from "../../src/renderer/pages/Overview";
-import Create from "../../src/renderer/pages/Create";
 export { describeWorkReadiness } from "../../src/renderer/work-readiness";
 export { renderTmeStudio } from "./tme-ui";
 const baseData = {
@@ -20,7 +19,7 @@ const baseData = {
     candidate: { available: 0, spent: 0, reserved: 0 },
   },
 };
-export function renderEntry(page: "overview" | "create") {
+export function renderOverview() {
   return renderToStaticMarkup(
     <Context.Provider
       value={
@@ -32,7 +31,7 @@ export function renderEntry(page: "overview" | "create") {
         } as any
       }
     >
-      {page === "overview" ? <Overview /> : <Create />}
+      <Overview />
     </Context.Provider>,
   );
 }

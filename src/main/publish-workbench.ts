@@ -3,6 +3,7 @@ import path from 'node:path';
 import {randomBytes} from 'node:crypto';
 import {createServer,type IncomingMessage} from 'node:http';
 import {z} from 'zod';
+import {publicationTaskSchemas} from '../shared/publication-tasks';
 
 const requestSchema=z.strictObject({
   channel:z.enum(['call','fanqieCatalog','fanqieUpload']),
@@ -11,7 +12,8 @@ const requestSchema=z.strictObject({
 });
 export type WorkbenchRequest=z.infer<typeof requestSchema>;
 const routes={
-  call:new Set(['snapshot','publish.selection.save','publish.simple','work.selectAudioVersion','publish.reconcile','accountSession.open','publish.qishui.prepare']),
+  call:new Set(['snapshot','publish.selection.save','publish.simple','work.selectAudioVersion','publish.reconcile','accountSession.open','publish.qishui.prepare',
+    ...Object.keys(publicationTaskSchemas)]),
   fanqieCatalog:new Set(['status','open','read']),
   fanqieUpload:new Set(['status','configuration','publishBatch','reconcile','authorizeExisting']),
 };

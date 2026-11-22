@@ -7,12 +7,13 @@ import {hash} from './database';
 import {publicationPayload} from './publication-payload';
 import {resolveFanqieWork} from './fanqie-work';
 import {providerPlanFinal} from './provider-plan-text';
+import {CenterStore} from './plan-center/storage';
 
 const normalized=(value:string)=>cleanLyricText(value).cleaned.normalize('NFKC').replace(/\s+/g,' ').trim();
 const bindingKey=(id:string)=>'plan-assets:binding:'+id;
 const consentKey=(id:string)=>'plan-assets:consent:'+id;
 function scope(s:Studio,itemId:string){
- const rows=s.planCenterService().list(),item=rows.items.find(i=>i.id===itemId),run=rows.runs.find(r=>r.id===item?.runId);
+ const store=new CenterStore(s.repo),item=store.get('item',itemId),run=item&&store.get('run',item.runId);
  if(!item||!run)throw Error('NOT_FOUND');return{item,run};
 }
 function assertCurrent(s:Studio,run:PlanCenterRun,item:PlanCenterItem,workId:string){
@@ -132,7 +133,7 @@ export function syncPlanMaterials(s:Studio,run:PlanCenterRun,item:PlanCenterItem
  const materials={itemId:item.id,title:work.title,lyrics:payload.lyrics.raw,coverAssetId:payload.cover.assetId,audioAssetId:payload.audio.assetId,rightsEvidenceId:consentKey(item.id),consistencyEvidenceId:'lyrics-confirmation:'+hash(JSON.stringify(work.lyricsConfirmation)),selectedVersion:version};
  s.planCenterService().setMaterials(materials);return{ready:true,reasons:[],workId:work.id,materials,payload};
 }
-export function planAssetsCatalog(s:Studio){
- return s.all('works').map(w=>({id:w.id,artistId:w.artistId,title:w.title,revision:w.revision,selectedAudioVariant:w.selectedAudioVariant??'A',versions:(['A','B'] as const).flatMap(version=>{const id=w.assets?.['audio_'+version];if(!id)return[];try{const a=s.get('assets',id);s.locate(id);return[{version,assetId:id,sha256:a.sha256}]}catch{return[]}}),coverAssetId:w.assets?.cover??null}));
+export function planAssetsCatalog(s:Studio,artistId?:string){
+ return s.all('works').filter(w=>artistId===undefined||w.artistId===artistId).map(w=>({id:w.id,artistId:w.artistId,title:w.title,revision:w.revision,selectedAudioVariant:w.selectedAudioVariant??'A',versions:(['A','B'] as const).flatMap(version=>{const id=w.assets?.['audio_'+version];if(!id)return[];try{const a=s.get('assets',id);s.locate(id);return[{version,assetId:id,sha256:a.sha256}]}catch{return[]}}),coverAssetId:w.assets?.cover??null}));
 }
 export function planMaterialPreview(s:Studio,itemId:string){const {item,run}=scope(s,itemId);if(!item.workId)return null;const work=assertCurrent(s,run,item,item.workId);return{...publicationPayload(s,work),workRevision:work.revision,selectedVersion:item.selectedVersion??null,consent:s.repo.maybe('settings',consentKey(item.id))?.value??null};}

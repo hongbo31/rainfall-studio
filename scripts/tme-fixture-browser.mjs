@@ -1,7 +1,8 @@
+import { launchHeadlessChromium } from "./lib/headless-chromium.mjs";
 import {chromium} from 'playwright-core';import fs from 'node:fs';import path from 'node:path';import {pathToFileURL} from 'node:url';import {createHash,randomUUID} from 'node:crypto';import {createRequire} from 'node:module';import assert from 'node:assert/strict';
 const require=createRequire(import.meta.url),{PlaywrightTmePort,TmeCoordinator}=require('../build/tme-browser.cjs');
 const root=path.resolve('output/playwright/tme-fixture-'+randomUUID());fs.mkdirSync(root,{recursive:true});
-const browser=await chromium.launch({executablePath:process.env.TME_TEST_BROWSER||'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',headless:true});
+const browser=await launchHeadlessChromium(chromium, { executablePath: process.env.TME_TEST_BROWSER });
 try{
  const page=await browser.newPage();const external=[];await page.route(/^https?:/,route=>{external.push(route.request().url());return route.abort()});
  await page.goto(pathToFileURL(path.resolve('tests/fixtures/tme-form.html')).href);

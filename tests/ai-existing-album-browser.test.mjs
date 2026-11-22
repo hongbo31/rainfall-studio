@@ -1,3 +1,4 @@
+import { launchHeadlessChromium } from "../scripts/lib/headless-chromium.mjs";
 import test,{before,after} from 'node:test';
 import assert from 'node:assert/strict';
 import {build} from 'esbuild';
@@ -22,7 +23,7 @@ const metadata={title:'Fixture song',albumMode:'existing',albumTitle:'Exact albu
 const lyricsText='These are explicitly synthetic fixture lyrics.';
 const authorization='我已阅读授权书，并确认向腾讯音乐人授权';
 let browser;
-before(async()=>{browser=await chromium.launch({executablePath:process.env.RAINFALL_TEST_CHROME||'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true});});
+before(async()=>{browser=await launchHeadlessChromium(chromium);});
 after(async()=>{await browser?.close();});
 const header=`<div class="mod_top_login"><div class="top_login__links"><span class="name">${identity.artistName}</span></div></div>`;
 const accountHtml=`<button role="tab" aria-selected="false">绑定其他平台账号</button><div class="account-item"><span class="account-item-content-label">QQ音乐</span><span class="account-item-content-value">已绑定个人账号：${identity.qqDisplayName}</span></div><div class="account-item"><span class="account-item-content-label">酷狗音乐</span><span class="account-item-content-value">已绑定酷狗ID：${identity.kugouId}</span><span class="account-item-content-value">已绑定酷狗音乐推ID：${identity.kugouId}（酷狗音乐关联）</span></div>`;

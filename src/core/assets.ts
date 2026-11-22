@@ -4,15 +4,17 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import sharp from "sharp";
 import type { Studio } from "./studio";
-// Fixed, trusted installation locations only: never search PATH or download tools.
+import type { Row } from "./database";
+import { isCoverAssetRole } from "../shared/cover-handoff";
+import { linuxMediaToolPath } from "../shared/host-executable-paths";
+// Packaged tools take precedence. Linux also supports an explicitly configured directory or system binaries.
 export function mediaToolPath(tool: "ffmpeg" | "ffprobe", platform = process.platform,
-  bundledRoot = path.resolve(__dirname, '..', 'tools', 'media'), exists = fs.existsSync) {
+  bundledRoot = path.resolve(__dirname, '..', 'tools', 'media'), exists = fs.existsSync,
+  linuxToolsRoot = process.env.RAINFALL_MEDIA_TOOLS) {
   if (tool !== "ffmpeg" && tool !== "ffprobe") throw Error("MEDIA_TOOL_UNSUPPORTED");
   const bundled = path.join(bundledRoot, platform === 'win32' ? `${tool}.exe` : tool);
-  if (exists(bundled)) return bundled;
-  if (platform === "linux") return `/usr/bin/${tool}`;
-  if (platform === "win32")
-    return `C:\\ffmpeg\\ffmpeg-8.1-essentials_build\\bin\\${tool}.exe`;
+  if (platform === "win32" || exists(bundled)) return bundled;
+  if (platform === "linux") return linuxMediaToolPath(tool, linuxToolsRoot);
   throw Error("MEDIA_TOOL_PLATFORM_UNSUPPORTED");
 }
 export const ffmpeg = mediaToolPath("ffmpeg");
@@ -68,6 +70,12 @@ export function probe(file: string) {
     ),
   );
 }
+export function assertVersionCover(s: Studio, work: Row, role: "cover" | "cover_B", sha256: string) {
+  if (role === "cover_B" && !work.assets?.audio_B) throw Error("COVER_VERSION_AUDIO_REQUIRED");
+  const other = work.assets?.[role === "cover" ? "cover_B" : "cover"];
+  if (other && s.repo.maybe("assets", other)?.sha256 === sha256)
+    throw Error("COVER_VERSION_DUPLICATE_IMAGE");
+}
 export async function importFile(
   s: Studio,
   source: string,
@@ -85,7 +93,7 @@ export async function importFile(
   if (!fs.statSync(real).isFile()) throw Error("FILE_REQUIRED");
   const kind = role.startsWith("audio")
     ? "audio"
-    : role === "cover"
+    : isCoverAssetRole(role)
       ? "image"
       : role === "video"
         ? "video"
@@ -103,8 +111,17 @@ export async function importFile(
   let metadata: any = {},
     ext = "bin",
     mime = "application/octet-stream";
-  if (kind === "image") {
-    metadata = await sharp(real, { limitInputPixels: 100000000 }).metadata();
+  if (role === "certificate" && path.extname(real).toLowerCase() === ".pdf") {
+    const header = Buffer.alloc(5);
+    const fd = fs.openSync(real, "r");
+    try {
+      if (fs.readSync(fd, header, 0, 5, 0) !== 5 || header.toString("ascii") !== "%PDF-")
+        throw Error("CERTIFICATE_FORMAT");
+    } finally { fs.closeSync(fd); }
+    ext = "pdf";
+    mime = "application/pdf";
+  } else if (kind === "image" || role === "certificate") {
+    metadata = await sharp(path.toNamespacedPath(real), { limitInputPixels: 100000000 }).metadata();
     if (!["png", "jpeg", "webp"].includes(metadata.format))
       throw Error("IMAGE_FORMAT");
     ext = metadata.format === "jpeg" ? "jpg" : metadata.format;
@@ -143,6 +160,8 @@ export async function importFile(
   }
   const persist=()=>{
   const sha256 = digest(real);
+  const w = workId ? s.get("works", workId) : null;
+  if (w && isCoverAssetRole(role)) assertVersionCover(s, w, role, sha256);
   let asset = s.all("assets").find((a) => a.sha256 === sha256);
   if (!asset) {
     asset = {
@@ -177,8 +196,8 @@ export async function importFile(
       if (fs.existsSync(stage)) fs.unlinkSync(stage);
     }
   }
-  if (workId) {
-    const w = s.get("works", workId);
+  if (w && workId) {
+    if (isCoverAssetRole(role) && asset.kind !== "image") throw Error("ASSET_ROLE");
     w.assets = { ...w.assets, [role]: asset.id };
     if (role === 'audio_A') w.lyricsConfirmation = null;
     w.assetHistory = [...new Set([...(w.assetHistory || []), asset.id])];
@@ -203,6 +222,29 @@ export function locate(s: Studio, id: string) {
     throw Error("ASSET_MISSING_OR_CORRUPT");
   return { file, mime: a.mime, bytes: a.bytes };
 }
+
+export async function exportManagedAsset(s: Studio, assetId: string, sha256: string, destination: string) {
+  if (!path.isAbsolute(destination)) throw Error("SHARE_DESTINATION_INVALID");
+  const directory = fs.realpathSync.native(path.dirname(destination));
+  const target = path.join(directory, path.basename(destination));
+  const relative = path.relative(fs.realpathSync.native(s.root), target);
+  if (relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative))
+    throw Error("SHARE_DESTINATION_IN_LIBRARY");
+
+  const { file } = s.locate(assetId);
+  const staging = await fs.promises.mkdtemp(path.join(directory, ".rainfall-export-"));
+  const temporary = path.join(staging, "asset");
+  try {
+    await fs.promises.copyFile(file, temporary);
+    if (digest(temporary) !== sha256) throw Error("ASSET_MISSING_OR_CORRUPT");
+    await fs.promises.rename(temporary, target);
+  } finally {
+    await fs.promises.rm(temporary, { force: true });
+    await fs.promises.rmdir(staging);
+  }
+  return target;
+}
+
 export async function prepareVideo(s: Studio, workId: string, recordingSlot: 'audio_A'|'audio_B' = 'audio_A') {
   const w = s.get("works", workId);
   if (!w.assets[recordingSlot] || !w.assets.cover) throw Error("AUDIO_COVER_REQUIRED");
@@ -327,7 +369,7 @@ export async function exportCover(
     )
     .join("");
   const svg = `<svg width="${size}" height="${size}"><rect y="${size * 0.7}" width="${size}" height="${size * 0.3}" fill="#15101a" fill-opacity=".65"/>${text}<text x="${size * 0.08}" y="${size * 0.94}" font-family="Microsoft YaHei" font-size="${artistFont}" fill="#d8c6e4">${escape(artist.name)}</text></svg>`;
-  const bytes = await sharp(a.file)
+  const bytes = await sharp(path.toNamespacedPath(a.file))
     .resize(size, size, { fit: "cover" })
     .composite(options?.noText ? [] : [{ input: Buffer.from(svg) }])
     .png()

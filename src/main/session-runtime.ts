@@ -40,9 +40,10 @@ export class SessionRuntime {
   configure(
     next: { backgroundEnabled: boolean; loginAtStartup: boolean },
     confirmed: boolean,
+    syncLogin = true,
   ) {
     if (!confirmed) throw Error("RUNTIME_CONSENT_REQUIRED");
-    if (next.loginAtStartup !== this.settings.loginAtStartup)
+    if (syncLogin && next.loginAtStartup !== this.settings.loginAtStartup)
       this.effects.login(next.loginAtStartup);
     if (next.backgroundEnabled !== this.settings.backgroundEnabled)
       this.effects.tray(next.backgroundEnabled);

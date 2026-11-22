@@ -1,3 +1,4 @@
+#Requires -Version 7.0
 param([Parameter(Mandatory=$true)][string]$RequestFile)
 $ErrorActionPreference='Stop'
 $r=Get-Content -LiteralPath $RequestFile -Raw -Encoding UTF8 | ConvertFrom-Json

@@ -6,7 +6,7 @@ const {
   reportScopeKey,
   renderInsights,
   describeWorkReadiness,
-  renderEntry,
+  renderOverview,
   renderTmeStudio,
 } = createRequire(import.meta.url)("../build/clarity-ui.cjs");
 const scope = { date: "2026-10-16", platform: "qqmusic", basisConfirmed: true };
@@ -155,17 +155,12 @@ test("unsaved work or stale/failed preview cannot show ready materials", () => {
     assert.equal(result.state, "checking");
   }
 });
-test("entry and template UI names distinguish ideas, local templates and the unified plan center", () => {
-  const home = renderEntry("overview"),
-    create = renderEntry("create");
-  assert(/聊聊新想法|先聊聊想法/.test(home));
+test("empty overview offers creation and plan management", () => {
+  const home = renderOverview();
+  assert(home.includes("创建第一首作品"));
   assert(home.includes("计划中心"));
   assert(home.includes("管理计划与执行历史"));
-  assert(create.includes("用本地模板起草"));
-  assert(create.includes("本地模板"));
-  assert(create.includes("不调用模型"));
-  assert(!create.includes('type="time"'));
-  assert(!create.includes("生成本地歌词与提示词 →"));
+  assert(!home.includes("本地模板"));
 });
 test("Tencent UI states client connection separately from external Chrome control", () => {
   const html = renderTmeStudio();

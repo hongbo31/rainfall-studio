@@ -1,3 +1,4 @@
+import { launchHeadlessChromium } from "../scripts/lib/headless-chromium.mjs";
 import test,{before,after} from 'node:test';
 import assert from 'node:assert/strict';
 import {build} from 'esbuild';
@@ -6,7 +7,7 @@ import {chromium} from 'playwright-core';
 await build({entryPoints:['src/main/tme/official-browser-read.ts'],outfile:'output/album-production-mapping/readback-test.cjs',bundle:true,platform:'node',format:'cjs',packages:'external'});
 const api=createRequire(import.meta.url)('../output/album-production-mapping/readback-test.cjs');
 let browser;
-before(async()=>{browser=await chromium.launch({executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true});});
+before(async()=>{browser=await launchHeadlessChromium(chromium);});
 after(async()=>await browser?.close());
 async function fixture(t){const c=await browser.newContext();t.after(()=>c.close());await c.route('**/*',r=>r.fulfill({contentType:'text/html',body:'<div class="mod_top_login"><div class="top_login__links"><span class="name">Fixture Artist</span></div></div><div class="album-search"><div class="selected"><div class="album"><strong>Exact album</strong></div></div></div><div class="album-search" style="display:none"></div>'}));const p=await c.newPage();await p.goto('https://y.tencentmusic.com/#/user/manage/aiChoose/add');await p.evaluate(()=>{const e=document.querySelector('.album-search');e.__vue__={$el:e,$data:{selected:{id:104,name:'Exact album'}},$props:{mode:'origin',albumInfo:{id:104,name:'Exact album',mode:'exit'}}};});return p;}
 test('reads the visible official selected record and its propagated albumInfo, ignoring hidden twins',async t=>{const p=await fixture(t);assert.equal(typeof api.readOfficialSelectedAlbum,'function');assert.deepEqual(await api.readOfficialSelectedAlbum(p),{albumId:'104',title:'Exact album',artistName:'Fixture Artist',provenance:'official-selected-album-state'});});

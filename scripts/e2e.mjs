@@ -34,13 +34,13 @@ try {
   page.on("request", (r) => {
     if (/^https?:/.test(r.url())) requests.push(r.url());
   });
-  await page.getByRole("heading", { name: "让故事，成为下一首歌。" }).waitFor();
+  await page.getByRole("heading", { name: "总览", exact: true }).waitFor();
   assert.equal(
     await page.evaluate(() => typeof globalThis.require),
     "undefined",
   );
-  assert.equal(await page.locator("nav button").count(), 7);
-  results.push("restricted Electron window / seven navigation items");
+  assert.equal(await page.getByRole("button", { name: "手动模板", exact: true }).count(), 0);
+  results.push("restricted Electron window / retired template absent");
   await page.screenshot({
     path: path.join(
       screenshots,
@@ -48,12 +48,11 @@ try {
     ),
   });
   for (const [nav, heading] of [
-    ["本地模板", "用本地模板起草"],
-    ["作品库", "每一首，都有自己的来处。"],
-    ["封面工作室", "让声音，也拥有画面。"],
-    ["发布中心", "让作品，走向更多人。"],
-    ["数据看板", "把成长，看得更清楚。"],
-    ["账号设置", "管理你的创作身份。"],
+    ["创作中心", "创作中心"],
+    ["封面工作室", "封面工作室"],
+    ["任务中心", "任务中心"],
+    ["数据看板", "数据看板"],
+    ["配置中心", "配置中心"],
   ]) {
     await page.getByRole("button", { name: nav, exact: true }).click();
     await page.getByRole("heading", { name: heading, exact: true }).waitFor();

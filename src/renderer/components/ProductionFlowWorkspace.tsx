@@ -1,6 +1,6 @@
 import HelpNote from "./HelpNote";
 import React, { useEffect, useState } from "react";
-import { useStudio, SelectArtist, Badge, date } from "../context";
+import { useStudio, SelectArtist, Badge, date, localMusicians } from "../context";
 import {
   productionDefaultTimezone,
   productionDefaultLocalTime,
@@ -78,7 +78,7 @@ const labels: Record<string, string> = {
   COVER_REQUIRED: "等待导入并选择封面",
   COVER_MISSING: "等待导入并选择封面",
   LYRICS_AUDIO_MATCH_UNCONFIRMED: "请在作品详情试听并确认歌词与音频一致",
-  RIGHTS_CONFIRMATION: "请在发布中心确认本首歌的权利和署名",
+  RIGHTS_CONFIRMATION: "请核对本首歌的权利和署名",
   PUBLICATION_APPROVAL_REQUIRED: "等待本首歌的账号、录音与协议授权",
   TEXT_BUDGET_INSUFFICIENT: "本轮文本预算不足，尚未发送请求",
   MUSIC_BUDGET_INSUFFICIENT: "本轮音乐额度不足，尚未发送请求",
@@ -102,7 +102,7 @@ export default function ProductionFlowWorkspace() {
     [profiles, setProfiles] = useState<any[]>([]),
     [selected, setSelected] = useState(""),
     [context, setContext] = useState<any>(null);
-  const [artistId, setArtist] = useState(data.artists[0]?.id ?? ""),
+  const [artistId, setArtist] = useState(localMusicians(data)[0]?.id ?? ""),
     [title, setTitle] = useState("每日爱情故事候选"),
     [theme, setTheme] = useState(
       "从相识到熟悉，把日常陪伴写成克制而温暖的中文情歌",
@@ -525,7 +525,7 @@ export default function ProductionFlowWorkspace() {
           </HelpNote>
           <button
             disabled={
-              busy ||
+              busy || !artistId ||
               (textNeeded && (!consent || !profile)) ||
               (musicEnabled && !musicConsent)
             }
@@ -752,7 +752,7 @@ export default function ProductionFlowWorkspace() {
                   打开作品 / 导入素材
                 </button>
                 <button className="secondary" onClick={() => go("publish")}>
-                  查看发布中心
+                  查看任务中心
                 </button>
               </>
             )}
@@ -816,7 +816,7 @@ export default function ProductionFlowWorkspace() {
           <p key={r}>{label(r)}</p>
         ))}
         <p>
-          未取得本首歌的账号、音频与条款授权时不会投稿；其他发行平台及抖音视频接入状态见发布中心。
+          投稿前需确认本首歌的账号、音频和条款授权。其他发行平台和抖音视频的接入状态见平台管理。
         </p>
       </details>
     </section>

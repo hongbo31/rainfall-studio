@@ -1,12 +1,23 @@
 import { build } from "esbuild";
 import { build as viteBuild } from "vite";
 import fs from "node:fs/promises";
-await fs.mkdir("build", { recursive: true });
-await fs.copyFile('src/core/inbox/dot-rename-exclusive.ps1','build/dot-rename-exclusive.ps1');
-await fs.copyFile('src/core/inbox/dot-volume-facts.ps1','build/dot-volume-facts.ps1');
-await fs.copyFile('src/main/tme/uia-host.ps1','build/tme-uia-host.ps1');
-await fs.copyFile('src/main/tme/ai-uia-host.ps1','build/tme-ai-uia-host.ps1');
-await fs.copyFile('src/main/tme/uia-grid.ps1','build/uia-grid.ps1');
+import path from "node:path";
+import { stageRemoteAssistApk } from "../src/main/remote-assist-apk.ts";
+
+const projectRoot = path.resolve(import.meta.dirname, "..");
+const output = path.join(projectRoot, "build");
+await fs.mkdir(output, { recursive: true });
+await stageRemoteAssistApk(path.resolve(projectRoot, process.env.RAINFALL_SMS_APK_DIR ||
+  path.join("..", `${path.basename(projectRoot)}-build`, "android-sms")), output);
+for (const [name, source] of Object.entries({
+  "dot-rename-exclusive.ps1": "src/core/inbox/dot-rename-exclusive.ps1",
+  "dot-volume-facts.ps1": "src/core/inbox/dot-volume-facts.ps1",
+  "tme-uia-host.ps1": "src/main/tme/uia-host.ps1",
+  "tme-ai-uia-host.ps1": "src/main/tme/ai-uia-host.ps1",
+  "uia-grid.ps1": "src/main/tme/uia-grid.ps1",
+})) {
+  await fs.copyFile(path.join(projectRoot, source), path.join(output, name));
+}
 for (const [name, entry] of Object.entries({
   main: "src/main/bootstrap.ts",
   preload: "src/preload/index.ts",
@@ -19,8 +30,9 @@ for (const [name, entry] of Object.entries({
   'tme-browser': 'src/main/tme/index.ts',
 })) {
   await build({
+    absWorkingDir: projectRoot,
     entryPoints: [entry],
-    outfile: `build/${name}.cjs`,
+    outfile: path.join(output, `${name}.cjs`),
     bundle: true,
     platform: "node",
     target: "node24",
@@ -30,9 +42,9 @@ for (const [name, entry] of Object.entries({
   });
 }
 await viteBuild({
-  root: "src/renderer",
+  root: path.join(projectRoot, "src", "renderer"),
   base: "./",
-  build: { outDir: "../../build/ui", emptyOutDir: true },
+  build: { outDir: path.join(output, "ui"), emptyOutDir: true },
   logLevel: "warn",
 });
 console.log("Desktop Main / preload / Core / renderer built");

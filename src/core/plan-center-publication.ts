@@ -19,7 +19,10 @@ export function planPublicationCapabilities(_s:Studio):PlanPublicationCapabiliti
  albumCreate:{available:false,reason:'ALBUM_CREATE_UNAVAILABLE'},
  albumAppend:{available:false,reason:'ALBUM_APPEND_UNAVAILABLE'},
 }}
-export function planPublicationStatus(s:Studio):PlanPublicationLink[]{return s.repo.all('settings').filter(r=>r.id.startsWith(prefix)).map(r=>PlanPublicationLinkSchema.parse(r.value));}
+export function planPublicationStatus(s:Studio,runId?:string):PlanPublicationLink[]{
+ return s.repo.settingsByPrefix(prefix,runId ? {path:'$.value.runId',values:[runId]} : undefined)
+  .map(row=>PlanPublicationLinkSchema.parse(row.value));
+}
 /** Original receipt provenance only. This historical evidence never authorizes another write. */
 export function planPublicationBindingEvidence(s:Studio,link:PlanPublicationLink){
  if(!link.albumBindingId)return null;

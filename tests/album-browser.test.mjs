@@ -1,3 +1,4 @@
+import { launchHeadlessChromium } from "../scripts/lib/headless-chromium.mjs";
 import test,{before,after} from 'node:test';
 import assert from 'node:assert/strict';
 import {build} from 'esbuild';
@@ -19,7 +20,7 @@ const subjectHash=hash({subjectType:'official_visible_binding_fingerprint',...id
 const now='2026-10-19T10:00:00.000Z';
 const contract={version:'offline-album-create-v1',source:'offline-fixture',origin:fixtureOrigin,createUrl,resultUrls:[createUrl,resultUrl],calibratedAt:now,evidenceHash:hash('synthetic album fixture contract'),identityMarkers:[{selector:'#artist',identityKey:'artistName'},{selector:'#subject',identityKey:'subjectHash'}],fields:[{key:'title',selector:'#title',required:true},{key:'description',selector:'#description',required:true},{key:'artistName',selector:'#album-artist',required:true},{key:'idempotencyKey',selector:'#request-key',required:true}],createControl:'#create',result:{container:'.album-result',albumId:{selector:'.remote-id'},title:{selector:'.remote-title'},idempotencyKey:{selector:'.request-key'}}};
 let browser;
-before(async()=>{browser=await chromium.launch({executablePath:process.env.RAINFALL_TEST_CHROME||'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true});});
+before(async()=>{browser=await launchHeadlessChromium(chromium);});
 after(async()=>{await browser?.close();});
 async function fixture(t,{intake=false,duplicate=false,noResult=false,badResult=false,officialRows}={}){
  const context=await browser.newContext({serviceWorkers:'block'});t.after(()=>context.close());

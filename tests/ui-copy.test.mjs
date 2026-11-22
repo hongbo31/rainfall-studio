@@ -23,46 +23,29 @@ test("work details remove the coaching card and preserve concrete audio, import 
   assert(!html.includes('来源说明不替代平台权利核验'));
 });
 
-test("page names are concise while series stories and library controls remain", () => {
+test("page names are concise and the overview keeps series management", () => {
   for (const [page, title] of Object.entries({
     overview: "总览",
-    library: "作品库",
-    create: "本地模板",
     insights: "数据看板",
     cover: "封面工作室",
   })) {
     assert.ok(renderPage(page).includes(`<h1>${title}</h1>`), page);
   }
-  const home = renderPage("overview"),
-    library = renderPage("library");
+  const home = renderPage("overview");
   assert.ok(home.includes("用户写下的系列故事"));
-  assert.ok(library.includes("用户写下的系列故事"));
-  for (const label of [
-    "搜索作品",
-    "筛选艺人",
-    "筛选素材",
-    "按当前选择顺序建立系列",
-    "新建作品",
-    "平台发布状态",
-    "批量发布",
-  ])
-    assert.ok(library.includes(label), label);
+  for (const label of ["管理系列", "按当前选择顺序建立系列", "查看全部"])
+    assert.ok(home.includes(label), label);
   assert.ok(
     !/STORIES THAT BECOME SONGS|EVERY STORY HAS A SOUND|YOUR MUSIC, YOUR STORY/.test(
       home,
     ),
   );
 });
-test("optional format and workflow instructions begin closed and local template limits stay visible", () => {
+test("optional CSV instructions start closed", () => {
   assert.match(
     renderPage("insights"),
     /<details class="panel"><summary>CSV 导入格式<\/summary>/,
   );
-  const create = renderPage("create");
-  assert.match(create, /<details class="panel"><summary>生成平台<\/summary>/);
-  assert.ok(create.includes("本地模板 · 不调用模型"));
-  assert(!create.includes('认真确认，再去发布'));
-  assert(!create.includes('01 / 创作设定'));
   assert.equal((renderPage('insights').match(/请选择统计日期/g)||[]).length,1);
 });
 test("help labels use a native focusable button with tooltip association and Escape dismissal", () => {

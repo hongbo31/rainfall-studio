@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { supportsImageApiModel } from "./api-profiles";
 export const GenerationRoleSchema = z.enum(["text", "image", "music"]);
 export type GenerationRole = z.infer<typeof GenerationRoleSchema>;
 export const RouteSelectionSchema = z
@@ -13,6 +14,26 @@ export const GenerationRoutingSchema = z.strictObject({
   music: RouteSelectionSchema,
 });
 export type GenerationRouting = z.infer<typeof GenerationRoutingSchema>;
+export const CreationTaskDraftSchema = z.strictObject({
+  title: z.string().trim().min(1).max(200),
+  alternateTitle: z.string().trim().min(1).max(200).optional(),
+  separateVersionCovers: z.literal(true).optional(),
+  style: z.string().trim().min(1).max(4000),
+  lyrics: z.string().max(20000),
+  vocalGender: z.enum(["male", "female"]).optional(),
+});
+export const CreationTaskSchema = z.strictObject({
+  requestId: z.uuid(),
+  artistId: z.uuid(),
+  draft: CreationTaskDraftSchema,
+  songType: z.enum(["vocal", "instrumental"]),
+  outputs: z.strictObject({ cover: z.boolean(), music: z.boolean() }),
+  routing: GenerationRoutingSchema.optional(),
+  music: z.discriminatedUnion("consent", [
+    z.strictObject({ consent: z.literal(false) }),
+    z.strictObject({ consent: z.literal(true), profileId: z.uuid(), profileRevision: z.number().int().positive(), modelId: z.string().min(1).max(200) }),
+  ]),
+});
 export const FrozenRouteSchema = z.strictObject({
   role: GenerationRoleSchema,
   source: z.enum(["default", "override"]),
@@ -21,10 +42,12 @@ export const FrozenRouteSchema = z.strictObject({
   providerId: z.string().nullable(),
   channel: z.string(),
   modelId: z.string().nullable(),
+  modelOverride: z.literal(true).optional(),
   credentialRef: z.string().nullable(),
   capability: z.enum([
     "text_api",
     "music_api",
+    "music_browser",
     "image_api",
     "external_import",
     "unavailable",
@@ -38,6 +61,10 @@ export const RouteSnapshotSchema = z.strictObject({
   music: FrozenRouteSchema,
 });
 export type FrozenRoute = z.infer<typeof FrozenRouteSchema>;
+export function frozenRouteModelMatches(route: FrozenRoute, providerId: string, modelId: string | null) {
+  return route.role === "image" && route.modelOverride && route.source === "override" && route.capability === "image_api"
+    ? supportsImageApiModel(providerId, route.modelId) : modelId === route.modelId;
+}
 export type RouteSnapshot = z.infer<typeof RouteSnapshotSchema>;
 export const GenerationConfigSaveSchema = z.strictObject({
   role: GenerationRoleSchema,
@@ -47,39 +74,8 @@ export const GenerationConfigSaveSchema = z.strictObject({
 export const GenerationConfigSchemas: Record<string, z.ZodType> = {
   "generationConfig.read": z.strictObject({}),
   "generationConfig.save": GenerationConfigSaveSchema,
-  "manualCreation.list": z.strictObject({}),
-  "manualCreation.prepare": z.strictObject({
-    requestId: z.uuid(),
-    artistId: z.uuid(),
-    storyBeat: z.string().trim().min(1).max(10000),
-    storyStage: z.string().max(1000).default(""),
-    styleTemplate: z.string().trim().max(4000).optional(),
-    songType: z.enum(["vocal","instrumental"]).optional(),
-    outputs: z.strictObject({
-      lyrics: z.boolean(),
-      cover: z.boolean(),
-      music: z.boolean(),
-    }),
-    routing: GenerationRoutingSchema.optional(),
-    text: z.strictObject({
-      consent: z.boolean(),
-      budgetMicros: z.number().int().positive().max(100000000).optional(),
-      maxOutputTokens: z.number().int().min(256).max(16384).optional(),
-    }),
-    music: z.strictObject({
-      consent: z.boolean(),
-      budgetCredits: z.number().int().positive().optional(),
-      maxCostPerRequestCredits: z.number().int().positive().optional(),
-      pricingEvidence: z.string().max(1000).optional(),
-      profileId: z.uuid().optional(),
-      profileRevision: z.number().int().positive().optional(),
-      modelId: z.string().min(1).max(200).optional(),
-      creditPolicy: z.strictObject({
-        mode: z.literal("uncapped_existing_credits"),
-        noRecharge: z.literal(true),
-        actualCostUnknown: z.literal(true),
-        consent: z.literal(true),
-      }).optional(),
-    }),
-  }),
+  "creationTasks.taskStatus": z.strictObject({}),
+  "creationTasks.checkReceipt": z.strictObject({id:z.uuid()}),
+  "creationTasks.stage": CreationTaskSchema,
+  "creationTasks.start": CreationTaskSchema,
 };

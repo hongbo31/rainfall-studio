@@ -30,6 +30,7 @@ export function createUnifiedPublishBroker(o:Options){
  async function processTask(initial:any,guard:()=>void){
   let task=initial,dispatched=false;
   const update=async(patch:any)=>{guard();task=await rpc('update',{id:task.id,expectedRevision:task.revision,patch});guard()};
+  const checkWorkflow=async()=>{guard();if(task.publicationRunId)await rpc('current',{id:task.id});guard()};
   try{
    guard();
    const barrier=await o.publicationBarrier?.(task);if(barrier){await update({state:'blocked',reason:barrier.reason});return}
@@ -50,12 +51,14 @@ export function createUnifiedPublishBroker(o:Options){
    const assertJob=()=>{if(!job||job.workId!==task.workId||job.grantId!==grant.id)throw Error('PREPARE_WORK_SCOPE')};
    if(!job){
     // Persisted preparing is a recovery barrier even if the process dies before the job ID is linked.
+    await checkWorkflow();
     dispatched=true;
     const started=await o.prepare.ui('start',{grantId:grant.id,expectedRevision:grant.revision,consent:true,...scope});guard();job=started.job;
    }
    assertJob();
    await update({state:'preparing',prepareJobId:job.id,reason:null});
    if(job.state==='ready'){
+    await checkWorkflow();
     dispatched=true;
     const prepared=await o.prepare.ui('run',{id:job.id,expectedRevision:job.revision,consent:true,...scope});guard();job=prepared.job;assertJob();
    }
@@ -63,6 +66,7 @@ export function createUnifiedPublishBroker(o:Options){
     await update({state:'reconcile_required',reason:job.reason??'PREPARATION_REVIEW_REQUIRED'});return;
    }
    // This call only observes/reviews. Terms acceptance and submission stay in their explicit-confirmation workspace.
+   await checkWorkflow();
    const review=await o.submission.ui('preflight',{workId:task.workId,...scope});guard();
    if(review.workId!==task.workId)throw Error('SUBMISSION_WORK_SCOPE');
    await update({state:review.job?'awaiting_confirmation':'reconcile_required',...(review.job?{submissionJobId:review.job.id}:{}),reason:review.reasons?.[0]??'TERMS_CONFIRMATION_REQUIRED'});

@@ -2,12 +2,13 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Context, type StudioContext } from "../../src/renderer/context";
 import ChatCreation from "../../src/renderer/pages/ChatCreation";
+import { emptyCreationEditor } from "../../src/renderer/components/CreationWorkspace";
 import ProductionFlowWorkspace from "../../src/renderer/components/ProductionFlowWorkspace";
 import { defaultsSchema } from "../../src/shared/schemas";
 import type { Mode } from "../../src/shared/contracts";
 
 function workflowContext(mode: Mode): StudioContext {
-  // Match the persisted artist contract consumed by ManualCreation, not just SelectArtist.
+  // Match the persisted artist contract used by the creation editor and scheduler.
   const defaults = defaultsSchema.parse({
     genre: "流行 / 民谣",
     voice: "female",
@@ -56,7 +57,7 @@ export function renderWorkflow(mode: Mode) {
   const value = workflowContext(mode);
   return renderToStaticMarkup(
     <Context.Provider value={value}>
-      <ChatCreation />
+      <ChatCreation draft={emptyCreationEditor} update={() => {}} />
     </Context.Provider>,
   );
 }

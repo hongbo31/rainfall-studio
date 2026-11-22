@@ -3,9 +3,21 @@ import React, { useState, useRef, useEffect } from "react";
 import { useStudio, PageHead, Cover, Badge, date, label } from "../context";
 import {LyricsPublicationPanel} from '../components/LyricsPublicationPanel';
 import HelpHint from '../components/HelpHint';
-export default function Track({ id }: { id: string }) {
-  const { data, call, go, play, importAsset, notify,setSelected } = useStudio();
+import { workRecordingSinger } from "../../shared/local-artist";
+import { workVersionCover, workVersionTitle, type WorkVersionSlot } from "../../shared/work-versions";
+export default function Track({ id, slot }: { id: string; slot?: WorkVersionSlot }) {
+  const { data, call, go, play, importAsset, exportArtifact, notify,setSelected } = useStudio();
   const work = data.works.find((w: any) => w.id === id);
+  const certificateId = work.assets?.certificate;
+  const artist = data.artists.find((row: { id: string }) => row.id === work.artistId);
+  const singerA = workRecordingSinger(work, artist, "A");
+  const singerB = workRecordingSinger(work, artist, "B");
+  const publicationVersion = work.selectedAudioVariant === "B" ? "B" : "A";
+  const audioSlot = slot ?? (publicationVersion === "B" ? "audio_B" : "audio_A");
+  const title = slot ? workVersionTitle(work, slot) : work.title;
+  const coverRole = slot === "audio_B" ? "cover_B" : "cover";
+  const titleField = slot === "audio_B" ? "alternateTitle" : "title";
+  const recordingLyrics = slot ? work.audioVersions?.find((version: { assetId: string }) => version.assetId === work.assets[slot])?.actualLyrics?.text?.trim() : undefined;
   const [form, setForm] = useState({ ...work });
   const expected = useRef(work.revision),
     saved = useRef(JSON.stringify(form)),
@@ -27,6 +39,7 @@ export default function Track({ id }: { id: string }) {
             id,
             expected: expected.current,
             title: value.title,
+            ...(value.alternateTitle !== undefined ? { alternateTitle: value.alternateTitle?.trim() || null } : {}),
             artistId: value.artistId,
             story: value.story,
             lyrics: value.lyrics,
@@ -75,16 +88,16 @@ export default function Track({ id }: { id: string }) {
   const run = data.runs.find(
     (r: any) => r.workId === id && r.state !== "succeeded",
   );
-  const prepare=async()=>{await persist();if(JSON.stringify(latest.current)!==saved.current){notify('当前编辑尚未保存，请先保存再准备发布。');return;}setSelected([id]);go('publish');};
+  const prepare=async()=>{await persist();if(JSON.stringify(latest.current)!==saved.current){notify('当前编辑尚未保存，请先保存再准备发布。');return;}setSelected([id]);go('accounts','diagnostics');};
   return (
     <>
       <PageHead
-        title={work.title}
-        sub={"本地作品 · v" + expected.current + " · " + status}
+        title={title}
+        sub={"作品 · v" + expected.current + " · " + status}
         action={
           <div className="button-row">
-            <Badge>发布版本 A</Badge>
-            <button disabled={!work.assets.audio_A} onClick={()=>play(work,"audio_A")}>试听</button>
+            <Badge>{slot ? `${slot === "audio_B" ? "B" : "A"} 版` : `发布版本 ${publicationVersion}`}</Badge>
+            <button disabled={!work.assets[audioSlot]} onClick={() => play(work, audioSlot)}>试听</button>
             <button
               onClick={async () => {
                 await persist();
@@ -94,18 +107,22 @@ export default function Track({ id }: { id: string }) {
             >
               保存版本
             </button>
-            <button onClick={() => go("cover", id)}>
+            {!slot && <button onClick={() => go("cover", id)}>
               封面工作室 →
-            </button>
-            <button className="primary" onClick={()=>void prepare()}>准备发布材料 →</button>
+            </button>}
+            {!slot && <button className="primary" onClick={()=>void prepare()}>准备发布材料 →</button>}
           </div>
         }
       />
       <div className="detail-grid">
         <div>
-          <Cover work={work} large />
-          <div className="panel" id="track-audio" tabIndex={-1}>
-            <h2>A / B 试听 <HelpHint label="A/B 试听说明">发布使用 A 版。试听 B 版仅用于比较，不会切换发布版本。</HelpHint></h2>
+          <Cover work={work} slot={slot} large />
+          {slot ? <div className="button-row">
+            <button type="button" onClick={() => void importAsset(coverRole, id)}>{workVersionCover(work, slot) ? "更换封面" : "导入封面"}</button>
+            <button type="button" onClick={() => void importAsset(slot, id)}>更换音频</button>
+          </div> : <div className="panel" id="track-audio" tabIndex={-1}>
+            <h2>A / B 试听 <HelpHint label="A/B 试听说明">此处可试听 A、B 两版。发布时使用作品标记的版本。</HelpHint></h2>
+            {singerA && singerB && singerA !== singerB && <p>A 版 · {singerA} / B 版 · {singerB}</p>}
             <div className="button-row">
               <button
                 disabled={!work.assets.audio_A}
@@ -128,6 +145,10 @@ export default function Track({ id }: { id: string }) {
                 导入音频 B
               </button>
             </div>
+            {(work.assets.audio_B || form.alternateTitle) && <label>B 版歌名
+              <input maxLength={200} value={form.alternateTitle ?? ""} placeholder="留空时使用 A 版歌名"
+                onChange={e => setForm({ ...form, alternateTitle: e.target.value })} />
+            </label>}
             <HelpNote label="音频入库说明">导入音频会复制保存到作品库。</HelpNote>
             <label>
               音频 A 版本
@@ -159,7 +180,7 @@ export default function Track({ id }: { id: string }) {
             <Badge>
               {work.assets.audio_A ? "已导入音频" : "等待音频导入"}
             </Badge>
-          </div>
+          </div>}
           {run && (
             <div className="panel">
               <h2>创作任务</h2>
@@ -216,8 +237,12 @@ export default function Track({ id }: { id: string }) {
         <div>
           <div className="panel" id="track-lyrics-edit" tabIndex={-1}>
             <h2>歌词与创作提示</h2>
+            {recordingLyrics && recordingLyrics !== form.lyrics?.trim() && <details open>
+              <summary>本版演唱歌词</summary>
+              <pre className="track-recording-lyrics">{recordingLyrics}</pre>
+            </details>}
             {[
-              ["title", "歌名", 1],
+              [titleField, "歌名", 1],
               ["story", "故事", 3],
               ["lyrics", "歌词", 9],
               ["prompt", "提示词", 4],
@@ -227,7 +252,9 @@ export default function Track({ id }: { id: string }) {
                 {rows === 1 ? (
                   <input
                     aria-label={"编辑" + n}
-                    value={form[String(k)]}
+                    value={form[String(k)] ?? ""}
+                    placeholder={k === "alternateTitle" ? form.title : undefined}
+                    maxLength={k === "alternateTitle" ? 200 : undefined}
                     onChange={(e) => setForm({ ...form, [k]: e.target.value })}
                   />
                 ) : (
@@ -268,9 +295,21 @@ export default function Track({ id }: { id: string }) {
                 <option value="generated">AI 生成</option>
               </select>
             </label>
-            <button onClick={() => importAsset("rights", id)}>
-              导入授权依据附件
-            </button>
+            <div className="button-row">
+              <button type="button" onClick={() => importAsset("rights", id)}>导入授权依据附件</button>
+              <button type="button" onClick={() => importAsset("certificate", id)}>导入原创证书</button>
+              {certificateId && <button type="button" onClick={() => void exportArtifact("workCertificate", {
+                workId: id, assetId: certificateId,
+              })}>下载已导入证书</button>}
+              {work.provider === "yourmusic" && <>
+                <button type="button" onClick={() => {
+                  void window.rainfall.openOfficial("yourmusicWorks").then(result => {
+                    if (!result.ok) notify("无法打开谱乐我的作品，请重试。");
+                  }).catch(() => notify("无法打开谱乐我的作品，请重试。"));
+                }}>谱乐我的作品</button>
+                <HelpHint label="证书领取说明">在谱乐账号核对证书。下载的文件可在这里导入和保存。</HelpHint>
+              </>}
+            </div>
             <HelpNote label="授权记录说明">
               本地记录不替代完整权利核验。正式发布前仍需确认各素材的商用依据及
               AI 标识。
@@ -278,8 +317,8 @@ export default function Track({ id }: { id: string }) {
           </div>
         </div>
       </div>
-      <LyricsPublicationPanel workId={id} beforeAction={async()=>{await persist();if(JSON.stringify(latest.current)!==saved.current)throw Error('请先保存当前编辑内容')}} onChanged={async()=>{const snapshot=await call('snapshot');const current=snapshot.works.find((w:any)=>w.id===id);if(current){expected.current=current.revision;latest.current={...current};saved.current=JSON.stringify(current);setForm({...current});setStatus('已保存')}}}/>
-      <section className="panel">
+      {!slot && <LyricsPublicationPanel workId={id} beforeAction={async()=>{await persist();if(JSON.stringify(latest.current)!==saved.current)throw Error('请先保存当前编辑内容')}} onChanged={async()=>{const snapshot=await call('snapshot');const current=snapshot.works.find((w:any)=>w.id===id);if(current){expected.current=current.revision;latest.current={...current};saved.current=JSON.stringify(current);setForm({...current});setStatus('已保存')}}}/>}
+      {!slot && <section className="panel">
         <h2>歌词与提示词版本对照</h2>
         <div className="compare">
           {[
@@ -303,7 +342,7 @@ export default function Track({ id }: { id: string }) {
             </div>
           ))}
         </div>
-      </section>
+      </section>}
     </>
   );
 }

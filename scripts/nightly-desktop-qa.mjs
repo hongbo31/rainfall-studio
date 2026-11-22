@@ -1,5 +1,6 @@
 // Offline packaged GUI regression. Only an isolated copy of the real library is used.
 import { _electron as electron, expect } from "@playwright/test";
+import { openCreationWork } from "./lib/open-creation-work.mjs";
 import electronPath from "electron";
 import fs from "node:fs";
 import path from "node:path";
@@ -152,8 +153,7 @@ try {
   assert.equal(snapshot.works.length, 1);
   assert.equal(snapshot.assets.length, 4);
   work = snapshot.works[0];
-  await page.getByRole("button", { name: "作品库", exact: true }).click();
-  await page.getByRole("heading", { name: "示例作品A", exact: true }).click();
+  await openCreationWork(page, work.id);
   await page.getByRole("button", { name: "▷ 试听 A", exact: true }).click();
   await expect
     .poll(() => page.locator("audio").evaluate((a) => a.currentTime), {

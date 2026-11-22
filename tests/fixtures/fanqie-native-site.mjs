@@ -5,7 +5,10 @@ const formPath = '/creator/music/finished/ugc/uploadProduct';
 const catalogPath = '/creator/music/finished/ugc';
 export async function installFanqieNativeSite(context, {title, artist, accountId, cover, beforeEvent, countDelay = 0,instrumental=false}) {
   const events = [], requests = [], failures = [];
-  const rows = [{id:'1234567890123456789', title:'已有合成作品'}];
+  const rows = [{id:'1234567890123456789', title:'已有合成作品', status:'处理中'}];
+  const catalogRow = row => `<tr><td><div class="task-title-content-main"><div class="music-ellipsis-text">${row.title}</div></div>
+    <div>原创 · 单曲</div><div class="task-title-content-desc"><div class="music-ellipsis-text">作品 ID ： ${row.id} 复制</div></div></td>
+    <td>${row.status??'待授权'}</td><td>2026-01-01</td><td>-</td><td>查看</td></tr>`;
   await context.exposeBinding('fixtureEvent', async (_source, event) => {
     events.push(event); await beforeEvent?.(event);
     if (event.kind === 'confirm-upload') rows.push({id:'9876543210987654321',title});
@@ -65,7 +68,7 @@ export async function installFanqieNativeSite(context, {title, artist, accountId
     else if(url.pathname === '/creator/music/account/artist') body=`<input aria-label="请输入艺人名"><div class="artist-item"><div class="artist-name">${artist}</div><div>艺人ID：123456789</div></div>`;
     else if(url.pathname === '/creator/music/home') body=`<button id="release">发布作品</button><template><div class="release-info-container">成品发行<button onclick="location.href='${formPath}'">发布作品</button></div></template><script>document.querySelector('#release').onclick=()=>{document.querySelector('#release').remove();document.body.append(document.querySelector('template').content.cloneNode(true));};</script>`;
     else if(url.pathname === formPath) body=`<button id="add">点击添加歌曲</button><template>${form}</template><script>document.querySelector('#add').onclick=()=>{const template=document.querySelector('template');document.body.append(template.content.cloneNode(true));template.remove();document.querySelector('#add').remove();const script=document.createElement('script');script.textContent=${JSON.stringify(formScript.slice(8,-9))};document.body.append(script);};</script>`;
-    else if(url.pathname === catalogPath) body=`<button role="tab" aria-selected="true" id="total">全部·${countDelay?0:rows.length}</button><input placeholder="请输入作品名称"><div role="tabpanel"><table><thead><tr>${['作品信息','作品状态','创建时间','上架时间','操作'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.map(row=>`<tr><td><div>${row.title}</div><div>作品ID：${row.id}</div></td><td>待授权</td><td>2026-01-01</td><td>-</td><td>查看</td></tr>`).join('')}</tbody></table></div><script>setTimeout(()=>document.querySelector('#total').textContent='全部·${rows.length}',${countDelay});</script>`;
+    else if(url.pathname === catalogPath) body=`<button role="tab" aria-selected="true" id="total">全部·${countDelay?0:rows.length}</button><input placeholder="请输入作品名称"><div role="tabpanel"><table><thead><tr>${['作品信息','作品状态','创建时间','上架时间','操作'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.map(catalogRow).join('')}</tbody></table></div><script>setTimeout(()=>document.querySelector('#total').textContent='全部·${rows.length}',${countDelay});</script>`;
     else {failures.push(url.pathname);return route.abort();}
     if(url.pathname==='/creator/music/home')body='<span class="card-title-origin text-18 bold">发布作品</span>'+body.replace('<button id="release">发布作品</button>','<div class="sidebar-menu"><div class="publish-works"><div class="publish-works__title" id="release">发布作品</div></div></div>');
     return route.fulfill({contentType:'text/html; charset=utf-8',body:html(body)});

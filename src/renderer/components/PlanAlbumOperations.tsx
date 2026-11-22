@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { useStudio } from "../context";
+import { useStudioRequest } from "../context";
 import type { PlanCenterRun, PlanCenterItem } from "../../shared/plan-center";
 import type { PlanAlbumOperation } from "../../shared/plan-albums";
 import { hasPlanAlbumAdapter } from "../../shared/plan-albums";
@@ -29,7 +29,7 @@ export default function PlanAlbumOperations({
   busy: boolean;
   act: (fn: () => Promise<any>) => Promise<void>;
 }) {
-  const { call } = useStudio();
+  const call = useStudioRequest();
   const [status, setStatus] = useState<any>(null),
     [targets, setTargets] = useState<Record<string, any>>({}),
     [preview, setPreview] = useState<any>(null),

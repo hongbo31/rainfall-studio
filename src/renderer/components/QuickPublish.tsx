@@ -14,7 +14,7 @@ export default function QuickPublish({onBatch}:{onBatch:(id:string)=>void}) {
     return (scope === 'both' ? ['audio_A','audio_B'] : scope ? [scope] : []).map(slot => ({workId:w.id,slot:slot as RecordingSelection['slot']}));
   });
   const input={workIds:works.map((w:any)=>w.id),targets,recordings,accountOverrides:overrides};
-  const resolved=resolveQuickPublish({mode:data.mode,works:data.works,accounts:data.accounts,bindings:data.bindings},input);
+  const resolved=resolveQuickPublish({mode:data.mode,works:data.works,accounts:data.accounts,bindings:data.bindings,localArtistIds:(data.accountLocalArtists ?? []).map((artist:{id:string})=>artist.id)},input);
   const toggleWork=(id:string)=>{setMessage('');setSelected(selected.includes(id)?selected.filter(x=>x!==id):[...selected,id]);};
   const publish=async()=>{
     if(busy)return;setBusy(true);setMessage('');
@@ -35,7 +35,7 @@ export default function QuickPublish({onBatch}:{onBatch:(id:string)=>void}) {
             <small>{data.artists.find((a:any)=>a.id===w.artistId)?.name || '艺人待确认'} · {w.assets?.audio_A?'音频 A 已有':'缺少音频'}{w.assets?.audio_B?' / B 已有':''} · {w.assets?.cover?'封面已有':'缺少封面'} · {w.lyrics?.trim()?'歌词已有':'缺少歌词'}</small>
             {selected.includes(w.id)&&w.assets?.audio_B&&<label>本次发行录音<select aria-label={w.title+'本次发行录音'} value={scopes[w.id]||''} onChange={e=>{setScopes({...scopes,[w.id]:e.target.value});setMessage('');}}><option value="">请选择 A、B 或两版</option><option value="audio_A">仅 A 版</option><option value="audio_B">仅 B 版</option><option value="both">A、B 两版分别准备</option></select></label>}
           </article>)}
-          {!data.works.length&&<p>作品库暂无音乐。<button onClick={()=>go('creation')}>去创作</button></p>}
+          {!data.works.length&&<p>暂无音乐。<button onClick={()=>go('chat')}>去创作</button></p>}
         </div>
       </div>
       <div>
@@ -49,7 +49,7 @@ export default function QuickPublish({onBatch}:{onBatch:(id:string)=>void}) {
           </div>;
         })}
         <details className="quick-advanced"><summary>高级设置 · 账号与默认资料</summary>
-          <HelpNote label="账号选择说明">唯一有效艺人绑定自动带入。账号登录状态须核实，昵称不能替代账号身份。</HelpNote>
+          <HelpNote label="账号选择说明">只有一个已核实的账号时会自动选中，有多个时请手动选择。</HelpNote>
           {targets.map(target=><label key={target}>{names[target]}账号<select value={overrides[target]||''} onChange={e=>{const next={...overrides};if(e.target.value)next[target]=e.target.value;else delete next[target];setOverrides(next);setMessage('');}}><option value="">自动选择唯一有效账号</option>{(resolved.options[target]||[]).map(o=><option key={o.account.id} value={o.account.id}>{o.account.name} · {label(o.account.authStatus)}</option>)}</select></label>)}
           {works.map((w:any)=><div className="quick-defaults" key={w.id}><b>{w.title}</b><small>曲风 {w.config?.genre||'待填'} · 语言 {w.config?.language||'待填'}</small><small>权益依据：{w.rights||'待确认'}</small><small>作者与协议待核对</small><button onClick={()=>go('track',w.id)}>查看素材与授权依据</button></div>)}
           <button onClick={()=>go('platform-accounts')}>账号管理</button>

@@ -30,7 +30,10 @@ export class ProviderTextService{
  private now(){return new Date(this.options.now?.()??new Date()).toISOString();}
  private save(job:ProviderTextJob){const parsed=ProviderTextJobSchema.parse({...job,updatedAt:this.now()});this.repo.save('settings',{id:providerTextJobKey(job.id),value:parsed});return parsed;}
  private saveOperation(op:ProviderTextOperation){const parsed=ProviderTextOperationSchema.parse({...op,updatedAt:this.now()});this.repo.save('settings',{id:providerTextOperationKey(op.id),value:parsed});return parsed;}
- list():ProviderTextJob[]{return this.repo.all('settings').filter(r=>r.id.startsWith('provider-text:job:')).map(r=>ProviderTextJobSchema.parse(r.value));}
+ list(runId?:string):ProviderTextJob[]{
+  return this.repo.settingsByPrefix('provider-text:job:',runId ? {path:'$.value.runId',values:[runId]} : undefined)
+    .map(row=>ProviderTextJobSchema.parse(row.value));
+ }
  context(id:string):{job:ProviderTextJob;operation:ProviderTextOperation|null;dispatchAllowed:boolean;dispatchReason:string|null}{ProviderTextIdSchema.parse({id});const row=this.repo.maybe('settings',providerTextJobKey(id));if(!row)throw Error('TEXT_JOB_NOT_FOUND');const job=ProviderTextJobSchema.parse(row.value);let dispatchReason:string|null=null;try{this.owner(jobPrepare(job));if(job.state!=='dispatching'||job.stopRequested)dispatchReason='TEXT_DISPATCH_STATE';}catch(e){dispatchReason=e instanceof Error&&/^TEXT_[A-Z_]+$/.test(e.message)?e.message:'TEXT_OWNER_SCOPE';}return{job,operation:job.operationId?this.operation(job.operationId):null,dispatchAllowed:dispatchReason===null,dispatchReason};}
  operation(id:string):ProviderTextOperation{const row=this.repo.maybe('settings',providerTextOperationKey(id));if(!row)throw Error('TEXT_OPERATION_NOT_FOUND');return ProviderTextOperationSchema.parse(row.value);}
  private owner(p:ProviderTextPrepare):{plan:any;run:any;profile:ApiProfile}{

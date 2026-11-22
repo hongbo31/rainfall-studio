@@ -147,14 +147,15 @@ try {
   };
   await page
     .locator("aside nav")
-    .getByRole("button", { name: "作品库", exact: true })
+    .getByRole("button", { name: "创作中心", exact: true })
     .click();
+  await page.getByRole("button", { name: "多选", exact: true }).click();
   await page.getByRole("checkbox", { name: "选择当前筛选的作品", exact: true }).check();
   await page
     .getByRole("button", { name: "批量发布", exact: true })
     .click();
   await page
-    .getByRole("button", { name: "腾讯音乐人上传工作台 →", exact: true })
+    .getByRole("button", { name: "打开逐首资料工具", exact: true })
     .click();
   await page
     .getByLabel("腾讯账号备注", { exact: true })

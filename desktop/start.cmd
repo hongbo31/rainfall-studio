@@ -1,9 +1,8 @@
 @echo off
-cd /d "%~dp0.."
+setlocal
 if "%~1"=="--check" (
- node --check server.mjs
- exit /b %errorlevel%
+    call "%~dp0..\Start-Rainfall-Browser.bat" -BuildOnly
+    exit /b
 )
-echo Rainfall local WEB PROTOTYPE: http://127.0.0.1:4173
-echo Open that address in your browser. Ctrl+C stops this server.
-node server.mjs
+call "%~dp0..\Start-Rainfall-Browser.bat" %*
+exit /b %errorlevel%

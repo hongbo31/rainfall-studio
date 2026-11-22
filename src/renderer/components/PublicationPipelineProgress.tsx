@@ -34,6 +34,7 @@ const actionableReasons: Record<string, string> = {
   CLOUD_PREPARE_CONTRACT_UNVERIFIED: "官网上传步骤尚待校准，材料已保留。",
   CLOUD_BROWSER_SESSION_REQUIRED: "请先连接已登录的腾讯音乐页面。",
   SUBMISSION_ALREADY_DISPATCHED: "已有提交记录，请先核对官方回执。",
+  PUBLICATION_TASK_STOPPED: "关联工作流已停止。",
 };
 export default function PublicationPipelineProgress({
   jobs,
@@ -47,7 +48,7 @@ export default function PublicationPipelineProgress({
   data: any;
   onRefresh: () => Promise<void>;
   onTrack: (workId: string) => void;
-  onConfigure: (target: PlatformTarget) => void;
+  onConfigure: (target: PlatformTarget, accountId?: string) => void;
   onReconcile?: (id: string) => Promise<unknown>;
 }) {
   const [error, setError] = useState("");
@@ -125,11 +126,11 @@ export default function PublicationPipelineProgress({
             <button onClick={() => onTrack(job.workId)}>补齐素材</button>
           )}
           {job.state === "needs_configuration" && (
-            <button onClick={() => onConfigure(job.targets[0])}>
-              配置账号
+            <button onClick={() => onConfigure(job.targets[0], job.accountId)}>
+              管理账号
             </button>
           )}
-          {(job.state === "awaiting_authorization" || (!job.dispatchedAt && job.state === "blocked" && (job.targets ?? []).some((t:string) => ["qqmusic","kugou"].includes(t)) && !["PROTECTED_PUBLISHED_WORK","AI_PREPARATION_NOT_APPLICABLE","OFFICIAL_RECORD_ALREADY_EXISTS","SUBMISSION_DURABLE_BARRIER_UNREADABLE","EXISTING_ALBUM_WRITE_INTEGRATION_UNVERIFIED"].includes(job.reason))) && (
+          {(job.state === "awaiting_authorization" || (!job.dispatchedAt && job.state === "blocked" && (job.targets ?? []).some((t:string) => ["qqmusic","kugou"].includes(t)) && !["PROTECTED_PUBLISHED_WORK","AI_PREPARATION_NOT_APPLICABLE","OFFICIAL_RECORD_ALREADY_EXISTS","SUBMISSION_DURABLE_BARRIER_UNREADABLE","EXISTING_ALBUM_WRITE_INTEGRATION_UNVERIFIED","PUBLICATION_TASK_STOPPED"].includes(job.reason))) && (
             <TmeAiPrepareWorkspace
               compact
               key={`prepare:${job.id}:${job.accountId??'legacy'}:${job.workId}`}

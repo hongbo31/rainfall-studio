@@ -12,8 +12,14 @@ import {projectPlanDotBridgeRequests,planDotBridgeStatus} from './inbox/plan-dot
 type DotStudio=Pick<Studio,'repo'|'now'|'root'|'mode'|'planCenterService'>;
 type Blocker={itemId?:string;candidateId?:string;reason:string};
 const now=(s:DotStudio)=>s.now().toISOString();
-function requests(s:DotStudio):PlanDotRequest[]{return s.repo.all('settings').filter(r=>r.id.startsWith(planDotRequestPrefix)).map(r=>PlanDotRequestSchema.parse(r.request));}
-function associations(s:DotStudio):PlanDotAssociation[]{return s.repo.all('settings').filter(r=>r.id.startsWith(planDotAssociationPrefix)).map(r=>PlanDotAssociationSchema.parse(r.association));}
+function requests(s:DotStudio,runId?:string):PlanDotRequest[]{
+ return s.repo.settingsByPrefix(planDotRequestPrefix,runId ? {path:'$.request.runId',values:[runId]} : undefined)
+  .map(row=>PlanDotRequestSchema.parse(row.request));
+}
+function associations(s:DotStudio,runId?:string):PlanDotAssociation[]{
+ return s.repo.settingsByPrefix(planDotAssociationPrefix,runId ? {path:'$.association.runId',values:[runId]} : undefined)
+  .map(row=>PlanDotAssociationSchema.parse(row.association));
+}
 function saveAssociation(s:DotStudio,a:PlanDotAssociation){s.repo.save('settings',{id:planDotAssociationPrefix+a.requestId,association:PlanDotAssociationSchema.parse(a)});}
 function sameIdentity(c:Row,r:PlanDotRequest){return c.source?.verification==='local_channel'&&c.source.channelId===r.channelId&&c.externalItemId===r.expectedExternalItemId&&c.artistId===r.artistId&&(c.artistRef??c.source.artistRef)===r.artistRef&&(!c.source.workspaceId||c.source.workspaceId===r.workspaceId)&&(!c.source.workspaceRef||c.source.workspaceRef===r.workspaceRef);}
 function matches(c:Row,r:PlanDotRequest){return sameIdentity(c,r)&&c.externalRevision===r.revision;}
@@ -89,7 +95,7 @@ export function syncPlanDot(s:DotStudio){
  return planDotStatus(s);
 }
 /** Safe local snapshots: no credentials, remote paths or live-write claims. */
-export function planDotStatus(s:DotStudio){return {protocolVersion:2 as const,transport:'local-files' as const,requests:requests(s),associations:associations(s),blockers:(s.repo.maybe('settings','plan-dot:status')?.blockers??[]) as Blocker[],bridgeProjection:planDotBridgeStatus(s.repo)};}
+export function planDotStatus(s:DotStudio,runId?:string){return {protocolVersion:2 as const,transport:'local-files' as const,requests:requests(s,runId),associations:associations(s,runId),blockers:(s.repo.maybe('settings','plan-dot:status')?.blockers??[]) as Blocker[],bridgeProjection:planDotBridgeStatus(s.repo)};}
 /** Call after syncPlanDot on the business tick. Only existing active trusted bridge config is used. */
 export function exportPlanDotBridge(s:DotStudio){return projectPlanDotBridgeRequests(s.repo,path.join(s.root,s.mode,'inbox-v1'),s.now());}
 /** Explicit local export. A file bridge can read this file and return an Inbox v2 package. */

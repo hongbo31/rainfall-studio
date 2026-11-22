@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { hasPendingFanqieCleanup } from "../../core/fanqie-download-cleanup";
+import type { FanqieDownloadArchive, FanqieDownloadScope } from "../../core/fanqie-downloads";
 import {
   defaultFanqieAccountId,
   PlatformAccountIdSchema,
@@ -29,9 +31,11 @@ type CatalogOptions = ConstructorParameters<typeof FanqieCatalogSession>[0];
 type UploadOptions = ConstructorParameters<typeof FanqieUploadBroker>[0];
 type AccountSessionOptions = Pick<
   UploadOptions,
-  "root" | "available" | "generation" | "work" | "pickBundle"
+  "root" | "available" | "generation" | "work" | "pickBundle" | "trashDownload" | "openDiagnostics"
 > &
-  Pick<CatalogOptions, "launch" | "account" | "catalog" | "artists">;
+  Pick<CatalogOptions, "launch" | "account" | "catalog" | "artists"> & {
+    downloads?: (accountId: string, scope?: FanqieDownloadScope) => Promise<FanqieDownloadArchive>;
+  };
 
 /** The original browser/profile/config paths remain the default slot. Other slots
  * are isolated before the browser opens and pinned to their first verified UID. */
@@ -40,6 +44,7 @@ export class FanqieAccountSessions {
     string,
     { catalog: FanqieCatalogSession; upload: FanqieUploadBroker }
   >();
+  private cleaning = false;
 
   constructor(private readonly options: AccountSessionOptions) {}
 
@@ -101,7 +106,7 @@ export class FanqieAccountSessions {
     const existing = this.sessions.get(accountId);
     if (existing) return existing;
     const legacy = accountId === defaultFanqieAccountId;
-    const { root } = this.options;
+    const { root, downloads } = this.options;
     const stateDirectory = legacy
       ? path.join(root, "production", "fanqie")
       : scopedDirectory(root, "production", "fanqie", "accounts", accountId);
@@ -118,6 +123,7 @@ export class FanqieAccountSessions {
       ...this.options,
       session: catalog,
       stateDirectory,
+      downloads: downloads ? scope => downloads(accountId, scope) : undefined,
     });
     const session = { catalog, upload };
     this.sessions.set(accountId, session);
@@ -128,5 +134,22 @@ export class FanqieAccountSessions {
     await Promise.allSettled(
       [...this.sessions.values()].map(({ catalog }) => catalog.close()),
     );
+  }
+
+  async pumpDownloadCleanup() {
+    if (this.cleaning || !this.options.available()) return;
+    this.cleaning = true;
+    try {
+      const legacy = scopedDirectory(this.options.root, "production", "fanqie");
+      const accounts = scopedDirectory(legacy, "accounts");
+      const accountIds = fs.existsSync(accounts) ? fs.readdirSync(accounts, { withFileTypes: true })
+        .filter(entry => entry.isDirectory() && PlatformAccountIdSchema.safeParse({ accountId: entry.name }).success)
+        .map(entry => entry.name) : [];
+      await Promise.allSettled([defaultFanqieAccountId, ...accountIds].map(async accountId => {
+        const directory = accountId === defaultFanqieAccountId ? legacy : scopedDirectory(accounts, accountId);
+        if (hasPendingFanqieCleanup(directory))
+          await this.get(accountId).upload.pumpDownloadCleanup();
+      }));
+    } finally { this.cleaning = false; }
   }
 }

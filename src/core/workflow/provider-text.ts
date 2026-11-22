@@ -8,11 +8,17 @@ export class ProviderTextAdapter{
   const input=ProviderTextRequestSchema.parse(raw);
   for(const field of ['providerId','profileId','profileRevision','modelId'] as const)if(this.options[field]!==undefined&&this.options[field]!==input[field])throw Error('TEXT_CREDENTIAL_SCOPE');
   const base:ProviderTextResult={operationId:input.operationId,providerId:input.providerId,requestedModelId:input.modelId,status:'unknown',providerRequestId:null,providerModel:null,finishReason:null,httpStatus:null,usage:null,content:null,reason:'TEXT_OUTCOME_UNKNOWN'};
-  let response;
-  try{this.options.assertActive?.();const credential=await this.options.credential();this.options.assertActive?.();await assertDispatch?.();this.options.assertActive?.();
+  let response,blocked=false;
+  const checkDispatch=async()=>{
+   try{await assertDispatch?.();}catch(error){
+    blocked=error instanceof Error&&error.message==='TEXT_DISPATCH_BLOCKED';
+    throw error;
+   }
+  };
+  try{this.options.assertActive?.();const credential=await this.options.credential();this.options.assertActive?.();await checkDispatch();this.options.assertActive?.();
    if(!credential||/[\r\n]/.test(credential))return{...base,reason:'TEXT_CREDENTIAL_FORMAT'};
-   response=await this.options.request({method:'POST',url:textProviderBaseUrls[input.providerId]+'/chat/completions',headers:{Authorization:'Bearer '+credential,'Content-Type':'application/json',Accept:'application/json'},body:{model:input.modelId,messages:input.messages,thinking:{type:'disabled'},response_format:{type:'json_object'},max_tokens:input.maxOutputTokens,stream:false},assertActive:this.options.assertActive,assertDispatch});
-  }catch{return base;}
+   response=await this.options.request({method:'POST',url:textProviderBaseUrls[input.providerId]+'/chat/completions',headers:{Authorization:'Bearer '+credential,'Content-Type':'application/json',Accept:'application/json'},body:{model:input.modelId,messages:input.messages,thinking:{type:'disabled'},response_format:{type:'json_object'},max_tokens:input.maxOutputTokens,stream:false},assertActive:this.options.assertActive,assertDispatch:checkDispatch});
+  }catch{return blocked?{...base,status:'invalid',reason:'TEXT_DISPATCH_BLOCKED'}:base;}
   const b=response.body,safe=(v:unknown,max:number)=>typeof v==='string'&&v.trim().length>0&&v.length<=max?v:null;
   const metadata={...base,httpStatus:response.status,providerRequestId:safe(b?.id,500),providerModel:safe(b?.model,200),finishReason:safe(b?.choices?.[0]?.finish_reason,100)};
   const prompt=b?.usage?.prompt_tokens,completion=b?.usage?.completion_tokens,cached=input.providerId==='deepseek'?b?.usage?.prompt_cache_hit_tokens:(b?.usage?.prompt_tokens_details?.cached_tokens??0);

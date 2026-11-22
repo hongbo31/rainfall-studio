@@ -140,6 +140,19 @@ button:disabled {
 .api-error {
   color: var(--danger);
 }
+.image-credential-settings {
+  display: grid;
+  gap: 14px;
+  max-width: 540px;
+  margin-top: 16px;
+}
+.image-credential-settings .credential-input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+.image-credential-settings :is(label, p, input, select) { margin-bottom: 0; }
 @media (max-width: 1150px) {
   .api-create {
     grid-template-columns: 1fr 1fr;

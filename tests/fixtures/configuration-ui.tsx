@@ -2,7 +2,6 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Context } from "../../src/renderer/context";
 import ConfigurationCenter from "../../src/renderer/pages/ConfigurationCenter";
-import PlatformConfigurationPanel from "../../src/renderer/components/PlatformConfigurationPanel";
 import PlatformAccounts from "../../src/renderer/pages/PlatformAccounts";
 import PublicationDiagnostics from "../../src/renderer/pages/PublicationDiagnostics";
 const data = {
@@ -10,6 +9,7 @@ const data = {
   works: [],
   artists: [{ id: "artist-a", name: "默认艺人甲" }],
   accounts: [
+    { id: "fanqie", provider: "fanqie", name: "番茄测试账号", authStatus: "local_only" },
     {
       id: "net",
       provider: "netease",
@@ -49,24 +49,17 @@ const value: any = {
   exportArtifact: () => {},
   importAsset: () => {},
 };
-export function renderConfiguration(target = "qqmusic") {
+export function renderConfiguration(initialCategory?: "models" | "inbox") {
   return renderToStaticMarkup(
     <Context.Provider value={value}>
-      <ConfigurationCenter initialTarget={target as any} />
+      <ConfigurationCenter initialCategory={initialCategory} />
     </Context.Provider>,
   );
 }
-export function renderPlatform(target = "qqmusic") {
+export function renderAccountManagement(provider = "tme") {
   return renderToStaticMarkup(
     <Context.Provider value={value}>
-      <PlatformConfigurationPanel target={target as any} />
-    </Context.Provider>,
-  );
-}
-export function renderAccountManagement() {
-  return renderToStaticMarkup(
-    <Context.Provider value={value}>
-      <PlatformAccounts initialProvider="tme" />
+      <PlatformAccounts initialProvider={provider} />
     </Context.Provider>,
   );
 }
@@ -143,7 +136,7 @@ export function configurationCategoryCycle() {
   });
   render();
   const opened = mounted();
-  tab("发布平台");
+  tab("模型 API");
   const left = mounted();
   tab("诊断与历史");
   const returned = mounted();

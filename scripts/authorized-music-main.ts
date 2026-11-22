@@ -9,21 +9,23 @@ import {CredentialVault} from '../src/main/credentials';
 import {nodeHttpsTransport,type MusicAdapter} from '../src/core/workflow/yourmusic';
 import {apiProfileSchema} from '../src/shared/api-profiles';
 import {acquireWorkspaceLease} from '../src/main/session-runtime';
+import {readVerifiedDesktop} from './lib/verified-desktop.mjs';
 const repo=path.resolve(__dirname,'..'),sessionRoot=path.join(repo,'output/new-song-convenience-20261018');
-const installedPointer=JSON.parse(fs.readFileSync('C:/Users/31559/AppData/Local/RainfallStudioLauncher/verified-desktop.json','utf8'));
+const originalRoot=fs.realpathSync(readVerifiedDesktop().dataRoot);
 // Chromium's Windows encryption key is bound to this existing runtime. Reuse the
 // crypto context directly; never copy its Local State or credential ciphertext.
-app.setPath('userData',path.join(installedPointer.dataRoot,'runtime'));app.disableHardwareAcceleration();
+app.setPath('userData',path.join(originalRoot,'runtime'));app.disableHardwareAcceleration();
 const action=process.argv[2];
 const allowed=new Set(['authcheck','stage','status','submit','poll','materialize','native-wav','attach-cover']);
 let studio:Studio|undefined,lease:Awaited<ReturnType<typeof acquireWorkspaceLease>>|undefined;
 function emit(value:unknown){process.stdout.write(JSON.stringify(value,null,2)+'\n')}
+function contains(root:string,target:string){const relative=path.relative(root,target);return relative===''||relative!=='..'&&!relative.startsWith('..'+path.sep)&&!path.isAbsolute(relative);}
 app.whenReady().then(async()=>{
  if(!allowed.has(action))throw Error('ACTION_REJECTED');
  const input=AuthorizedMusicInput.parse(JSON.parse(fs.readFileSync(path.join(sessionRoot,'request.json'),'utf8')));
- const pointer=installedPointer;
- const originalRoot=path.resolve(pointer.dataRoot),dataRoot=path.join(sessionRoot,'candidate-data');
- if(path.resolve(dataRoot)===originalRoot||!originalRoot.includes('rainfall-studio-tme-mvp'))throw Error('ISOLATION_REQUIRED');
+ const candidate=path.join(fs.realpathSync(sessionRoot),'candidate-data');
+ const dataRoot=fs.existsSync(candidate)?fs.realpathSync(candidate):candidate;
+ if(contains(originalRoot,dataRoot)||contains(dataRoot,originalRoot))throw Error('ISOLATION_REQUIRED');
  lease=await acquireWorkspaceLease(dataRoot);
  const loadProfile=async(id:string)=>{
   const db=new Database(path.join(originalRoot,'production/library.sqlite'),{readonly:true,fileMustExist:true});

@@ -1,11 +1,11 @@
 import HelpNote from "./HelpNote";
 import React, { useEffect, useState } from "react";
-import { useStudio, SelectArtist, Badge } from "../context";
+import { useStudio, SelectArtist, Badge, localMusicians } from "../context";
 import { workflowLabel } from "../workflow-labels";
 export default function DailyCandidates() {
   const { data, call, notify } = useStudio();
   const [rows, setRows] = useState<any>({ plans: [], occurrences: [] }),
-    [artistId, setArtist] = useState(data.artists[0]?.id ?? ""),
+    [artistId, setArtist] = useState(localMusicians(data)[0]?.id ?? ""),
     [seriesId, setSeries] = useState(""),
     [time, setTime] = useState(""),
     [zone, setZone] = useState(
@@ -152,7 +152,7 @@ export default function DailyCandidates() {
             </label>
           </div>
         )}
-        <button>保存计划草稿</button>
+        <button disabled={!artistId}>保存计划草稿</button>
       </form>
       {rows.plans.map((p: any) => (
         <article className="panel" key={p.id}>

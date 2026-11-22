@@ -4,18 +4,20 @@ export type RpcResult =
   | { ok: false; error: { code: string; message: string } };
 export interface Bridge {
   fanqieCatalog(action:'open'|'read'|'status'|'syncProfile',input?:unknown):Promise<RpcResult>;
-  fanqieUpload(action:'configuration'|'saveConfiguration'|'publishBatch'|'authorizeExisting'|'publishConfigured'|'publishWork'|'status'|'pick'|'selectWork'|'check'|'prepare'|'upload'|'reconcile'|'recoverOpening',input?:unknown):Promise<RpcResult>;
+  fanqieUpload(action:'configuration'|'saveConfiguration'|'publishBatch'|'authorizeExisting'|'publishConfigured'|'publishWork'|'status'|'pick'|'selectWork'|'check'|'prepare'|'upload'|'reconcile'|'recoverOpening'|'previewDownloads'|'publishDownloads'|'reconcileDownloads'|'downloadStatus'|'openDownloadDiagnostics',input?:unknown):Promise<RpcResult>;
   tmeAiSubmission(action:'preflight'|'status'|'authorizeAndSubmit'|'reconcile',input?:unknown):Promise<RpcResult>;
   tmeAiPrepare(action:'inspect'|'register'|'list'|'context'|'start'|'run'|'reconcile'|'resumePicker'|'resumeCrop'|'connectBrowser'|'browserStatus'|'disconnectBrowser',input?:unknown):Promise<RpcResult>;
   productionFlow(action:'savePlan'|'enable'|'disable'|'trigger'|'list'|'context'|'next'|'approve'|'retry'|'capability'|'useManualAssets',input?:unknown):Promise<RpcResult>;
   liveText(action:'prepare'|'run'|'list'|'context',input?:unknown):Promise<RpcResult>;
   liveMusic(action:'stage'|'submit'|'status'|'import'|'recover'|'retryDownloads',input?:unknown):Promise<RpcResult>;
+  remoteAssistConnection(action: import("./remote-assist").RemoteAssistConnectionAction, input?: unknown): Promise<RpcResult>;
+  remoteAssist(action: import("./remote-assist").RemoteAssistAction, input?: unknown): Promise<RpcResult>;
   tmeLive(action:'inspect'|'run'|'review'|'act'|'cancel'|'sync'|'reconcile',input:unknown):Promise<RpcResult>;
   tmeInspect(input?: unknown): Promise<RpcResult>;
   tmeSaveDraft(input: unknown): Promise<RpcResult>;
   writeApiCredential(input: import("./api-profiles").CredentialInput): Promise<RpcResult>;
   clearApiCredential(input: import("./api-profiles").CredentialIdentity): Promise<RpcResult>;
-  apiCredentialStatus(input: { profileId: string }): Promise<RpcResult>;
+  apiCredentialStatus(input: import("./api-profiles").CredentialStatusInput): Promise<RpcResult>;
   checkApiConnection(input: import("./api-profiles").CredentialIdentity): Promise<RpcResult>;
   call(method: string, input?: unknown): Promise<RpcResult>;
   pickImport(role: string, workId?: string, requestId?:string): Promise<RpcResult>;

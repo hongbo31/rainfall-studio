@@ -1,3 +1,4 @@
+import { launchHeadlessChromium } from "../scripts/lib/headless-chromium.mjs";
 import test,{before,after} from 'node:test';
 import assert from 'node:assert/strict';
 import {build} from 'esbuild';
@@ -17,7 +18,7 @@ test('published count evidence uses its labeled table column and never a coincid
 });
 const publishedPath='/cd-gateway/musician/original/pagePublishAlbum',unpublishedPath='/cd-gateway/musician/original/pageUnPublishAlbum',pendingPath='/openapi/musician/original/cursorUnPublishSong';
 let browser;
-before(async()=>{browser=await chromium.launch({executablePath:process.env.RAINFALL_TEST_CHROME||'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true});});
+before(async()=>{browser=await launchHeadlessChromium(chromium);});
 after(async()=>{await browser?.close();});
 async function fixture(t,options={}){
  const context=await browser.newContext({serviceWorkers:'block'});t.after(()=>context.close());const requests=[];

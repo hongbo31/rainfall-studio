@@ -1,3 +1,4 @@
+import { launchHeadlessChromium } from "../scripts/lib/headless-chromium.mjs";
 import test,{before,after} from 'node:test';
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
@@ -9,7 +10,7 @@ import {fixtureIdentity,fixtureNow,planAlbumBrowserFixture} from './fixtures/pla
 
 const w=createRequire(import.meta.url)(process.env.RAINFALL_PLAN_ALBUM_E2E_BUNDLE??path.resolve('output/album-integration/e2e/integration.cjs'));
 let browser;
-before(async()=>{browser=await chromium.launch({executablePath:process.env.RAINFALL_TEST_CHROME||'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true});});
+before(async()=>{browser=await launchHeadlessChromium(chromium);});
 after(async()=>{await browser?.close();});
 
 async function setup(t,{noResult=false}={}){

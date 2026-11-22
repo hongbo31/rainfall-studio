@@ -1,673 +1,194 @@
-import FanqieCatalogPanel from '../components/FanqieCatalogPanel';
-import QishuiPublisher from '../components/QishuiPublisher';
-import PublicationMusicList from "../components/PublicationMusicList";
-import React, { useEffect, useRef, useState } from "react";
-import { useStudio, PageHead, Badge, names, label } from "../context";
-import HelpHint from "../components/HelpHint";
-import PublicationPipelineProgress from "../components/PublicationPipelineProgress";
-import PublicationMaterialResult from "../components/PublicationMaterialResult";
-import ChoiceButtons from "../components/ChoiceButtons";
-import { accountSupportsTarget } from "../../shared/platform-accounts";
-import type { FanqieAuthorizationResult } from "../../shared/fanqie";
-import { fanqieChoices, defaultFanqieChoice, fanqieScope } from "../fanqie-accounts";
-import {
-  platformTargets,
-  type PlatformTarget,
-  type PublishSelection,
-  type SimplePublicationRequest,
-  type PublicationPendingTerms,
-} from "../../shared/platform-config";
+import React, { useCallback, useRef, useState } from "react";
+import { PageHead, useStudio, useStudioRequest } from "../context";
+import LoadingIndicator from "../components/LoadingIndicator";
+import { useCenterQuery } from "../use-center-query";
+import PublicationTaskEditor, { publicationExecutionLabel } from "../components/PublicationTaskEditor";
+import PublicationTaskProgress from "../components/PublicationTaskProgress";
+import { planExecutionMessage } from "../plan-execution-labels";
+import { publicationRunActive, publicationTaskNeedsPlanConfirmation, type PublicationTask, type PublicationTaskInput,
+  type PublicationTaskList, type PublicationTaskRun } from "../../shared/publication-tasks";
+import "../publication-tasks.css";
 
-const states: Record<string, string> = {
-  needs_configuration: "待配置",
-  needs_materials: "待补材料",
-  awaiting_terms_review: "待条款确认",
-  unavailable: "未接通",
-  ready: "模拟就绪",
+const states = {
+  pending: "待执行", disabled: "已停用", running: "执行中", waiting: "等待计划",
+  action_required: "待处理", completed: "已完成", partial: "部分失败", failed: "失败", stopped: "已停止",
 };
-export default function PublishCenter({browser=false}:{browser?:boolean}={}) {
-  const {
-    data,
-    selected,
-    setSelected,
-    publishSelection,
-    setPublishSelection,
-    flushPublishSelection,
-    call,
-    refresh,
-    go,
-    notify,
-  } = useStudio();
-  const [fallback, setFallback] = useState<PublishSelection>(
-    () =>
-      data.publishSelection ?? {
-        workIds: selected ?? [],
-        targets: [],
-        accountOverrides: {},
-      },
-  );
-  const selection = publishSelection ?? fallback;
-  const [query, setQuery] = useState(""),
-    [queueTaskId, setQueueTaskId] = useState(""),
-    [queueAccountId, setQueueAccountId] = useState(""),
-    [busy, setBusy] = useState(false),
-    [error, setError] = useState(""),
-    [message, setMessage] = useState("");
-  const inFlight = useRef(false);
-  const fanqieAccounts = fanqieChoices(data.accounts ?? []);
-  const fanqieAccountId = selection.accountOverrides.fanqie ?? defaultFanqieChoice(fanqieAccounts, data.platformConfigurations);
-  const fanqieAccountRequired = fanqieAccounts.length > 1 && !fanqieAccountId;
-  const fanqieInput = fanqieScope(fanqieAccountId);
-  const [accountState, setAccountState] = useState<{ accountId: string; value: any }>();
-  const [accountConfig, setAccountConfig] = useState<{ accountId: string; ready: boolean }>();
-  const fanqieState = data.mode==='production' && accountState?.accountId === fanqieAccountId ? accountState.value : null;
-  const fanqieBatch = fanqieState?.batch;
-  const batchAuthorization: FanqieAuthorizationResult[] = fanqieBatch?.authorization ?? [];
-  const pendingSignature = batchAuthorization.filter(record => record.phase === 'awaiting_signature').length;
-  const groupedIds = new Set(batchAuthorization.map(record => record.id));
-  const groupJob = fanqieState?.jobs?.find((job:any) => groupedIds.has(job.officialRecord?.id));
-  const fanqieConfigured = accountConfig?.accountId === fanqieAccountId && accountConfig.ready;
-  const setFanqieState = (value: any) => setAccountState({ accountId: fanqieAccountId, value });
-  const [channelResults,setChannelResults]=useState<string[]>([]);
-  const [channelStatus,setChannelStatus]=useState<Record<string,{text:string;error?:boolean}>>({});
-  useEffect(()=>{
-    let active=true;
-    setAccountState(undefined);
-    setAccountConfig(undefined);
-    setChannelResults([]);
-    if(data.mode==='production'&&!fanqieAccountRequired&&window.rainfall?.fanqieUpload){
-      void window.rainfall.fanqieUpload('status',fanqieInput).then(r=>{if(active&&r.ok)setFanqieState(r.value)}).catch(()=>{});
-      void window.rainfall.fanqieUpload('configuration',fanqieInput).then(r=>{
-        if(active&&r.ok)setAccountConfig({accountId:fanqieAccountId,ready:!!r.value.configuration});
-      }).catch(()=>{});
-    }
-    return()=>{active=false};
-  },[data.mode,fanqieAccountId,fanqieAccountRequired]);
-  const fanqieRunning=channelStatus.fanqie?.text==='正在处理';
-  const [fanqieProgress,setFanqieProgress]=useState('');
-  useEffect(()=>{if(!fanqieRunning)return;let active=true;const timer=setInterval(()=>{void window.rainfall.fanqieCatalog('status',fanqieInput).then(r=>{if(active&&r.ok&&r.value.progress)setFanqieProgress(r.value.progress)}).catch(()=>{});},1200);return()=>{active=false;clearInterval(timer);setFanqieProgress('');};},[fanqieRunning,data.mode,fanqieAccountId]);
-  const [currentResult, setCurrentResult] = useState<{
-    requests: SimplePublicationRequest[];
-    reused: boolean;
-    pipeline?: any[];
-  } | null>(null);
-  const resultRef = useRef<HTMLElement>(null);
-  const currentScope = JSON.stringify({ mode: data.mode, selection });
-  const scopeRef = useRef(currentScope);
-  scopeRef.current = currentScope;
-  const showFanqieBatch = (value:any) => {
-    setFanqieState(value);
-    const records = new Map<string, FanqieAuthorizationResult>(
-      (value.batch?.authorization ?? []).map((record:FanqieAuthorizationResult) => [record.id, record]),
-    );
-    setChannelResults((value.batch?.items ?? []).filter((item:any) => item.state === 'complete').map((item:any) => {
-      const outcome = item.result?.result;
-      const title = data.works.find((work:any) => work.id === item.workId)?.title ?? '作品';
-      const status = records.get(outcome?.officialRecord?.id)?.status ?? item.result?.authorization?.[0]?.status ??
-        (outcome?.uploaded ? outcome.officialRecord.officialStatus : '官网已有同名作品，已跳过上传');
-      return title + ' · 番茄音乐 · ' + status;
-    }));
+const reasons: Record<string, string> = {
+  PUBLICATION_TASK_ACTIVE: "任务正在执行，请先停止。",
+  PUBLICATION_TASK_DISABLED: "请先启用任务。",
+  PUBLICATION_PLAN_UNAVAILABLE: "有关联计划不可用，请编辑任务。",
+  PUBLICATION_PLAN_RUN_MISSING: "找不到关联计划的执行记录。",
+  PUBLICATION_PLAN_CHANGED: "计划配置已修改，请在计划中心核对。",
+  PUBLICATION_PLAN_BUSY: "关联计划正在停止，或正在按其他配置执行。",
+  PUBLICATION_PLAN_SCHEDULE_SKIPPED: "计划已有未结束的执行，本次定时已跳过。",
+  PUBLICATION_PLAN_CONFIRMATION_REQUIRED: "请编辑任务并确认关联计划的发布步骤。",
+  PUBLICATION_PLAN_WORK_MISSING: "关联计划执行完成，但缺少可发布的作品。",
+  PUBLICATION_ACCOUNT_REQUIRED: "缺少所选平台的发布账号。",
+  PUBLICATION_QUEUE_RECORD_MISSING: "找不到已登记的上传记录。",
+  PUBLICATION_TASK_STEP_FAILED: "当前工作流步骤执行失败。",
+  REVISION_CONFLICT: "任务已更新，请刷新后重试。",
+  PRODUCTION_REQUIRED: "请在真实本地库中维护发布任务。",
+  RESTORED_REQUIRES_REVIEW: "从备份恢复后暂停执行，请核对任务。",
+  FANQIE_CONFIGURATION_CHANGED: "番茄配置有变，请重新核对账号。",
+  FANQIE_RECONCILIATION_REQUIRED: "请核对番茄官网的原投稿记录。",
+};
+const localStamp = (at: string) => new Date(at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
+const details = (value: string) => value.split(" · ").map(part => reasons[part] ?? planExecutionMessage(part)).join(" · ");
+const errorMessage = (error: unknown, fallback: string) => {
+  if (!(error instanceof Error)) return fallback;
+  const code = (error as Error & { code?: string }).code;
+  return code && reasons[code] ? reasons[code] : details(error.message);
+};
+
+export default function PublishCenter({ browser = false }: { browser?: boolean } = {}) {
+  const { data, go } = useStudio();
+  const call = useStudioRequest();
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState("");
+  const [editor, setEditor] = useState<{ task?: PublicationTask }>();
+  const [deleting, setDeleting] = useState<PublicationTask>();
+  const [recordId, setRecordId] = useState("");
+  const [expandedTaskId, setExpandedTaskId] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const acting = useRef(false);
+  const production = data.mode === "production";
+  const readDashboard = useCallback((): Promise<PublicationTaskList> => call("publicationTasks.list",
+    expandedTaskId ? { expandedTaskId } : {}), [call, expandedTaskId]);
+  const readHistory = useCallback((): Promise<PublicationTaskRun[]> => call("publicationTasks.history", { id: recordId }), [call, recordId]);
+  const dashboardQuery = useCenterQuery(readDashboard, { key: data.mode });
+  const historyQuery = useCenterQuery(recordId ? readHistory : null);
+  const dashboard = dashboardQuery.value, history = historyQuery.value;
+
+  const act = async (operation: () => Promise<unknown>) => {
+    if (acting.current) return;
+    acting.current = true; setBusy(true); setError("");
+    try { await operation(); await dashboardQuery.refresh(); }
+    catch (e) { setError(errorMessage(e, "任务操作失败")); }
+    finally { acting.current = false; setBusy(false); }
   };
-  const continueFanqie = async (jobId?:string) => {
-    if (inFlight.current) return;
-    const submittedScope = currentScope;
-    inFlight.current = true;
-    setBusy(true);
-    setError('');
-    setMessage('');
-    try {
-      if (jobId) {
-        const opened = await window.rainfall.fanqieCatalog('open', fanqieInput);
-        if (!opened.ok) throw Error(opened.error.message);
-      }
-      const response = jobId
-        ? await window.rainfall.fanqieUpload('reconcile', {...fanqieInput, id:jobId})
-        : await window.rainfall.fanqieUpload('publishBatch', {
-          ...fanqieInput, items:fanqieBatch.items.map(({workId,variant}:any) => ({workId,variant})), resume:true,
-        });
-      if (!response.ok) throw Error(response.error.message);
-      if (scopeRef.current !== submittedScope) return;
-      showFanqieBatch(response.value);
-      if (!jobId && response.value.batch?.state === 'paused')
-        setError(response.value.batchError ?? '本批已暂停，请核对官网状态。');
-    } catch (e) {
-      if (scopeRef.current === submittedScope) setError(e instanceof Error ? e.message : '番茄处理未完成');
-    } finally {
-      inFlight.current = false;
-      setBusy(false);
-      setMessage('');
-    }
-  };
-  useEffect(() => {
-    if (currentResult) {
-      resultRef.current?.focus({ preventScroll: true });
-      resultRef.current?.scrollIntoView({ block: "nearest", behavior: "auto" });
-    }
-  }, [currentResult]);
-  useEffect(() => {
-    setQueueTaskId("");
-    setQueueAccountId("");
-    setCurrentResult(null);
-    setChannelStatus({});
-    setError("");
-    setMessage("");
-  }, [data.mode]);
-  const configurations = data.platformConfigurations ?? [];
-  const save = (next: PublishSelection) => {
-    setFallback(next);
-    setError("");
-    setMessage("");
-    setCurrentResult(null);
-    setChannelStatus({});
-    if (setPublishSelection) return setPublishSelection(next);
-    setSelected?.(next.workIds);
-    return call("publish.selection.save", next);
-  };
-  const change = (next: PublishSelection) => {
-    void save(next).catch((e: Error) => setError(e.message));
-  };
-  const configure = async (target: PlatformTarget) => {
-    try {
-      await flushPublishSelection?.();
-      go("accounts", target, target === "fanqie" ? fanqieAccountId : undefined);
-    } catch (e: any) {
-      setError(e.message);
-    }
-  };
-  const openBrowser = async () => {
-    try {
-      const result=await window.rainfall.openOfficial('publishWorkbench');
-      if(!result.ok)throw Error(result.error.message);
-    } catch(e){notify(e instanceof Error?e.message:'浏览器发布台未打开');}
-  };
-  const publish = async () => {
-    if (inFlight.current) return;
-    inFlight.current = true;
-    setBusy(true);
-    setError("");
-    setMessage("");
-    setCurrentResult(null);
-    setChannelResults([]);
-    const submittedScope = currentScope;
-    try {
-      await save(selection);
-      const prepared: SimplePublicationRequest[]=[];
-      let reused=true;
-      let pipeline:any[]=[];
-      const showResults=(result:{requests?:SimplePublicationRequest[];reused:boolean;pipeline?:any[]})=>{
-        prepared.push(...(result.requests??[]));
-        reused=reused&&result.reused;
-        if(result.pipeline) pipeline.push(...result.pipeline);
-        if(scopeRef.current===submittedScope)setCurrentResult({requests:[...prepared],reused,pipeline});
-      };
-      const update=(channel:string,text:string,error=false)=>{
-        if(scopeRef.current===submittedScope)setChannelStatus(previous=>({...previous,[channel]:{text,error}}));
-      };
-      const run=async(channel:string,dispatch:()=>Promise<string>)=>{
-        update(channel,'正在处理');
-        try{update(channel,await dispatch());}
-        catch(e){update(channel,e instanceof Error?e.message:'请重试',true);}
-      };
-      const channels:Promise<void>[]=[];
-      if(selection.targets.includes('fanqie'))channels.push(run('fanqie',async()=>{
-        if(data.mode!=='production')throw Error('番茄音乐暂不提供模拟发布');
-        if(fanqieAccountRequired)throw Error('请选择番茄发布账号');
-        const config=await window.rainfall.fanqieUpload('configuration',fanqieInput);
-        if(!config.ok)throw Error(config.error.message);
-        if(!config.value.configuration)throw Error('请先在配置中心保存番茄音乐设置');
-        const items=selection.workIds.map(workId=>{const work=data.works.find((w:any)=>w.id===workId);if(!work)throw Error('作品已变化，请重新选择');return {workId,variant:work.selectedAudioVariant==='B'?'B':'A'};});
-        const uploaded=await window.rainfall.fanqieUpload('publishBatch',{...fanqieInput,items});
-        if(!uploaded.ok)throw Error(uploaded.error.message);
-        if(scopeRef.current===submittedScope)showFanqieBatch(uploaded.value);
-        if(uploaded.value.batch.state!=='complete')throw Error(uploaded.value.batchError??'本批已暂停，请核对官网状态。');
-        return '批次已处理';
-      }));
-      if(selection.targets.includes('qishui')&&data.mode==='production')channels.push(run('qishui',async()=>{
-        const accountId=selection.accountOverrides.qishui??configurations.find((item:any)=>item.target==='qishui')?.accountId;
-        if(!accountId)throw Error('请选择汽水音乐发布账号');
-        const result=await call('publish.qishui.prepare',{accountId,workIds:selection.workIds});
-        showResults(result);
-        if(result.session.qishuiState==='login_required')return '材料已检查 · 请在专属窗口登录';
-        if(result.session.qishuiState==='release_page')return '材料已检查 · 已进入发布后台';
-        if(result.session.qishuiState==='release_form')return '材料已检查 · 已打开全曲发布表单';
-        return '材料已检查 · 请核对专属窗口';
-      }));
-      const otherTargets=selection.targets.filter(t=>t!=='fanqie'&&(t!=='qishui'||data.mode==='simulation'));
-      if(otherTargets.length)channels.push(run('other',async()=>{
-        const result = await call("publish.simple", {...selection,targets:otherTargets});
-        showResults(result);
-        return result.pipeline?.length?"发布任务已更新":result.reused?"已重新核验":"已整理发布材料";
-      }));
-      await Promise.all(channels);
-    } catch (e: any) {
-      if (scopeRef.current === submittedScope)
-        setError(
-          "发布未完成：" + (e instanceof Error ? e.message : "请重试"),
-        );
-    } finally {
-      inFlight.current = false;
-      setBusy(false);
-    }
-  };
-  const allRequests: SimplePublicationRequest[] =
-    data.publicationRequests ?? [];
-  const inlineRequests =
-    currentResult?.requests.map(
-      (request) =>
-        allRequests.find((latest) => latest.id === request.id) ?? {
-          ...request,
-          stale: true,
-        },
-    ) ?? [];
-  const inlineStale = inlineRequests.some((request) => request.stale);
-  const requests = allRequests
-    .filter(
-      (request, index) =>
-        !allRequests
-          .slice(index + 1)
-          .some(
-            (other) =>
-              other.workId === request.workId &&
-              other.target === request.target,
-          ),
-    )
-    .reverse();
-  const termCards = new Map<
-    string,
-    { id: string; title: string; platformLabel: string; termsText: string }
-  >();
-  for (const term of (data.publicationPendingTerms ??
-    []) as PublicationPendingTerms[])
-    termCards.set(term.id, term);
-  for (const request of requests) {
-    const terms = request.materialSnapshot?.terms;
-    if (terms && !termCards.has(terms.jobId))
-      termCards.set(terms.jobId, {
-        id: terms.jobId,
-        title: request.title,
-        platformLabel: names[request.target],
-        termsText: terms.termsText,
-      });
-  }
-  const pendingTerms = [...termCards.values()];
-  const pipelineJobs = new Map<string, any>();
-  for (const job of currentResult?.pipeline ?? [])
-    pipelineJobs.set(job.id, job);
-  for (const job of data.publicationPipelineJobs ?? [])
-    pipelineJobs.set(job.id, job);
-  const queuedJobs = [...pipelineJobs.values()];
-  const pipeline = queuedJobs.filter(
-    (job: any) =>
-      (!queueTaskId || job.id === queueTaskId) &&
-      (!queueAccountId || job.accountId === queueAccountId),
-  );
-  const activePipeline = queuedJobs.some((job: any) =>
-    ["queued", "preparing", "awaiting_authorization"].includes(job.state),
-  );
-  const refreshRef = useRef(refresh);
-  refreshRef.current = refresh;
-  useEffect(() => {
-    if (!activePipeline) return;
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      try {
-        await refreshRef.current?.();
-      } catch {
-        /* Keep the persisted progress visible; never replay publication. */
-      }
-      if (!stopped) timer = setTimeout(poll, 1500);
-    };
-    timer = setTimeout(poll, 1500);
-    return () => {
-      stopped = true;
-      clearTimeout(timer);
-    };
-  }, [activePipeline]);
-  return (
-    <div className="simple-publishing">
-      <PageHead title="发布中心" action={!browser&&data.mode==='production'?<button disabled={busy} onClick={()=>void openBrowser()}>在浏览器打开</button>:undefined}/>
-      {!browser&&data.mode==='production'&&<QishuiPublisher/>}
-      <section className="panel publish-choices" aria-label="选择歌曲和平台">
-        <fieldset
-          className="simple-publish-grid publish-selection-fields"
-          disabled={busy}
-        >
-          <div className="song-choice">
-            <div className="section-title">
-              <h2>1 · 选择歌曲</h2>
-              <Badge>{selection.workIds.length} 首已选</Badge>
-            </div>
-            <label>
-              搜索歌曲
-              <input
-                type="search"
-                aria-label="搜索歌曲"
-                placeholder="输入歌名"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-              />
-            </label>
-            <PublicationMusicList
-              selection={selection}
-              onChange={change}
-              query={query}
-              busy={busy}
-              onVersionBusy={setBusy}
-              browser={browser}
-            />
-          </div>
-          <div className="target-choice">
-            <h2>2 · 选择平台</h2>
-            <div className="simple-target-list">
-              {platformTargets.map((target) => {
-                const config = configurations.find(
-                  (item: any) => item.target === target,
-                );
-                const accounts = data.accounts.filter(
-                  (account: any) => accountSupportsTarget(account.provider, target),
-                );
-                const chosen = selection.targets.includes(target);
-                const accountId =
-                  target === "fanqie" ? fanqieAccountId : selection.accountOverrides[target] ?? config?.accountId ?? "";
-                return (
-                  <article
-                    className={"simple-target" + (chosen ? " is-selected" : "")}
-                    key={target}
-                  >
-                    <div className="simple-target-heading">
-                      <label className="inline-check">
-                        <input
-                          type="checkbox"
-                          aria-label={"发布到 " + names[target]}
-                          checked={chosen}
-                          disabled={
-                            busy||(target==='fanqie'?data.mode!=='production':data.mode !== "simulation" &&
-                            !["qqmusic", "kugou", "qishui"].includes(target))
-                          }
-                          onChange={() =>
-                            change({
-                              ...selection,
-                              targets: chosen
-                                ? selection.targets.filter(
-                                    (item) => item !== target,
-                                  )
-                                : [...selection.targets, target],
-                            })
-                          }
-                        />
-                        <b>{names[target]}</b>
-                      </label>
-                      <HelpHint label="平台说明">
-                        {target === "douyin"
-                          ? "使用作品已有视频。"
-                          : "使用所选音频版本、已选封面和已有歌词。"}
-                        {target==='fanqie'?'同一账号的待授权作品合并到一份合同。':'正式提交前需逐首确认当前条款。'}
-                      </HelpHint>
-                    </div>
-                    <div className="simple-target-meta">
-                      <span>
-                        {target==='fanqie'?(fanqieConfigured?'已配置 · 自动上传':'待配置'):data.mode === "simulation"
-                          ? "模拟"
-                          : ["qqmusic", "kugou"].includes(target)
-                            ? "腾讯 AI 投稿"
-                            : target==='qishui'?'材料预检 · 官网接续':"未接通"}
-                      </span>
-                      <button
-                        className="text-button"
-                        onClick={() => void configure(target)}
-                      >
-                        {"配置 " + names[target]}
-                      </button>
-                    </div>
-                    {chosen && (target!=='fanqie'||accounts.length>0) &&
-                      (accounts.length ? (
-                        <div className="target-account">
-                          <ChoiceButtons label={names[target] + "发布账号"}
-                            choices={[
-                              ...(target==='fanqie'?[]:[{value:"",label:"用平台默认账号"}]),
-                              ...accounts.map((account:any)=>({value:account.id,label:account.name})),
-                            ]}
-                            value={accountId}
-                            disabled={busy}
-                            onChange={value => {
-                              const accountOverrides = { ...selection.accountOverrides };
-                              if (value) accountOverrides[target] = value;
-                              else delete accountOverrides[target];
-                              change({ ...selection, accountOverrides });
-                            }}
-                          />
-                        </div>
-                      ) : (
-                        <small className="configuration-missing">
-                          缺少账号
-                        </small>
-                      ))}
-                  </article>
-                );
-              })}
-            </div>
-          </div>
-        </fieldset>
-        <div className="simple-publish-action">
-          <h2>3 · 发布</h2>
-          <button
-            className="primary"
-            aria-label="发布所选作品"
-            disabled={
-              busy ||
-              !selection.workIds.length ||
-              !selection.targets.length ||
-              (fanqieAccountRequired && selection.targets.includes("fanqie")) ||
-              (data.mode !== "simulation" &&
-                selection.targets.some(
-                  (target) => !["fanqie", "qqmusic", "kugou", "qishui"].includes(target),
-                ))
-            }
-            onClick={() => void publish()}
-          >
-            {busy
-              ? "正在发布…"
-              : error
-                ? "重新发布"
-                : data.mode === "simulation"
-                  ? "发布（模拟）"
-                  : "发布"}
-          </button>
-          <HelpHint label="发布说明">
-            检查材料并准备投稿；遇到授权或条款确认时暂停。
-          </HelpHint>
-          {message && (
-            <span role="status">
-              {inlineStale ? "资料已变化，请重新检查" : message}
-            </span>
-          )}
-          {error && (
-            <span className="error" role="alert">
-              {error}
-            </span>
-          )}
+  const save = (task: PublicationTaskInput) => void act(async () => {
+    await call("publicationTasks.save", { task, expectedRevision: editor?.task?.revision ?? null });
+    setEditor(undefined);
+  });
+  const togglePlans = (taskId: string) => setExpandedTaskId(current => current === taskId ? "" : taskId);
+  const execute = (task: PublicationTask, activeRunId?: string) => void act(() => activeRunId
+    ? call("publicationTasks.stop", { id: activeRunId })
+    : call("publicationTasks.start", { id: task.id, requestId: crypto.randomUUID(), expectedRevision: task.revision }));
+  const availablePlans = dashboard?.plans ?? [];
+  const linkablePlans = new Map(availablePlans.map(plan => [plan.id, plan.title]));
+  const rows = (dashboard?.tasks ?? []).map(row => ({
+    ...row, result: row.run && publicationRunActive(row.run.state) ? row.run.state :
+      !row.task.enabled ? "disabled" as const : row.run?.state ?? ("pending" as const),
+    planNames: row.task.steps[0].planIds.map(id => linkablePlans.get(id) ?? "不可用计划"),
+    plansUnavailable: row.task.steps[0].planIds.some(id => !linkablePlans.has(id)),
+    needsPlanConfirmation: publicationTaskNeedsPlanConfirmation(row.task, availablePlans),
+  })).filter(row => (!status || row.result === status) && [row.task.title, ...row.planNames].join(" ").toLowerCase().includes(query.trim().toLowerCase()));
+
+  return <div className="publication-tasks">
+    <PageHead title="任务中心" action={
+      <button className="primary" type="button" disabled={!production || !dashboard || busy}
+        onClick={() => { setError(""); setEditor({}); }}>＋ 新建任务</button>} />
+    <section className="publication-task-panel" aria-label="任务列表" aria-busy={dashboardQuery.loading}>
+      <div className="publication-task-toolbar">
+        <div className="publication-task-filters">
+          <label>查询任务<input type="search" placeholder="任务名称或关联计划" value={query} onChange={e => setQuery(e.target.value)} /></label>
+          <label>执行结果<select value={status} onChange={e => setStatus(e.target.value)}>
+            <option value="">全部状态</option>
+            {Object.entries(states).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+          </select></label>
         </div>
-        {channelResults.map((text,index)=><p role="status" key={index}>{text}</p>)}
-        {Object.entries(channelStatus).map(([channel,status])=><p key={channel} role={status.error?'alert':'status'} className={status.error?'error':undefined}>
-          {channel==='other'?selection.targets.filter(t=>t!=='fanqie'&&(t!=='qishui'||data.mode==='simulation')).map(t=>names[t]).join(' / '):names[channel]} · {channel==='fanqie'&&fanqieProgress?fanqieProgress:status.text}
-        </p>)}
-        {fanqieBatch&&<section className="publication-current-result" aria-label="番茄批次">
-          <h3>番茄批次</h3>
-          <p role="status">{fanqieBatch.state==='paused'?'已暂停':
-            pendingSignature>0?`${pendingSignature} 首待确认同一份合同`:
-            `${fanqieBatch.items.filter((item:any)=>item.state==='complete').length}/${fanqieBatch.items.length} 首已处理`}</p>
-          {fanqieBatch.state==='paused'&&<button disabled={busy} onClick={()=>void continueFanqie()}>继续批次</button>}
-          {groupJob&&<button disabled={busy} onClick={()=>void continueFanqie(groupJob.id)}>更新批次状态</button>}
-        </section>}
-        {!fanqieAccountRequired&&<details><summary>番茄账号与已有作品</summary><FanqieCatalogPanel key={fanqieAccountId} mode={data.mode} accountId={fanqieAccountId}/></details>}
-        {!!fanqieState?.jobs?.length&&<section className="publication-current-result" aria-label="番茄发布记录">
-          <h3>发布记录</h3>
-          {fanqieState.jobs.map((job:any)=><div className="publication-channel-result" key={job.id}>
-            <span><b>{job.title}</b> · 番茄音乐 · {job.officialRecord?.officialStatus??(job.phase==='unknown'?'待核对':'处理中')}{job.officialRecord&&` · ${job.officialRecord.id}`}</span>
-            {!groupedIds.has(job.officialRecord?.id)&&<button disabled={busy} onClick={()=>void continueFanqie(job.id)}>更新状态</button>}
-          </div>)}
-        </section>}
-        {currentResult && (
-          <section
-            className="publication-current-result"
-            ref={resultRef}
-            tabIndex={-1}
-            role="region"
-            aria-label="本次发布材料"
-            aria-busy="false"
-          >
-            <div className="section-title">
-              <h2>本次发布材料</h2>
-              <span>
-                {inlineStale
-                  ? "待重新检查"
-                  : currentResult.reused
-                    ? "已重新核验"
-                    : "已整理"}{" "}
-                · 未上传
-              </span>
-            </div>
-            {inlineStale && (
-              <button disabled={busy} onClick={() => void publish()}>
-                重新检查
-              </button>
-            )}
-            {inlineRequests.map((request) => (
-              <PublicationMaterialResult
-                key={request.id}
-                request={request}
-                onTrack={() => go("track", request.workId)}
-                onConfigure={() => void configure(request.configurationTarget)}
-              />
-            ))}
-          </section>
-        )}
-      </section>
-      {!!queuedJobs.length && (
-        <section
-          className="publication-queue-filters"
-          aria-label="发布队列筛选"
-        >
-          <label>
-            发布任务
-            <select
-              data-testid="publication-task-filter"
-              value={queueTaskId}
-              onChange={(event) => setQueueTaskId(event.target.value)}
-            >
-              <option value="">全部任务</option>
-              {queuedJobs.map((job: any) => (
-                <option key={job.id} value={job.id}>
-                  {job.title} ·{" "}
-                  {(data.accounts ?? []).find(
-                    (account: any) => account.id === job.accountId,
-                  )?.name ?? "未指定账号"}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            发布账号
-            <select
-              data-testid="publication-account-filter"
-              value={queueAccountId}
-              onChange={(event) => setQueueAccountId(event.target.value)}
-            >
-              <option value="">全部账号</option>
-              {[
-                ...new Set<string>(
-                  queuedJobs.map((job: any) => job.accountId).filter(Boolean),
-                ),
-              ].map((id) => (
-                <option key={id} value={id}>
-                  {(data.accounts ?? []).find(
-                    (account: any) => account.id === id,
-                  )?.name ?? "账号待核对"}
-                </option>
-              ))}
-            </select>
-          </label>
-        </section>
-      )}
-      {!!pipeline.length && (
-        <PublicationPipelineProgress
-          jobs={pipeline}
-          data={data}
-          onRefresh={refresh}
-          onReconcile={(id) => call("publish.reconcile", { id })}
-          onTrack={(id) => go("track", id)}
-          onConfigure={(target) => void configure(target)}
-        />
-      )}
-      {!!queuedJobs.length && !pipeline.length && (
-        <p role="status">没有符合筛选的发布任务。</p>
-      )}
-      {(requests.length > 0 || pendingTerms.length > 0) && (
-          <section className="panel simple-request-list" aria-label="发布任务">
-            <h2>发布任务</h2>
-            {pendingTerms.map((term) => (
-              <article className="simple-request" key={"terms-" + term.id}>
-                <div className="simple-request-heading">
-                  <b>
-                    {term.title} · {term.platformLabel}
-                  </b>
-                  <Badge>待条款确认 · 未接受条款</Badge>
-                </div>
-                <details>
-                  <summary>查看条款</summary>
-                  <pre>{term.termsText}</pre>
-                </details>
-              </article>
-            ))}
-            {requests.map((request) => (
-              <article
-                className="simple-request"
-                key={request.id}
-                data-request-id={request.id}
-              >
-                <div className="simple-request-heading">
-                  <b>
-                    {request.title} · {names[request.target]}
-                  </b>
-                  <Badge>
-                    {request.stale
-                      ? "资料已变化 · 请重新检查"
-                      : request.state === "ready" &&
-                          request.source !== "simulation"
-                        ? "未接通"
-                        : (states[request.state] ?? request.summary)}
-                  </Badge>
-                </div>
-                <div className="simple-request-meta">
-                  <small>
-                    {request.source === "simulation" ? "模拟" : "本地检查"} ·{" "}
-                    {request.summary}
-                  </small>
-                  <button
-                    className="text-button"
-                    onClick={() => void configure(request.configurationTarget)}
-                  >
-                    {"配置 " + names[request.configurationTarget]}
+        {dashboard && <span className="publication-task-count">{rows.length} 项任务</span>}
+      </div>
+      {error && !editor && !deleting && <p role="alert" className="plan-error">{error}</p>}
+      <div className="publication-task-table">
+        <table><thead><tr>
+          <th scope="col">任务名称</th><th scope="col">执行结果</th><th scope="col">执行方式</th><th scope="col">关联计划</th><th scope="col">操作</th>
+        </tr></thead><tbody>
+          {rows.map(({ task, run, result, planNames, planProgress, plansUnavailable, needsPlanConfirmation }) => {
+            const activeRunId = publicationRunActive(run?.state) ? run?.id : undefined;
+            const open = expandedTaskId === task.id;
+            const panelId = `task-plans-${task.id}`;
+            const locked = !production || busy;
+            return <React.Fragment key={task.id}>
+              <tr className="publication-task-row" data-expanded={open}>
+                <th scope="row"><button type="button" className="publication-task-name" aria-expanded={open}
+                  aria-controls={open ? panelId : undefined} onClick={() => togglePlans(task.id)}>{task.title}</button></th>
+                <td data-label="执行结果"><span className="publication-task-state" data-state={result}>{states[result]}</span>
+                  {run && <small>{details(run.detail)}</small>}
+                </td>
+                <td data-label="执行方式"><span className="publication-task-execution">{publicationExecutionLabel(task.execution)}</span></td>
+                <td data-label="关联计划"><strong>{planNames.length} 个计划</strong>
+                  <small className="publication-task-plan-names" title={planNames.join(" → ")}>{planNames.join(" → ")}</small>
+                  {needsPlanConfirmation && !activeRunId ? <small>{reasons.PUBLICATION_PLAN_CONFIRMATION_REQUIRED}</small> :
+                    plansUnavailable && <small>可编辑任务并重新关联不可用计划。</small>}
+                </td>
+                <td className="publication-task-row-actions"><div className="publication-task-actions">
+                  <button type="button" className="publication-task-command" data-stop={!!activeRunId}
+                    disabled={locked || (!activeRunId && (!task.enabled || needsPlanConfirmation))}
+                    onClick={() => execute(task, activeRunId)}>{activeRunId ? "停止" : "立即执行"}</button>
+                  <button type="button" disabled={locked || !!activeRunId} onClick={() => { setEditor({ task }); setError(""); }}>编辑</button>
+                  <button type="button" disabled={locked || !!activeRunId} onClick={() => void act(() =>
+                    call("publicationTasks.toggle", { id: task.id, expectedRevision: task.revision, enabled: !task.enabled }))}>
+                    {task.enabled ? "停用" : "启用"}
                   </button>
-                </div>
-                {!!request.issues.length && (
-                  <details>
-                    <summary>查看问题</summary>
-                    <ul>
-                      {request.issues.map((issue, index) => (
-                        <li key={index}>{issue}</li>
-                      ))}
-                    </ul>
-                    <button onClick={() => go("track", request.workId)}>
-                      查看素材
-                    </button>
-                  </details>
-                )}
-              </article>
-            ))}
-          </section>
-        )}
-    </div>
-  );
+                  <button type="button" onClick={() => setRecordId(task.id)}>记录</button>
+                  <button type="button" disabled={locked || !!activeRunId} onClick={() => { setError(""); setDeleting(task); }}>删除</button>
+                </div></td>
+              </tr>
+              {open && <tr className="publication-task-expanded"><td colSpan={5}>
+                <section id={panelId} className="publication-task-plans" aria-label={`${task.title}的关联计划`}>
+                  <div className="publication-task-plans-head">
+                    <h3>{run ? activeRunId ? "本次执行" : "最近一次执行" : "关联计划"}</h3>
+                    {run && <time dateTime={run.startedAt}>{localStamp(run.startedAt)}</time>}
+                  </div>
+                  {planProgress ? <PublicationTaskProgress plans={planProgress} formatIssue={details}
+                    openPlan={browser ? undefined : id => go("plans", id)} /> :
+                    !dashboardQuery.error && <p role="status" className="publication-task-reading">
+                      <LoadingIndicator label="正在读取计划状态…" />
+                    </p>}
+                </section>
+              </td></tr>}
+            </React.Fragment>;
+          })}
+        </tbody></table>
+      </div>
+      {!!dashboardQuery.error && <p role="alert" className="plan-error">
+        {errorMessage(dashboardQuery.error, "读取任务失败")} <button type="button" onClick={() => void dashboardQuery.refresh()}>重试</button>
+      </p>}
+      {dashboardQuery.loading && <p role="status" className="publication-task-empty"><LoadingIndicator label="正在读取任务…" /></p>}
+      {dashboard && !rows.length && <p role="status" className="publication-task-empty">{query || status ? "没有符合条件的任务" : "暂无任务"}</p>}
+    </section>
+    {editor && <PublicationTaskEditor key={editor.task?.id ?? "new"} initial={editor.task} plans={availablePlans}
+      busy={busy} error={error} onSave={save} onClose={() => { setEditor(undefined); setError(""); }} />}
+    {deleting && <div className="plan-modal-backdrop"><section role="dialog" aria-modal="true" aria-label="删除任务" className="plan-confirm">
+      <h2>删除任务</h2><p>确认删除「{deleting.title}」？</p>
+      {error && <p role="alert" className="plan-error">{error}</p>}
+      <div className="plan-editor-footer"><button type="button" onClick={() => { setDeleting(undefined); setError(""); }}>取消</button>
+        <button type="button" className="primary" disabled={busy} onClick={() => void act(async () => {
+          await call("publicationTasks.delete", { id: deleting.id, expectedRevision: deleting.revision });
+          setDeleting(undefined);
+        })}>确认删除</button>
+      </div></section></div>}
+    {!!recordId && <div className="plan-modal-backdrop"><section role="dialog" aria-modal="true" aria-label="执行记录" className="plan-editor scroll-panel">
+      <div className="section-title"><h2>执行记录</h2><button type="button" onClick={() => setRecordId("")}>关闭</button></div>
+      <div className="scroll-panel-body">
+      {!!historyQuery.error && <p role="alert">{errorMessage(historyQuery.error, "执行记录读取失败")}</p>}
+      {historyQuery.loading && <p role="status"><LoadingIndicator label="正在读取记录…" /></p>}
+      {history?.length === 0 && <p role="status">暂无执行记录</p>}
+      {history?.map((run, index) => <details key={run.id} open={index === 0 ? true : undefined}>
+        <summary>{localStamp(run.startedAt)} · {run.source === "manual" ? "手动" : "定时"} · {states[run.state]}</summary>
+        {run.snapshot?.prepareContract !== undefined && <p>是否签署合同 · {run.snapshot.prepareContract ? "是" : "否"}</p>}
+        <ol className="publication-task-log">
+          {run.logs.map((log, index) => <li key={index}><time dateTime={log.at}>{localStamp(log.at)}</time>
+            <span>{details(log.detail)}</span></li>)}
+        </ol>
+        {!browser && run.linked.length > 0 && <div className="publication-task-actions">
+          {run.linked.map(link => <button type="button" key={link.id}
+            onClick={() => go("plans", link.id)}>{run.plans.find(plan => plan.id === link.planId)?.title ?? "查看关联计划"}</button>)}
+        </div>}
+      </details>)}
+      </div>
+    </section></div>}
+  </div>;
 }

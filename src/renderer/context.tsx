@@ -1,15 +1,19 @@
-import React, { createContext, useContext } from "react";
+import { studioMediaUrl } from "./browser-studio";
+import React, { createContext, useCallback, useContext } from "react";
 import HelpHint from "./components/HelpHint";
 import type { PublishSelection } from "../shared/platform-config";
+import { workVersionCover, workVersionTitle, type WorkVersionSlot } from "../shared/work-versions";
+import { workRecordingSinger } from "../shared/local-artist";
 export type Data = Record<string, any>;
+export type StudioCallOptions = { refreshSnapshot?: boolean };
 export interface StudioContext {
   data: Data;
   runtime: Data;
-  call: (method: string, input?: any) => Promise<any>;
+  call: (method: string, input?: any, options?: StudioCallOptions) => Promise<any>;
   refresh: () => Promise<void>;
   notify: (text: string) => void;
-  go: (page: string, id?: string, accountId?: string) => void;
-  play: (work: any, slot?: string) => void;
+  go: (page: string, id?: string) => void;
+  play: (work: any, slot?: WorkVersionSlot) => void;
   selected: string[];
   setSelected: (ids: string[]) => void;
   publishSelection?: PublishSelection;
@@ -24,6 +28,17 @@ export interface StudioContext {
 }
 export const Context = createContext<StudioContext>(null!);
 export const useStudio = () => useContext(Context);
+export function useStudioRequest() {
+  const { call } = useStudio();
+  return useCallback((method: string, input?: unknown) => call(method, input, { refreshSnapshot: false }), [call]);
+}
+export function localMusicians(data: Data, selectedId?: string) {
+  const artists: any[] = data.accountLocalArtists ?? data.artists ?? [];
+  const historical = selectedId && !artists.some(artist => artist.id === selectedId)
+    ? data.artists?.find((artist: any) => artist.id === selectedId)
+    : undefined;
+  return historical ? [...artists, historical] : artists;
+}
 export const names: Record<string, string> = {
   fanqie: "番茄音乐",
   netease: "网易云音乐",
@@ -32,6 +47,7 @@ export const names: Record<string, string> = {
   kugou: "酷狗音乐",
   douyin: "抖音视频",
   suno: "Suno",
+  suno_cn: "苏诺之音",
   yourmusic: "谱乐 AI",
   tme: "腾讯音乐发行",
 };
@@ -102,21 +118,24 @@ export function PageHead({
     </div>
   );
 }
-export function Cover({ work, large = false }: { work: any; large?: boolean }) {
+export function Cover({ work, large = false, slot }: { work: any; large?: boolean; slot?: WorkVersionSlot }) {
   const { data } = useStudio();
   const artist = data.artists.find((a: any) => a.id === work.artistId);
+  const title = slot ? workVersionTitle(work, slot) : work.title;
+  const image = slot ? workVersionCover(work, slot) : work.assets?.cover;
+  const performer = slot ? workRecordingSinger(work, artist, slot === "audio_B" ? "B" : "A") : artist?.name;
   return (
     <div
       className={
         "cover " +
         (large ? "large" : "") +
-        (!work.assets?.cover ? " tone" + (data.works.indexOf(work) % 3) : "")
+        (!image ? " tone" + (data.works.indexOf(work) % 3) : "")
       }
     >
-      {work.assets?.cover ? (
+      {image ? (
         <img
-          alt={work.title + " 封面"}
-          src={"media://asset/" + work.assets.cover}
+          alt={title + " 封面"}
+          src={studioMediaUrl("media://asset/" + image)}
         />
       ) : (
         <>
@@ -124,8 +143,8 @@ export function Cover({ work, large = false }: { work: any; large?: boolean }) {
           <small>本地原创占位 · 未生成图像</small>
         </>
       )}
-      <strong>{work.title}</strong>
-      <span>{artist?.name || "艺人"}</span>
+      <strong>{title}</strong>
+      <span>{performer || "艺人"}</span>
     </div>
   );
 }
@@ -175,15 +194,18 @@ export function SelectArtist({
   onChange: (v: string) => void;
 }) {
   const { data } = useStudio();
+  const choices = localMusicians(data, value);
   return (
     <label>
       艺人
       <select
         aria-label="艺人"
+        required
         value={value}
         onChange={(e) => onChange(e.target.value)}
       >
-        {data.artists.map((a: any) => (
+        {!value && <option value="">{choices.length ? "请选择艺人" : "请在账号管理添加艺人信息"}</option>}
+        {choices.map((a: any) => (
           <option key={a.id} value={a.id}>
             {a.name}
           </option>

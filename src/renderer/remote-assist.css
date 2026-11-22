@@ -1,0 +1,210 @@
+.remote-assist-layout {
+  display: grid;
+  grid-template-columns: minmax(250px, 320px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.remote-assist-layout h2 {
+  margin: 0;
+}
+
+.remote-assist-dock {
+  position: fixed;
+  inset-inline-end: 24px;
+  inset-block-end: 96px;
+  z-index: 19;
+  width: min(320px, calc(100vw - 48px));
+  max-height: calc(100dvh - 118px);
+  margin: 0;
+  overflow: auto;
+  box-shadow: 0 10px 30px color-mix(in srgb, var(--shadow-color) 24%, transparent);
+}
+
+.remote-assist-dock h2 {
+  margin: 0 auto 0 0;
+}
+
+.remote-assist-dock .remote-assist-stage {
+  min-height: 0;
+}
+
+.remote-assist-dock .remote-assist-live {
+  max-height: min(48dvh, 440px);
+}
+
+.remote-assist-dock-actions {
+  margin: 12px 0 0;
+}
+
+.remote-assist-sidebar {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.remote-assist-setup label:first-of-type {
+  margin-top: 16px;
+}
+
+.remote-assist-setup :is(select, button) {
+  max-width: 100%;
+}
+
+.remote-assist-setup p {
+  margin: 10px 0 0;
+}
+
+.remote-assist-error {
+  color: var(--danger);
+}
+
+.remote-assist-viewer {
+  min-width: 0;
+}
+
+.remote-assist-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  min-height: 36px;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.remote-assist-heading h2 {
+  margin-right: auto;
+}
+
+.remote-assist-connection .remote-assist-connected {
+  color: var(--success);
+  background: var(--success-soft);
+}
+
+.remote-assist-connection-controls,
+.remote-assist-pairing,
+.remote-assist-paired-device {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.remote-assist-connection-controls {
+  align-items: end;
+}
+
+.remote-assist-connection-controls label {
+  flex: 1 1 170px;
+  min-width: 0;
+  margin: 0;
+}
+
+.remote-assist-connection-controls :is(input, select) {
+  width: 100%;
+}
+
+.remote-assist-connection :is(h3, p) {
+  margin: 0;
+}
+
+.remote-assist-connection p {
+  margin-top: 8px;
+}
+
+.remote-assist-pairing,
+.remote-assist-android,
+.remote-assist-paired-devices {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.remote-assist-pair-label,
+.remote-assist-paired-device {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.remote-assist-connection small {
+  display: block;
+  color: var(--muted);
+}
+
+.remote-assist-pairing .remote-assist-error {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.remote-assist-android img {
+  display: block;
+  width: 176px;
+  max-width: 100%;
+  height: auto;
+  margin-top: 8px;
+  image-rendering: pixelated;
+}
+
+.remote-assist-paired-devices ul {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  margin: 8px 0 0;
+  list-style: none;
+}
+
+.remote-assist-paired-device strong {
+  overflow-wrap: anywhere;
+}
+
+.remote-assist-stage {
+  display: grid;
+  place-items: center;
+  min-height: 18rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.remote-assist-live {
+  display: block;
+  max-width: 100%;
+  max-height: min(70vh, 720px);
+  user-select: none;
+}
+
+.remote-assist-interactive {
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.remote-assist-idle {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 18px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.remote-assist-help {
+  margin-top: 16px;
+}
+
+.remote-assist-help ol {
+  margin-bottom: 0;
+  padding-inline-start: 24px;
+}
+
+.remote-assist-help li + li {
+  margin-top: 6px;
+}
+
+@media (max-width: 850px) {
+  .remote-assist-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+}

@@ -61,6 +61,30 @@ test("SQLite WAL/FK and artist data survive restart", async () => {
   assert.ok((await r.call("snapshot", {})).artists.some((x) => x.id === a.id));
   r.close();
 });
+test("normal ticks leave previously enabled task directories idle", async (t) => {
+  const { s, root } = setup();
+  t.after(() => s.close());
+  const { id: artistId } = await artist(s);
+  const plan = await s.call("planCenter.save", { expectedRevision: null, plan: {
+    id: randomUUID(), title: "旧目录计划", artistId,
+    schedule: { kind: "daily", localTime: "09:00" },
+    material: { source: "manual" }, text: {}, music: { route: "manual" },
+  } });
+  const controller = s.directoryTasks();
+  const taskRoot = root + "-task-input";
+  fs.mkdirSync(taskRoot);
+  const source = controller.configureDirectory({ root: taskRoot, expectedRevision: null });
+  const bound = controller.save({
+    id: source.id, expectedRevision: source.revision, planId: plan.id, planRevision: plan.revision,
+    intervalSeconds: source.intervalSeconds, readiness: source.readiness,
+  });
+  controller.resume({ id: bound.id, expectedRevision: bound.revision });
+  const before = controller.status().sources;
+  assert.equal(before[0].enabled, true);
+  await s.tick();
+  assert.deepEqual(controller.status().sources, before);
+  assert.deepEqual(controller.status().requests, []);
+});
 test("artist defaults and account bindings remain independent", async () => {
   const { s } = setup();
   const a = await artist(s, "甲"),
@@ -89,12 +113,20 @@ test("invalid BPM and optimistic work conflicts reject", async () => {
 test("creation freezes defaults and track overrides", async () => {
   const { s } = setup();
   const a = await artist(s);
-  const run = await s.call("creation.start", {
+  const plan = await s.call("plan.save", {
     artistId: a.id,
     title: "独立配置",
     story: "原创故事",
+    timezone: "Etc/UTC",
+    time: "08:00",
+    enabled: false,
+    candidateLimit: 1,
+    finishedGoal: 1,
+    costLimit: 0,
     overrides: { voice: "duet" },
+    checkpoints: { lyrics: "automatic", candidate: "manual", cover: "manual", finished: "manual", publish: "manual" },
   });
+  const run = await s.call("plan.run", { id: plan.id });
   await s.call("artist.save", {
     id: a.id,
     name: "新名",

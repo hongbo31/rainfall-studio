@@ -35,13 +35,7 @@ async function plan(s, a, policy) {
 test("manual lyrics cannot be bypassed by importing audio first", async () => {
   const { s, a } = setup(),
     p = await plan(s, a, {}),
-    r = await s.call("creation.start", {
-      artistId: a.id,
-      planId: p.id,
-      title: "QA检查点",
-      story: "故事",
-      overrides: {},
-    });
+    r = await s.call("plan.run", { id: p.id });
   const w = s.get("works", r.workId);
   s.save("works", { ...w, assets: { audio_A: randomUUID() } });
   s.refreshRunForWork(w.id);
@@ -51,13 +45,7 @@ test("manual lyrics cannot be bypassed by importing audio first", async () => {
 test("candidate manual checkpoint and automatic cover policy are applied independently", async () => {
   const { s, a } = setup(),
     p = await plan(s, a, { lyrics: "automatic", cover: "automatic" }),
-    r = await s.call("creation.start", {
-      artistId: a.id,
-      planId: p.id,
-      title: "QA检查点",
-      story: "故事",
-      overrides: {},
-    });
+    r = await s.call("plan.run", { id: p.id });
   const w = s.get("works", r.workId);
   s.save("works", {
     ...w,

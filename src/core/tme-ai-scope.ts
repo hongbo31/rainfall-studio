@@ -9,17 +9,20 @@ import {digest} from './assets';
 import {inspectPcmWav} from '../shared/pcm-wav';
 import {cleanLyricText} from '../shared/tme-lyrics';
 import {TmeAiPrepareMetadataSchema} from '../shared/tme-ai-prepare';
+import {workRecordingSinger} from '../shared/local-artist';
 import type {PlanAlbumBinding} from '../shared/plan-albums';
 import {CenterStore} from './plan-center/storage';
 import {planPublicationMaterialFingerprint} from './plan-center-publication';
+import {publicationOwnerActive} from './publication-tasks';
 
 /** Rechecked at each new Core write claim; read-only inspection and original receipts do not call this gate. */
 export function verifyPlanTmeAppendWrite(s:Studio,grant:{workId:string;publicationTaskId?:string;accountId?:string;identity:{subjectHash:string};existingAlbum?:{albumId?:string;bindingId?:string}},prepareJobId?:string){
  assertWorkIdentityWrite(s,grant);
+ const task=grant.publicationTaskId?s.repo.maybe('settings','unified-publication:v1:'+grant.publicationTaskId)?.value:undefined;
+ if(!publicationOwnerActive(s.repo,task?.publicationRunId))throw Error('STOP_REQUESTED');
  const links=s.all('settings').filter(r=>r.id.startsWith('plan-publication:v1:')).map(r=>r.value).filter(l=>l.workId===grant.workId&&(!grant.publicationTaskId||l.publicationTaskId===grant.publicationTaskId));
  if(!links.length)return; // Existing standalone/legacy queue intents have no PlanCenter owner.
  if(!grant.publicationTaskId||!grant.accountId||typeof s.planAlbumService!=='function')throw Error('ALBUM_APPEND_TASK_SCOPE');
- const task=s.repo.maybe('settings','unified-publication:v1:'+grant.publicationTaskId)?.value;
  if(!task||task.workId!==grant.workId||task.accountId!==grant.accountId||s.repo.maybe('accounts',grant.accountId)?.remoteSubject!==grant.identity.subjectHash)throw Error('ALBUM_APPEND_TASK_SCOPE');
  const store=new CenterStore(s.repo),service=s.planAlbumService();
  for(const platform of task.targets.filter((target:string)=>['qqmusic','kugou'].includes(target))){
@@ -100,7 +103,8 @@ export function resolveTmeAiPrepareScope(s:Studio,input:z.input<typeof TmeAiScop
  const artistId=w.artistId??c.artistId,artist=artistId?s.repo.maybe('artists',artistId):undefined;
  const text=(key:string,fallback?:unknown)=>typeof f[key]==='string'&&f[key].trim()?f[key]:typeof w[key]==='string'&&w[key].trim()?w[key]:fallback;
  const bool=(key:string,alias?:string)=>typeof f[key]==='boolean'?f[key]:alias&&typeof f[alias]==='boolean'?f[alias]:typeof w[key]==='boolean'?w[key]:undefined;
- const raw={title:w.title,...(text('albumMode')?{albumMode:text('albumMode')}:{}),albumTitle:text('albumTitle',text('album',c.album||w.title)),albumDescription:text('albumDescription'),artistName:text('artistName',artist?.name),lyricist:text('lyricist',c.lyricist),composer:text('composer',c.composer),ownLyrics:bool('ownLyrics','ownLyricist'),ownComposition:bool('ownComposition','ownComposer'),aiTool:text('aiTool'),generatedOn:text('generatedOn'),allowCover:bool('allowCover'),genre:text('genre',w.config?.genre||c.genre),language:text('language',w.config?.language||c.language),version:text('version','完整版'),releaseMode:text('releaseMode','审核通过即发布')};
+ const credits=artist?.accountLocalArtist?artist.profile:undefined;
+ const raw={title:w.title,...(text('albumMode')?{albumMode:text('albumMode')}:{}),albumTitle:text('albumTitle',text('album',c.album||w.title)),albumDescription:text('albumDescription'),artistName:text('artistName',workRecordingSinger(w,artist,variant)),lyricist:text('lyricist',c.lyricist||credits?.lyricist),composer:text('composer',c.composer||credits?.composer),ownLyrics:bool('ownLyrics','ownLyricist'),ownComposition:bool('ownComposition','ownComposer'),aiTool:text('aiTool'),generatedOn:text('generatedOn'),allowCover:bool('allowCover'),genre:text('genre',w.config?.genre||c.genre),language:text('language',w.config?.language||c.language),version:text('version','完整版'),releaseMode:text('releaseMode','审核通过即发布')};
  if(albumBinding)Object.assign(raw,{albumMode:'existing',albumTitle:albumBinding.title});
  const parsed=TmeAiPrepareMetadataSchema.safeParse(raw),missing=parsed.success?[]:parsed.error.issues.map(issue=>String(issue.path[0]));
  if(typeof raw.generatedOn==='string'&&raw.generatedOn>s.now().toISOString().slice(0,10))missing.push('generatedOn');

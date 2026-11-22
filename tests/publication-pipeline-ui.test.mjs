@@ -1,6 +1,6 @@
+import { launchHeadlessChromium } from "../scripts/lib/headless-chromium.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import http from "node:http";
 import { build } from "esbuild";
 import { chromium } from "playwright-core";
@@ -24,24 +24,12 @@ test("unified publication progress polls and keeps selected-song authorization a
     );
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
-  const executablePath =
-    process.env.CHROME_PATH ??
-    [
-      "/usr/bin/chromium",
-      "/usr/bin/google-chrome",
-      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-    ].find((p) => fs.existsSync(p));
-  const browser = await chromium
-    .launch({
-      executablePath,
-      headless: true,
-      args: ["--no-sandbox"],
-      env: { ...process.env, HOME: "/tmp" },
-    })
-    .catch(async (e) => {
-      await new Promise((r) => server.close(r));
-      throw e;
-    });
+  const browser = await launchHeadlessChromium(chromium, {
+    args: ["--no-sandbox"],
+  }).catch(async (e) => {
+    await new Promise((r) => server.close(r));
+    throw e;
+  });
   try {
     const page = await browser.newPage();
     const errors = [];

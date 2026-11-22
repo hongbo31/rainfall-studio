@@ -1,4 +1,5 @@
 import React, { useId, useRef, useState } from "react";
+import { workRecordingSinger } from "../../shared/local-artist";
 import { useStudio } from "../context";
 
 const labels: Record<string, string> = {
@@ -33,6 +34,7 @@ export function publicationMetadataDefaults(
   const artist = (data.artists ?? []).find(
     (a: any) => a.id === (work.artistId ?? config.artistId),
   );
+  const credits = artist?.accountLocalArtist ? artist.profile : undefined;
   const text = (key: string, fallback = "") =>
     typeof saved[key] === "string" && saved[key].trim()
       ? saved[key]
@@ -55,9 +57,9 @@ export function publicationMetadataDefaults(
       text("album", config.album || work.title || ""),
     ),
     albumDescription: text("albumDescription", albumMode === "existing" ? inheritedAlbumNote : ""),
-    artistName: text("artistName", artist?.name ?? ""),
-    lyricist: text("lyricist", config.lyricist ?? ""),
-    composer: text("composer", config.composer ?? ""),
+    artistName: text("artistName", workRecordingSinger(work, artist) ?? ""),
+    lyricist: text("lyricist", config.lyricist || credits?.lyricist || ""),
+    composer: text("composer", config.composer || credits?.composer || ""),
     ownLyrics: bool("ownLyrics", "ownLyricist"),
     ownComposition: bool("ownComposition", "ownComposer"),
     aiTool: text("aiTool"),

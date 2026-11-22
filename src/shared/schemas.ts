@@ -2,18 +2,28 @@ import {AccountIdentityPublicActions} from './account-identity';
 import {MaterialMethods} from './material-methods';
 import {GenerationConfigSchemas} from './generation-config';
 import { z } from "zod";
-import { AccountProviderSchema, AccountWorkWindowSchema } from "./platform-accounts";
+import { artistMusicTypeSchema, artistNameLimit, artistProfileSchema, artistSongAttributeSchema, secondSingerSchema } from "./local-artist";
+import { fanqieOriginalSingerSchema, fanqieOriginalWorkIdSchema } from "./fanqie-downloads";
+import { FanqieArtistCreationSchema } from "./fanqie-artist";
+import { AccountProviderSchema, AccountWorkWindowSchema, PlatformAccountIdSchema } from "./platform-accounts";
 import { QishuiReleaseSchema,QishuiFillSchema,QishuiJobSchema,QishuiAuthorizationSchema,QishuiAcceptSchema } from "./qishui";
 import {DirectoryTaskSchemas} from './directory-tasks';
+import { DownloadArchiveSchemas } from './download-archive';
+import { platformImageSchemas } from './platform-image';
 import {PlanCenterPrepareCoverWorkSchema} from './plan-center';
+import {PlanWorkflowQishuiSubmittedSchema} from './plan-workflow-publication';
 import { saveApiProfileSchema } from "./api-profiles";
+import { promptLibrarySchemas } from "./prompt-library";
+import { lyricWritingSchemas } from "./lyric-writing";
+import { puleBrowserSchemas, sunoCnBrowserSchemas } from "./pule-browser";
 import { GenerateTurnSchema, TextConfigurationSchema } from "./creation";
 import { MusicRequestSchema } from "./music";
 import { DailyPlanInputSchema, SelectionSchema } from "./daily";
 import { InboxSetupSchema } from "./inbox";
-import {PlanCenterSaveSchema,PlanCenterToggleSchema,PlanCenterIdSchema,PlanCenterRunSchema,PlanCenterStopSchema,PlanCenterRetrySchema,PlanCenterBindWorkSchema,PlanCenterSelectVersionSchema,PlanCenterConfirmMaterialsSchema} from './plan-center';
+import {PlanCenterCatalogSchema,PlanCenterSaveSchema,PlanCenterDeleteSchema,PlanCenterIdSchema,PlanCenterRunSchema,PlanCenterStopSchema,PlanCenterRetrySchema,PlanCenterBindWorkSchema,PlanCenterSelectVersionSchema,PlanCenterConfirmMaterialsSchema} from './plan-center';
+import { publicationTaskSchemas } from "./publication-tasks";
 import { TmeInputSchema } from './tme';
-import { CoverRequestSchema } from './cover-handoff';
+import { CoverRequestSchema, GenerateCoverSchema, RetryCoverSchema, coverResolutionSchema } from './cover-handoff';
 import { TmeObservationSchemas } from './tme-observations';
 import { SimplePublishingSchemas } from './platform-config';
 import {PlanAlbumTargetSchema,PlanAlbumSelectSchema,PlanAlbumCreateSchema,PlanAlbumRunTargetSchema,PlanAlbumOperationIdSchema,PlanAlbumAuthorizeSchema} from './plan-albums';
@@ -26,6 +36,7 @@ export const defaultsSchema = z
     bpmMin: z.number().int().min(20).max(300),
     bpmMax: z.number().int().min(20).max(300),
     coverStyle: z.string().max(2000),
+    coverResolution: coverResolutionSchema.optional(),
     instruments: z.string().max(1000).optional(),
     seriesStory: z.string().max(4000).optional(),
     language: z.string().max(100),
@@ -33,14 +44,21 @@ export const defaultsSchema = z
     duration: z.number().int().min(10).max(1800),
   })
   .refine((x) => x.bpmMin <= x.bpmMax, "BPM区间无效");
+export type ArtistDefaults = z.infer<typeof defaultsSchema>;
 const obj = z.record(z.string(), z.unknown());
 const recordingSelections = z.array(z.strictObject({workId:id,slot:z.enum(['audio_A','audio_B'])})).max(200);
 export const methodSchemas: Record<string, z.ZodType> = {
   ...MaterialMethods,
   'work.selectAudioVersion':z.strictObject({workId:z.uuid(),expectedRevision:z.number().int().positive(),version:z.enum(['A','B'])}),
   ...GenerationConfigSchemas,
+  ...promptLibrarySchemas,
+  ...lyricWritingSchemas,
+  ...puleBrowserSchemas,
+  ...sunoCnBrowserSchemas,
   ...Object.fromEntries(Object.entries(AccountIdentityPublicActions).map(([action,schema])=>['accountIdentity.'+action,schema])),
   ...DirectoryTaskSchemas,
+  ...DownloadArchiveSchemas,
+  ...platformImageSchemas,
   ...SimplePublishingSchemas,
   ...TmeObservationSchemas,
   'publish.quick': z.strictObject({workIds:z.array(id).min(1).max(100),targets:z.array(z.enum(['netease','qishui','qqmusic','kugou','douyin'])).min(1).max(5),recordings:recordingSelections,accountOverrides:z.partialRecord(z.enum(['netease','qishui','qqmusic','kugou','douyin']),id).default({})}),
@@ -48,6 +66,9 @@ export const methodSchemas: Record<string, z.ZodType> = {
   'lyrics.confirm': z.strictObject({workId:z.uuid(),versionId:z.uuid(),plainHash:z.string().regex(/^[a-f0-9]{64}$/),audioHash:z.string().regex(/^[a-f0-9]{64}$/),confirmed:z.literal(true)}),
   'publication.payload': z.strictObject({workId:z.uuid()}),
   'cover.request': CoverRequestSchema,
+  'cover.generate': GenerateCoverSchema,
+  'cover.retryImage': RetryCoverSchema,
+  'cover.retryZhipu': RetryCoverSchema,
   'cover.list': z.strictObject({workId:z.uuid().optional()}),
   'cover.watch': z.strictObject({requestId:z.uuid()}),
   'cover.inboxStatus': z.strictObject({workId:z.uuid().optional()}),
@@ -97,18 +118,42 @@ export const methodSchemas: Record<string, z.ZodType> = {
   'runtime.configure':z.strictObject({backgroundEnabled:z.boolean(),loginAtStartup:z.boolean()}),
   "artist.save": z.object({
     id: id.optional(),
-    name: z.string().trim().min(1).max(100),
+    name: z.string().trim().min(1).max(artistNameLimit).optional(),
     expected: z.number().int().optional(),
     defaults: defaultsSchema,
+    profile: artistProfileSchema.optional(),
+    promptTemplateId: id.nullable().optional(),
   }),
+  "artist.delete": z.strictObject({ id, expected: z.number().int().positive(), confirmed: z.literal(true) }),
+  "accountLocalArtist.list": z.strictObject({ accountId: id.optional() }),
+  "accountLocalArtist.save": z.strictObject({
+    id: id.optional(),
+    expected: z.number().int().positive().optional(),
+    accountId: id.optional(),
+    defaults: defaultsSchema,
+    musicType: artistMusicTypeSchema.optional(),
+    songAttribute: artistSongAttributeSchema.optional(),
+    originalSinger: fanqieOriginalSingerSchema.nullish(),
+    originalWorkId: fanqieOriginalWorkIdSchema.nullish(),
+    isAiWork: z.boolean().optional(),
+    hasCopyrightProof: z.boolean().optional(),
+    profile: artistProfileSchema,
+    secondSinger: secondSingerSchema.nullable().optional(),
+    promptTemplateId: id.nullable(),
+  }),
+  "accountLocalArtist.assign": z.strictObject({ id, expected: z.number().int().positive(), accountId: id }),
+  "accountLocalArtist.copy": z.strictObject({ id, expected: z.number().int().positive(), accountId: id, requestId: id }),
+  "accountLocalArtist.delete": z.strictObject({ id, expected: z.number().int().positive(), confirmed: z.literal(true) }),
   "account.save": z.object({
     id: id.optional(),
     provider: AccountProviderSchema,
     name: z.string().trim().min(1).max(100),
     dailyLimit: z.number().int().min(0).max(10000),
   }),
+  "account.delete": PlatformAccountIdSchema.extend({ confirmed: z.literal(true) }),
   "accountSession.status": AccountWorkWindowSchema,
   "accountSession.open": AccountWorkWindowSchema,
+  "fanqie.artistCreate": FanqieArtistCreationSchema,
   "publish.qishui.prepare": QishuiReleaseSchema,
   "publish.qishui.fill": QishuiFillSchema,
   "publish.qishui.status": QishuiJobSchema,
@@ -125,6 +170,7 @@ export const methodSchemas: Record<string, z.ZodType> = {
     id: id.optional(),
     expected: z.number().int().optional(),
     title: z.string().trim().min(1).max(200),
+    alternateTitle: z.string().trim().min(1).max(200).nullable().optional(),
     artistId: id,
     story: z.string().max(20000),
     lyrics: z.string().max(100000),
@@ -138,20 +184,13 @@ export const methodSchemas: Record<string, z.ZodType> = {
   "work.selectAsset": z.object({
     workId: id,
     assetId: id,
-    role: z.enum(["audio_A", "audio_B", "cover", "video"]),
+    role: z.enum(["audio_A", "audio_B", "cover", "cover_B", "video"]),
   }),
   "series.save": z.object({
     id: id.optional(),
     title: z.string().trim().min(1).max(200),
     story: z.string().max(20000),
     workIds: z.array(id).max(100),
-  }),
-  "creation.start": z.object({
-    artistId: id,
-    title: z.string().trim().min(1).max(200),
-    story: z.string().max(20000),
-    overrides: obj,
-    planId: id.optional(),
   }),
   "plan.save": z.object({
     id: id.optional(),
@@ -239,6 +278,11 @@ export const methodSchemas: Record<string, z.ZodType> = {
   "goal.complete": z.object({ workId: id, planId: id.optional() }),
 };
 export function validate(method: string, input: unknown) {
+  if(method.startsWith("publicationTasks.")){
+    const schema=publicationTaskSchemas[method];
+    if(!schema)throw Error("METHOD_NOT_ALLOWED");
+    return schema.parse(input??{});
+  }
   if(method.startsWith('planAlbums.')){
     const albumSchemas:Record<string,z.ZodType>={
       'planAlbums.status':z.strictObject({}),'planAlbums.catalog':PlanAlbumTargetSchema,
@@ -251,16 +295,22 @@ export function validate(method: string, input: unknown) {
     if(!albumSchemas[method])throw Error('METHOD_NOT_ALLOWED');return albumSchemas[method].parse(input??{});
   }
   const planSchemas:Record<string,z.ZodType>={
-    'planCenter.list':z.strictObject({}),'planCenter.catalog':z.strictObject({}),
+    'planCenter.list':z.strictObject({}),'planCenter.read':PlanCenterIdSchema,'planCenter.catalog':PlanCenterCatalogSchema,
+    'planCenter.dashboard':z.strictObject({}),'planCenter.history':PlanCenterIdSchema,'planCenter.runDetail':PlanCenterStopSchema,
     'planCenter.status':z.strictObject({}),'planCenter.dotStatus':z.strictObject({}),'planCenter.exportDotRequests':z.strictObject({}),
     'planCenter.fanqieStatus':z.strictObject({}),'planCenter.retryFanqie':z.strictObject({runId:z.uuid()}),
+    'planCenter.retryFanqieDirectory':z.strictObject({runId:z.uuid()}),
+    'planCenter.retryFanqieCleanup':z.strictObject({runId:z.uuid()}),
+    'planCenter.openFanqieDiagnostics':z.strictObject({runId:z.uuid()}),
     'planCenter.musicStatus':z.strictObject({}),'planCenter.publicationStatus':z.strictObject({}),
     'planCenter.bindWork':PlanCenterBindWorkSchema,'planCenter.prepareCoverWork':PlanCenterPrepareCoverWorkSchema,'planCenter.selectVersion':PlanCenterSelectVersionSchema,
     'planCenter.confirmMaterials':PlanCenterConfirmMaterialsSchema,'planCenter.materialPreview':PlanCenterIdSchema,
     'planCenter.refreshModels':z.strictObject({profileId:z.uuid(),expectedRevision:z.number().int().positive()}),
-    'planCenter.save':PlanCenterSaveSchema,'planCenter.toggle':PlanCenterToggleSchema,
+    'planCenter.save':PlanCenterSaveSchema,'planCenter.delete':PlanCenterDeleteSchema,
     'planCenter.preview':PlanCenterIdSchema,'planCenter.run':PlanCenterRunSchema,
+    'planCenter.qishuiSubmitted':PlanWorkflowQishuiSubmittedSchema,
     'planCenter.stop':PlanCenterStopSchema,'planCenter.retry':PlanCenterRetrySchema,
+    'planCenter.checkMusicReceipt':PlanCenterRetrySchema,
     'planCenter.rollbackMigration':z.strictObject({}),'planCenter.legacyHistory':PlanCenterIdSchema,
   };
   if(method.startsWith('planCenter.')){

@@ -53,6 +53,80 @@
 }
 .platform-account-filters {
   margin-bottom: 16px;
+  max-width: 300px;
+}
+.local-artist-creator {
+  margin-top: 16px;
+}
+.local-artist-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.local-artist-list .row {
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.local-artist-list strong {
+  overflow-wrap: anywhere;
+}
+.local-artist-list small {
+  overflow-wrap: anywhere;
+}
+.local-artist-list .button-row {
+  margin: 0;
+}
+.local-artist-creator > .section-title {
+  flex-wrap: wrap;
+}
+.artist-editor-drawer {
+  position: fixed;
+  inset: 0 0 80px auto;
+  z-index: 21;
+  width: min(560px, 100%);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 var(--space-5) var(--space-5);
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: -8px 0 32px color-mix(in srgb, var(--shadow-color) 22%, transparent);
+}
+.artist-editor-heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin: 0 calc(-1 * var(--space-5)) var(--space-4);
+  padding: var(--space-3) var(--space-5);
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.artist-editor-heading h3 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.artist-profile-fields {
+  border: 0;
+  margin: 8px 0;
+  min-width: 0;
+  padding: 0;
+}
+.artist-prompt-field {
+  grid-column: 1 / -1;
+}
+.artist-singer-fields {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 128px), 1fr));
+  gap: 0 var(--space-3);
+}
+.artist-voice-persona {
+  min-height: var(--control-height);
+  line-height: 20px;
+  padding: 9px 12px;
 }
 .platform-account-grid {
   display: grid;
@@ -67,13 +141,55 @@
 .platform-account-grid .section-title h2 {
   margin: 0;
 }
-.platform-account-list .choice-buttons {
-  display: grid;
+.platform-account-list-heading {
+  flex-wrap: wrap;
+  gap: 8px;
 }
-.platform-account-list .choice-button {
-  text-align: left;
-  border-radius: 8px;
-  width: 100%;
+.platform-account-count {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.platform-account-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+}
+.platform-account-rows li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+.platform-account-rows .choice-button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.platform-account-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-login-dot {
+  flex: 0 0 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.account-login-dot[data-state="valid"] {
+  background: var(--success);
+}
+.account-login-dot[data-state="expired"] {
+  background: var(--danger);
+}
+.platform-account-list .choice-button:focus-visible {
+  outline-offset: -2px;
 }
 .platform-account-list .account-search {
   margin: 0 0 12px;
@@ -96,6 +212,7 @@
 }
 .account-rename {
   max-width: 420px;
+  margin-bottom: 12px;
 }
 .platform-account-content .artist-links {
   border: 0;
@@ -105,14 +222,43 @@
 .platform-account-content .artist-links > legend {
   font-weight: 600;
 }
+@media (width > 1050px) {
+  /* Use the space reserved by main above the fixed player. */
+  main:has(> #content > .platform-account-grid) {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+  }
+  #content:has(> .platform-account-grid) {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    width: 100%;
+    overflow-y: auto;
+  }
+  #content:has(> .platform-account-grid) > :not(.platform-account-grid) {
+    flex-shrink: 0;
+  }
+  .platform-account-grid {
+    flex: 1;
+    min-height: 15rem;
+    grid-template-rows: minmax(0, 1fr);
+  }
+  .platform-account-list {
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100% - var(--space-5));
+  }
+  .platform-account-list > :not(.platform-account-rows) {
+    flex-shrink: 0;
+  }
+}
 @media (max-width: 1050px) {
   .platform-account-grid {
     grid-template-columns: 1fr;
   }
-  .platform-account-list .choice-buttons {
-    display: flex;
-  }
-  .platform-account-list .choice-button {
-    width: auto;
+  .platform-account-rows {
+    max-height: min(26dvh, 18rem);
   }
 }

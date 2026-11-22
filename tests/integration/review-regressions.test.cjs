@@ -16,7 +16,7 @@ async function fixture(run = false) {
   if (run) {
     const p = await s.call("plan.save", {
       artistId: artist.id,
-      title: "QA计划",
+      title: "QA成品",
       story: "故事",
       timezone: "Etc/UTC",
       time: "08:00",
@@ -33,14 +33,7 @@ async function fixture(run = false) {
         publish: "manual",
       },
     });
-    r = s.startCreation({
-      artistId: artist.id,
-      planId: p.id,
-      title: "QA成品",
-      story: "故事",
-      overrides: {},
-      date: "2026-10-14",
-    });
+    r = s.startLegacyPlan(p.id, "2026-10-14");
     w = s.get("works", r.workId);
     w = await s.call("work.save", {
       ...w,

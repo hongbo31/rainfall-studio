@@ -1,3 +1,4 @@
+import { launchHeadlessChromium } from "../scripts/lib/headless-chromium.mjs";
 import test, { before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -227,15 +228,7 @@ before(async () => {
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   origin = "http://127.0.0.1:" + server.address().port;
-  browser = await chromium.launch({
-    executablePath:
-      process.env.CHROME_PATH ??
-      [
-        "/usr/bin/chromium",
-        "/usr/bin/google-chrome",
-        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-      ].find((p) => fs.existsSync(p)),
-    headless: true,
+  browser = await launchHeadlessChromium(chromium, {
     args: ["--disable-gpu"],
   });
   evidence.browser = browser.version();

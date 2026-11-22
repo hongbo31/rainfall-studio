@@ -1,3 +1,5 @@
+import { studioMediaUrl } from "../browser-studio";
+import { workVersionCover, workVersionTitle } from "../../shared/work-versions";
 import HelpNote from "../components/HelpNote";
 import CoverInbox from '../components/CoverInbox';
 import "../cover-studio.css";
@@ -47,15 +49,17 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
     (r: any) => r.id === requestId && r.workId === id,
   );
   const planLocked=!!handoff.planRecovery?.locked;
+  const versionBTitle = work?.assets.audio_B ? workVersionTitle(work, "audio_B") : null;
+  const versionBCover = versionBTitle ? workVersionCover(work, "audio_B") : undefined;
+  const variantBRequests = new Set(handoff.requests.filter((row: any) => row.variant === "B").map((row: any) => row.id));
+  const variantBAssets = new Set(handoff.receipts.filter((row: any) => variantBRequests.has(row.requestId)).map((row: any) => row.assetId));
   return (
     <div className="cover-studio">
       <PageHead title="封面工作室" action={<HelpNote label="使用说明">
-        图片接口未配置。dot 文件交接：导出请求 → 在支持出图的会话生成 →
-        接收真实图片。本应用不会直接调用当前 dot 聊天，也没有内置免费 Codex 图像
-        API。
+        在平台管理选择默认图像模型。使用图像 API 出图时会发送当前封面提示词，默认提示词包含本首歌词。收到图片后可在封面版本中选择。
       </HelpNote>} />
       {!work ? (
-        <div className="panel empty"><p>先创建一首作品，再来制作封面。</p><button className="primary" onClick={() => go("create")}>先创建作品</button></div>
+        <div className="panel empty"><p>先创建一首作品，再来制作封面。</p><button className="primary" onClick={() => go("chat")}>先创建作品</button></div>
       ) : (
         <>
           <div className="cover-workspace">
@@ -94,7 +98,8 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
                 </button>
                 <span>PNG / JPG / WebP</span>
               </div>
-              <CoverInbox workId={id} requestId={requestId||undefined} brief={brief} disabled={planLocked||busy}/>
+              <CoverInbox key={id} workId={id} requestId={requestId||undefined} brief={brief} disabled={planLocked||busy}
+                manualCover={handoff.manualCover} prompt={task}/>
               <details className="cover-options">
                 <summary>提示词与外部出图</summary>
                 <div className="cover-options-body">
@@ -185,7 +190,7 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
                     onChange={(e) => setRequestId(e.target.value)}
                   >
                     <option value="">选择已保存请求</option>
-                    {handoff.requests.map((r: any) => (
+                    {handoff.requests.filter((r: any) => !r.manualGeneration && !variantBRequests.has(r.id)).map((r: any) => (
                       <option value={r.id} key={r.id}>
                         {r.id.slice(0, 8)} ·{" "}
                         {r.state === "received" ? "已接收图片" : "等待真实图片"}
@@ -239,7 +244,7 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
                   导入结果清单前请先选中对应请求，清单与图片放在同一目录。方形512–10000px，PNG/JPEG/WebP，最多50MiB；3000px是本地工作目标。未提供清单时记为用户导入，不推断生成来源。
                 </HelpNote>
                 {handoff.receipts
-                  .filter((r: any) => r.workId === id)
+                  .filter((r: any) => r.workId === id && !variantBRequests.has(r.requestId))
                   .map((r: any) => (
                     <div className="handoff-receipt" key={r.id}>
                       <span>
@@ -247,7 +252,7 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
                         {r.requestId.slice(0, 8)} ·{" "}
                         {r.source === "user-import"
                           ? "用户导入"
-                          : "外部清单来源声明"}
+                          : r.source === "image-api" ? "API 生成" : "外部清单来源声明"}
                       </span>
                       <button
                         disabled={planLocked||work.assets.cover === r.assetId}
@@ -281,7 +286,7 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
                 <div className="cover large">
                   <img
                     alt={work.title + " 封面"}
-                    src={"media://asset/" + work.assets.cover}
+                    src={studioMediaUrl("media://asset/" + work.assets.cover)}
                   />
                 </div>
               ) : (
@@ -337,13 +342,22 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
               </div>
             </section>
           </div>
+          {versionBTitle && <details className="panel cover-versions">
+            <summary>B 版封面 · {versionBTitle}</summary>
+            {versionBCover && <div className="asset-grid"><div className="asset-card">
+              <img alt={versionBTitle + " 封面"} src={studioMediaUrl("media://asset/" + versionBCover)} />
+            </div></div>}
+            <button type="button" disabled={planLocked} onClick={() => void importAsset("cover_B", id)}>导入 B 版封面</button>
+            <CoverInbox key={id + ":B"} workId={id} variant="B" disabled={planLocked||busy} />
+          </details>}
           <section className="panel cover-versions">
             <h2>封面版本</h2>
             <div className="asset-grid">
               {data.assets
                 .filter(
                   (a: any) =>
-                    work.assetHistory.includes(a.id) && a.kind === "image",
+                    work.assetHistory.includes(a.id) && a.kind === "image" &&
+                    (a.id === work.assets.cover || (a.id !== work.assets.cover_B && !variantBAssets.has(a.id))),
                 )
                 .map((a: any) => (
                   <button
@@ -360,7 +374,7 @@ export default function CoverStudio({ initialId }: { initialId?: string }) {
                       })
                     }
                   >
-                    <img alt={a.label} src={"media://asset/" + a.id} />
+                    <img alt={a.label} src={studioMediaUrl("media://asset/" + a.id)} />
                     <span>{a.parentId ? "本地排版衍生" : "导入母版"}</span>
                     <small>
                       {a.metadata.width} × {a.metadata.height} ·{" "}

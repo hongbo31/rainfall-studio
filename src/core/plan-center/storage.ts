@@ -17,9 +17,10 @@ export class CenterStore {
     const value=this.repo.maybe('settings',this.key(kind,id))?.value;
     return value===undefined ? undefined : this.validate(kind,value);
   }
-  all<K extends keyof Entities>(kind:K):Entities[K][] {
+  all<K extends keyof Entities>(kind:K, scope?: { field: 'planId' | 'runId' | 'createdByRunId' | 'reason'; values: readonly string[] }):Entities[K][] {
     const prefix=`plan-center:${kind}:`;
-    return this.repo.all('settings').filter(r=>r.id.startsWith(prefix)).map(r=>this.validate(kind,r.value));
+    const filter=scope && {path:'$.value.'+scope.field,values:scope.values};
+    return this.repo.settingsByPrefix(prefix,filter).map(r=>this.validate(kind,r.value));
   }
   put<K extends keyof Entities>(kind:K,value:Entities[K]):Entities[K] {
     const parsed=this.validate(kind,value);this.repo.save('settings',{id:this.key(kind,parsed.id),value:parsed});return parsed;

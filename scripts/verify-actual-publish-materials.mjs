@@ -1,3 +1,4 @@
+import { launchHeadlessChromium } from "./lib/headless-chromium.mjs";
 // Optional local acceptance against existing work; SQLite is opened read-only.
 // All publish/selection writes below go only to in-memory Maps, never to Studio/runtime.
 import fs from "node:fs";
@@ -204,10 +205,7 @@ try {
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const origin = "http://127.0.0.1:" + server.address().port;
-  browser = await chromium.launch({
-    executablePath:
-      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-    headless: true,
+  browser = await launchHeadlessChromium(chromium, {
     args: ["--disable-gpu"],
   });
   const page = await browser.newPage({

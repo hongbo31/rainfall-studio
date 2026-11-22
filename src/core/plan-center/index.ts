@@ -8,12 +8,17 @@ import { TextEvaluationScoreSchema } from '../../shared/text-evaluation';
 import { PairSchema } from '../quality/contracts';
 import { pairHash } from '../quality/scoring';
 import type { Repository } from '../database';
-import { PlanCenterPlanSchema, PlanCenterSaveSchema, PlanCenterToggleSchema, PlanCenterIdSchema, PlanCenterRunSchema, PlanCenterStopSchema, PlanCenterClaimSchema, PlanCenterRecordSchema, PlanCenterReconcileSchema, PlanCenterRetrySchema, PlanCenterMaterialsSchema, PlanCenterCapabilitySchema, PlanCenterCapabilityNames } from '../../shared/plan-center';
-import type { PlanCenterPlan, PlanCenterPlanInput, PlanCenterCapabilities, PlanCenterCapabilityName, PlanCenterRun, PlanCenterItem, PlanCenterStage, PlanCenterStageAttempt, PlanCenterPublishAttempt, PlanCenterAlbumBinding, PlanCenterPublishTarget, PlanCenterList, PlanCenterMigration } from '../../shared/plan-center';
+import { PlanCenterPlanSchema, PlanCenterSaveSchema, PlanCenterDeleteSchema, PlanCenterToggleSchema, PlanCenterScheduleCreationSchema, PlanCenterIdSchema, PlanCenterRunSchema, PlanCenterStopSchema, PlanCenterClaimSchema, PlanCenterRecordSchema, PlanCenterReconcileSchema, PlanCenterRetrySchema, PlanCenterMaterialsSchema, PlanCenterCapabilitySchema, PlanCenterCapabilityNames, isPublicationPlan } from '../../shared/plan-center';
+import type { CreationTaskSummary, PlanCenterPlan, PlanCenterPlanInput, PlanCenterCapabilities, PlanCenterCapabilityName, PlanCenterRun, PlanCenterItem, PlanCenterStage, PlanCenterStageAttempt, PlanCenterPublishAttempt, PlanCenterAlbumBinding, PlanCenterPublishTarget, PlanCenterList, PlanCenterMigration } from '../../shared/plan-center';
+import { planRunActive, planRunBlocksDeletion, planStageCancelsOnStop } from '../../shared/plan-center';
 import { CenterStore, digest, isLegacyOwned } from './storage';
 import { dueTimes } from './schedule';
 import {providerPlanProof} from '../provider-plan-text';
 import {ProviderTextJobSchema} from '../../shared/provider-text';
+import {authorizeGraphPlanExecution,freezePlanWorkflow,planWorkflowIssue,planWorkflowMusicIssue,verifiedPlanLyrics} from '../plan-workflow';
+import {isLocalPublicationWorkflow,workflowPublicationPlatforms} from '../../shared/plan-workflow-graph';
+import {workflowBrowserMusic} from '../../shared/plan-workflow-fields';
+import {readWorkflowPublication} from '../plan-workflow-publication';
 export { isLegacyOwned } from './storage';
 
 export type PlanCenterOptions = {
@@ -22,15 +27,26 @@ export type PlanCenterOptions = {
   ports?:{albumCatalog?:(input:{platform:string;accountId:string})=>{evidenceId:string;albums:Array<{id:string}>}};
   // Recovery is a process-start action. Long-lived integrations must reuse the service instance.
   recoverDispatching?:boolean;
+  prepareDownloads?: (plan: PlanCenterPlan) => NonNullable<PlanCenterRun['downloadFolders']>;
 };
 const terminalRuns=new Set(['completed','stopped','failed']);
-const inFlight=new Set(['dispatching','waiting','unknown']);
-const publishInFlight=new Set(['dispatching','submitted','reviewing','unknown']);
-const names:Record<PlanCenterStage,PlanCenterCapabilityName|undefined>={dot:'dot',text_generate:'text',text_score:'text',cover:'cover',music_submit:'music',music_assets:'music',materials:undefined};
+const names:Record<PlanCenterStage,PlanCenterCapabilityName|undefined>={dot:'dot',text_generate:'text',text_score:'text',lyric_write:'text',cover:'cover',music_submit:'music',music_assets:'music',materials:undefined};
 const safeId=z.string().min(1).max(500);
 const targetInput=z.strictObject({runId:safeId,platform:safeId,accountId:safeId});
 const publishInput=targetInput.extend({itemId:safeId});
 const missingTheme=(plan:PlanCenterPlanInput)=>['provider','pule_prompt'].includes(plan.material.source??'dot')&&!plan.theme?.trim()&&!plan.storyContext?.storyBeat.trim();
+const deletedPlanKey=(id:string)=>'plan-center:deleted-plan:'+id;
+
+function creationTaskState(run?: PlanCenterRun, item?: PlanCenterItem): CreationTaskSummary['state'] {
+  if (!run) return 'pending';
+  if (run.state === 'completed' || run.state === 'stopped') return run.state;
+  if (item?.state === 'unknown') return 'unknown';
+  if (run.state === 'stopping') return 'stopping';
+  if (run.state === 'failed' || item?.state === 'failed' || item?.state === 'not_found') return 'failed';
+  if (run.state === 'blocked') return 'blocked';
+  if (item?.reason === 'COVER_REQUIRED') return 'awaiting_cover';
+  return 'running';
+}
 export class PlanCenterService {
   private store:CenterStore;
   constructor(readonly repo:Repository,readonly options:PlanCenterOptions={}) {
@@ -38,6 +54,11 @@ export class PlanCenterService {
     if(options.recoverDispatching!==false)this.recover();
   }
   private now() {const n=this.options.now?.()??new Date();return new Date(n).toISOString();}
+  private checkCreationSchedule(plan:PlanCenterPlan) {
+    if((plan.material.source!=='creation'&&!plan.workflow)||!plan.enabled||plan.schedule.kind!=='once')return;
+    const at=DateTime.fromISO(`${plan.schedule.date}T${plan.schedule.localTime}`,{zone:plan.timezone});
+    if(at.toMillis()<=Date.parse(this.now()))throw Error('CREATION_SCHEDULE_IN_PAST');
+  }
   capabilities():PlanCenterCapabilities {
     const supplied=typeof this.options.capabilities==='function'?this.options.capabilities():this.options.capabilities??{};
     const result={} as PlanCenterCapabilities;
@@ -47,18 +68,48 @@ export class PlanCenterService {
   list():PlanCenterList {
     return {plans:this.store.all('plan'),runs:this.store.all('run'),items:this.store.all('item'),stageAttempts:this.store.all('stage'),publishAttempts:this.store.all('publish'),occurrences:this.store.all('occurrence'),albumBindings:this.store.all('album'),migration:this.store.all('migration').at(-1)??null};
   }
+  listCreationTasks(): CreationTaskSummary[] {
+    const plans = this.store.all('plan').filter(plan => plan.creationDraft);
+    if (!plans.length) return [];
+    const latestRuns = new Map<string, PlanCenterRun>();
+    for (const run of this.store.all('run')) {
+      if (run.snapshot.material.source !== 'creation') continue;
+      const previous = latestRuns.get(run.planId);
+      if (!previous || run.createdAt >= previous.createdAt) latestRuns.set(run.planId, run);
+    }
+    const items = new Map(this.store.all('item').map(item => [item.runId, item]));
+    const coverErrors = new Map<string, string>();
+    for (const { id, value } of this.repo.all('settings')) {
+      if (!id.startsWith('cover-inbox:') || value?.state !== 'waiting' || typeof value.planItemId !== 'string') continue;
+      const reason = value.reason ?? value.generation?.reason;
+      if (typeof reason === 'string') coverErrors.set(value.planItemId, reason);
+    }
+    return plans.reverse().sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? '')).map(plan => {
+      const run = latestRuns.get(plan.id);
+      const item = run && items.get(run.id);
+      const state = creationTaskState(run, item);
+      return {
+        planId: plan.id, runId: run?.id, workId: item?.workId,
+        title: plan.title, style: plan.creationDraft!.style,
+        state, reason: state==='stopped' ? run?.reason :
+          (state==='awaiting_cover' && item ? coverErrors.get(item.id) : undefined) ?? item?.reason ?? run?.reason,
+      };
+    });
+  }
   save(input:{plan:PlanCenterPlanInput;expectedRevision:number|null}) {
     const parsed=PlanCenterSaveSchema.parse(input);
+    this.checkCreationSchedule(parsed.plan);
     if(parsed.plan.enabled&&missingTheme(parsed.plan))throw Error('THEME_REQUIRED');
     return this.repo.transaction(()=>{
       const old=this.store.get('plan',parsed.plan.id);
+      if(!old&&this.repo.maybe('settings',deletedPlanKey(parsed.plan.id)))throw Error('PLAN_DELETED');
       if((old?.revision??null)!==parsed.expectedRevision)throw Error('REVISION_CONFLICT');
       if(parsed.plan.fanqie?.accountId&&this.repo.maybe('accounts',parsed.plan.fanqie.accountId)?.provider!=='fanqie')
         throw Error('ACCOUNT_PROVIDER_MISMATCH');
       const promptPlan=parsed.plan.material.source==='pule_prompt';
       const instrumental=parsed.plan.songType==='instrumental';
-      if(instrumental&&(!parsed.plan.outputs.music||!['provider','pule_prompt'].includes(parsed.plan.material.source)))throw Error('INSTRUMENTAL_MUSIC_REQUIRED');
-      const typedPlan=instrumental?{...parsed.plan,outputs:{...parsed.plan.outputs,lyrics:false},text:{...parsed.plan.text,consent:false},authorization:{...parsed.plan.authorization,text:false}}:parsed.plan;
+      if(instrumental&&(!parsed.plan.outputs.music||!['provider','pule_prompt','creation','workflow'].includes(parsed.plan.material.source)))throw Error('INSTRUMENTAL_MUSIC_REQUIRED');
+      const typedPlan=instrumental&&!parsed.plan.workflow?{...parsed.plan,outputs:{...parsed.plan.outputs,lyrics:false},text:{...parsed.plan.text,consent:false},authorization:{...parsed.plan.authorization,text:false}}:parsed.plan;
       const planInput=promptPlan?{
         ...typedPlan,outputs:{...typedPlan.outputs,cover:true},
         ...(parsed.plan.routing||!parsed.plan.music.profileId?{}:{routing:{
@@ -66,8 +117,10 @@ export class PlanCenterService {
           music:{source:'override' as const,profileId:parsed.plan.music.profileId},
         }}),
       }:typedPlan;
-      let inputPlan=freezePlanIdentities(this.repo,freezeArtist(this.repo,freezePlanRoutes(this.repo,planInput)));
-      if(old?.routeSnapshot&&digest(old.routeSnapshot)!==digest(inputPlan.routeSnapshot)){inputPlan={...inputPlan,text:{...inputPlan.text,consent:false},music:{...inputPlan.music,consent:false},authorization:{...inputPlan.authorization,text:false,music:false}};}
+      const local=isLocalPublicationWorkflow(planInput.workflow?.graph);
+      let inputPlan=freezePlanWorkflow(this.repo,local?planInput:freezePlanIdentities(this.repo,freezeArtist(this.repo,freezePlanRoutes(this.repo,planInput))));
+      this.checkWorkflowSchedule(inputPlan);
+      if(!inputPlan.workflow&&old?.routeSnapshot&&digest(old.routeSnapshot)!==digest(inputPlan.routeSnapshot)){inputPlan={...inputPlan,text:{...inputPlan.text,consent:false},music:{...inputPlan.music,consent:false},authorization:{...inputPlan.authorization,text:false,music:false}};}
       if(inputPlan.material.source==='provider'&&!instrumental&&inputPlan.text.profileId){
         const profile=this.repo.maybe('settings','api-profile:'+inputPlan.text.profileId);
         if(!profile||profile.kind!=='text'||!['deepseek','doubao'].includes(profile.providerId))throw Error('TEXT_PROFILE_REQUIRED');
@@ -80,13 +133,58 @@ export class PlanCenterService {
       return plan;
     });
   }
+  read(input:z.input<typeof PlanCenterIdSchema>) {
+    const {id}=PlanCenterIdSchema.parse(input),plan=this.store.get('plan',id);
+    if(!plan)throw Error('NOT_FOUND');
+    return plan;
+  }
+  delete(input:z.input<typeof PlanCenterDeleteSchema>, onStopped?:(run:PlanCenterRun)=>void) {
+    const {id,expectedRevision}=PlanCenterDeleteSchema.parse(input);
+    return this.repo.transaction(()=>{
+      const plan=this.read({id});
+      if(plan.revision!==expectedRevision)throw Error('REVISION_CONFLICT');
+      const rows=this.list(),unfinished=rows.runs.filter(run=>run.planId===id&&!terminalRuns.has(run.state));
+      if(unfinished.some(run=>planRunBlocksDeletion(run,rows)))throw Error('ACTIVE_RUN');
+      for(const run of unfinished){
+        const stopped=this.stop({runId:run.id});
+        onStopped?.(stopped);
+      }
+      this.repo.save('settings',{id:deletedPlanKey(id),value:{plan,deletedAt:this.now()}});
+      this.store.remove('plan',id);
+      this.store.remove('cursor',id);
+      this.repo.audit('planCenter.plan.deleted',id,{revision:expectedRevision});
+      return {id};
+    });
+  }
   toggle(input:z.input<typeof PlanCenterToggleSchema>) {
     const p=PlanCenterToggleSchema.parse(input);
-    return this.repo.transaction(()=>{const old=this.store.get('plan',p.id);if(!old)throw Error('NOT_FOUND');if(old.revision!==p.expectedRevision)throw Error('REVISION_CONFLICT');if(p.enabled&&missingTheme(old))throw Error('THEME_REQUIRED');const now=this.now();const plan=this.store.put('plan',{...old,enabled:p.enabled,revision:old.revision+1,updatedAt:now});this.store.put('cursor',{id:plan.id,lastAt:now});return plan;});
+    return this.repo.transaction(()=>{const old=this.store.get('plan',p.id);if(!old)throw Error('NOT_FOUND');if(old.revision!==p.expectedRevision)throw Error('REVISION_CONFLICT');if(p.enabled&&missingTheme(old))throw Error('THEME_REQUIRED');this.checkCreationSchedule({...old,enabled:p.enabled});this.checkWorkflowSchedule({...old,enabled:p.enabled});const now=this.now();const plan=this.store.put('plan',{...old,enabled:p.enabled,revision:old.revision+1,updatedAt:now});this.store.put('cursor',{id:plan.id,lastAt:now});return plan;});
+  }
+  private checkWorkflowSchedule(plan:PlanCenterPlan) {
+    if(plan.enabled&&workflowPublicationPlatforms(plan.workflow?.graph).length){
+      if(!plan.authorization.publish)throw Error('WORKFLOW_PUBLICATION_CONFIRMATION_REQUIRED');
+      const issue=planWorkflowIssue(this.repo,plan);
+      if(issue)throw Error(issue);
+    }
+  }
+  scheduleCreation(input:unknown) {
+    const p=PlanCenterScheduleCreationSchema.parse(input);
+    return this.repo.transaction(()=>{
+      const old=this.store.get('plan',p.id);
+      if(old?.material.source!=='creation')throw Error('NOT_FOUND');
+      if(old.revision!==p.expectedRevision)throw Error('REVISION_CONFLICT');
+      if(this.hasActiveRun(old.id,'scheduled'))throw Error('ACTIVE_RUN');
+      const now=this.now(),plan={...old,enabled:true,schedule:p.schedule,updatedAt:now,revision:old.revision+1};
+      this.checkCreationSchedule(plan);
+      const issue=planRouteIssue(this.repo,plan);
+      if(issue)throw Error(issue);
+      this.store.put('cursor',{id:plan.id,lastAt:now});
+      return this.store.put('plan',plan);
+    });
   }
   preview(input:z.input<typeof PlanCenterIdSchema>) {
     const {id}=PlanCenterIdSchema.parse(input),plan=this.store.get('plan',id);if(!plan)throw Error('NOT_FOUND');
-    const summary={title:plan.title,artistId:plan.artistId,count:plan.count,outputs:plan.outputs,theme:plan.theme,styleTemplate:plan.styleTemplate,artistSnapshot:plan.artistSnapshot,storyContext:plan.storyContext,material:plan.material,text:plan.text,music:plan.music,routing:plan.routing,routeSnapshot:plan.routeSnapshot,routeIssue:planRouteIssue(this.repo,plan),publishTargets:plan.publishTargets.filter(t=>t.enabled),fanqie:plan.fanqie,authorization:plan.authorization,...(plan.songType?{songType:plan.songType}:{})};
+    const summary={title:plan.title,artistId:plan.artistId,count:plan.count,outputs:plan.outputs,theme:plan.theme,styleTemplate:plan.styleTemplate,artistSnapshot:plan.artistSnapshot,storyContext:plan.storyContext,material:plan.material,text:plan.text,music:plan.music,routing:plan.routing,routeSnapshot:plan.routeSnapshot,routeIssue:planWorkflowIssue(this.repo,plan)??planRouteIssue(this.repo,plan),publishTargets:plan.publishTargets.filter(t=>t.enabled),fanqie:plan.fanqie,authorization:plan.authorization,...(plan.songType?{songType:plan.songType}:{})};
     return {planRevision:plan.revision,summaryHash:digest({plan,summary}),summary};
   }
   run(input:z.input<typeof PlanCenterRunSchema>) {
@@ -94,26 +192,78 @@ export class PlanCenterService {
     return this.runTrusted(p);
   }
   /** Internal-only directory dispatch. Public run validation never accepts this source. */
-  runDirectory(input:Omit<z.input<typeof PlanCenterRunSchema>,'source'>){
-    const parsed=PlanCenterRunSchema.omit({source:true}).parse(input);
+  runDirectory(input:Omit<z.input<typeof PlanCenterRunSchema>,'source'|'confirmGeneration'|'confirmPublication'>){
+    const parsed=PlanCenterRunSchema.omit({source:true,confirmGeneration:true,confirmPublication:true}).parse(input);
     return this.runTrusted({...parsed,source:'directory'});
   }
-  private runTrusted(p:Omit<z.output<typeof PlanCenterRunSchema>,'source'>&{source:'manual'|'debug'|'directory'}){
+  runForPublication(input:Omit<z.input<typeof PlanCenterRunSchema>,'source'|'confirmGeneration'|'confirmPublication'>,includePlanPublication:boolean,prepareContract?:boolean){
+    const parsed=PlanCenterRunSchema.omit({source:true,confirmGeneration:true,confirmPublication:true}).parse(input);
+    return this.runTrusted({...parsed,source:'publication_task'},includePlanPublication,prepareContract);
+  }
+  private runTrusted(p:Omit<z.output<typeof PlanCenterRunSchema>,'source'>&{source:'manual'|'debug'|'directory'|'publication_task'},includePlanPublication=false,prepareContract?:boolean){
     return this.repo.transaction(()=>{
       const existing=this.store.all('run').find(r=>r.requestId===p.requestId);
-      if(existing) {if(existing.planId!==p.id||existing.source!==p.source||existing.summaryHash!==p.summaryHash||existing.planRevision!==p.expectedRevision)throw Error('REQUEST_ID_CONFLICT');return existing;}
+      if(existing) {if(existing.planId!==p.id||existing.source!==p.source||existing.summaryHash!==p.summaryHash||existing.planRevision!==p.expectedRevision||
+        (existing.prepareContract??true)!==(prepareContract??true))throw Error('REQUEST_ID_CONFLICT');return existing;}
       const plan=this.store.get('plan',p.id);if(!plan)throw Error('NOT_FOUND');
       if(plan.revision!==p.expectedRevision)throw Error('REVISION_CONFLICT');
       if(this.preview({id:p.id}).summaryHash!==p.summaryHash)throw Error('SUMMARY_CONFLICT');
+      const publishes=workflowPublicationPlatforms(plan.workflow?.graph).length>0;
+      const local=isLocalPublicationWorkflow(plan.workflow?.graph);
+      if(plan.workflow?.graph&&(p.source==='manual'||p.source==='debug')){
+        if(!local&&!p.confirmGeneration)throw Error('WORKFLOW_CONFIRMATION_REQUIRED');
+        if(local&&p.confirmGeneration)throw Error('WORKFLOW_CONFIRMATION_SCOPE');
+        if(publishes&&!p.confirmPublication)throw Error('WORKFLOW_PUBLICATION_CONFIRMATION_REQUIRED');
+        if(!publishes&&p.confirmPublication)throw Error('WORKFLOW_CONFIRMATION_SCOPE');
+        const issue=planWorkflowIssue(this.repo,plan)??planRouteIssue(this.repo,plan);
+        if(issue)throw Error(issue);
+        return this.createRun(authorizeGraphPlanExecution(plan,publishes),p.source,p.requestId,p.summaryHash);
+      }
+      if(p.confirmGeneration||p.confirmPublication)throw Error('WORKFLOW_CONFIRMATION_SCOPE');
+      if(p.source==='publication_task'){
+        if(!isPublicationPlan(plan)||local&&!includePlanPublication)throw Error('PUBLICATION_PLAN_UNAVAILABLE');
+        const authorized=plan.workflow?.graph?authorizeGraphPlanExecution(plan,includePlanPublication&&publishes):plan;
+        const snapshot=includePlanPublication?authorized:
+          {...authorized,fanqie:undefined,publishTargets:[],authorization:{...authorized.authorization,publish:false}};
+        return this.createRun(snapshot,p.source,p.requestId,p.summaryHash,undefined,prepareContract);
+      }
+      if(local&&p.source==='directory'&&!plan.authorization.publish)throw Error('WORKFLOW_PUBLICATION_CONFIRMATION_REQUIRED');
+      if(!local&&plan.workflow?.graph&&p.source==='directory'&&
+        (!plan.authorization.text||!plan.text.consent||!plan.authorization.music||!plan.music.consent||publishes&&!plan.authorization.publish))
+        throw Error('WORKFLOW_CONFIRMATION_REQUIRED');
       return this.createRun(plan,p.source,p.requestId,p.summaryHash);
     });
   }
-  private createRun(plan:PlanCenterPlan,source:PlanCenterRun['source'],requestId:string,summaryHash:string,occurrenceKey?:string) {
+  private hasActiveRun(planId: string, source: PlanCenterRun['source']) {
+    const taskOwned = source === 'publication_task';
+    return this.store.all('run', { field: 'planId', values: [planId] })
+      .some(run => (run.source === 'publication_task') === taskOwned && planRunActive(run));
+  }
+  private createRun(plan:PlanCenterPlan,source:PlanCenterRun['source'],requestId:string,summaryHash:string,occurrenceKey?:string,prepareContract?:boolean) {
     if(missingTheme(plan))throw Error('THEME_REQUIRED');
-    if(this.store.all('run').some(r=>r.planId===plan.id&&!terminalRuns.has(r.state)))throw Error('ACTIVE_RUN');
-    const routeIssue=planRouteIssue(this.repo,plan);if(routeIssue)plan={...plan,needsConfiguration:[routeIssue,...plan.needsConfiguration]};
-    const now=this.now(),run=this.store.put('run',{id:randomUUID(),planId:plan.id,planRevision:plan.revision,snapshot:plan,summaryHash,requestId,source,occurrenceKey,state:'running',stopRequested:false,createdAt:now,updatedAt:now});
-    for(let ordinal=1;ordinal<=plan.count;ordinal++)this.store.put('item',{id:`${run.id}:item:${ordinal}`,runId:run.id,planId:plan.id,ordinal,expectedExternalItemId:plan.material.expectedExternalItemIds?.[ordinal-1]??`pc-${digest([run.id,ordinal])}`,state:plan.material.source==='dot'?'waiting_external_dot':'waiting_materials',versions:[],createdAt:now,updatedAt:now});
+    if(this.hasActiveRun(plan.id,source))throw Error('ACTIVE_RUN');
+    const workflowIssue=planWorkflowIssue(this.repo,plan)??(source!=='publication_task'&&
+      workflowPublicationPlatforms(plan.workflow?.graph).length&&!plan.authorization.publish?'WORKFLOW_PUBLICATION_CONFIRMATION_REQUIRED':undefined);
+    const local=isLocalPublicationWorkflow(plan.workflow?.graph);
+    const routeIssue=workflowIssue??planRouteIssue(this.repo,plan);if(routeIssue)plan={...plan,needsConfiguration:[routeIssue,...plan.needsConfiguration]};
+    let downloadFolders: PlanCenterRun['downloadFolders'];
+    try {
+      if(!local&&!workflowIssue){
+        downloadFolders = this.options.prepareDownloads?.(plan);
+        if(plan.workflow?.graph&&!downloadFolders?.length)throw Error('DOWNLOAD_ROOT_REQUIRED');
+      }
+    }
+    catch (error) {
+      if (source !== 'scheduled') throw error;
+      const reason = error instanceof Error && /^DOWNLOAD_[A-Z_]+$/u.test(error.message) ? error.message : 'DOWNLOAD_FOLDER_UNAVAILABLE';
+      plan = { ...plan, needsConfiguration: [reason, ...plan.needsConfiguration] };
+    }
+    const now=this.now(),run=this.store.put('run',{id:randomUUID(),planId:plan.id,planRevision:plan.revision,snapshot:plan,summaryHash,requestId,source,occurrenceKey,
+      ...(prepareContract===undefined?{}:{prepareContract}),state:local&&routeIssue?'failed':'running',stopRequested:false,createdAt:now,updatedAt:now,
+      ...(local&&routeIssue?{reason:routeIssue}:{}),...(downloadFolders?.length?{downloadFolders}:{})});
+    if(local)return run;
+    const draft=plan.creationDraft;
+    for(let ordinal=1;ordinal<=plan.count;ordinal++)this.store.put('item',{id:`${run.id}:item:${ordinal}`,runId:run.id,planId:plan.id,ordinal,expectedExternalItemId:plan.material.expectedExternalItemIds?.[ordinal-1]??`pc-${digest([run.id,ordinal])}`,state:plan.material.source==='dot'?'waiting_external_dot':'waiting_materials',versions:[],createdAt:now,updatedAt:now,...(draft?{material:{source:'creation',title:draft.title,lyrics:draft.lyrics,musicPrompt:draft.style}}:{})});
     this.refresh(run.id);return this.store.get('run',run.id)!;
   }
   tick() {
@@ -121,7 +271,7 @@ export class PlanCenterService {
       const now=this.now();
       for(const plan of this.store.all('plan').filter(p=>p.enabled)) {
         if(missingTheme(plan))continue;
-        if(this.store.all('run').some(r=>r.planId===plan.id&&!terminalRuns.has(r.state)))continue;
+        if(this.hasActiveRun(plan.id,'scheduled'))continue;
         const cursor=this.store.get('cursor',plan.id)??{id:plan.id,lastAt:plan.createdAt??now};
         const times=dueTimes(plan,cursor.lastAt,now);if(!times.length)continue;
         const selected=plan.catchUp.mode==='bounded'?times.slice(-plan.catchUp.limit)[0]:times.at(-1)!;
@@ -131,6 +281,7 @@ export class PlanCenterService {
           if(plan.catchUp.mode==='skip'&&Date.parse(now)-Date.parse(selected)>60_000)this.store.put('occurrence',{...base,status:'skipped',reason:'CATCH_UP_SKIP'});
           else {const run=this.createRun(plan,'scheduled',key,this.preview({id:plan.id}).summaryHash,key);this.store.put('occurrence',{...base,status:'claimed',runId:run.id});}
         }
+        if(plan.material.source==='creation'||plan.workflow&&plan.schedule.kind==='once')this.store.put('plan',{...plan,enabled:false,revision:plan.revision+1,updatedAt:now});
         this.store.put('cursor',{id:plan.id,lastAt:plan.catchUp.mode==='bounded'?selected:now});
       }
       return this.list();
@@ -138,7 +289,12 @@ export class PlanCenterService {
   }
   stop(input:z.input<typeof PlanCenterStopSchema>) {
     const {runId}=PlanCenterStopSchema.parse(input);
-    return this.repo.transaction(()=>{const run=this.store.get('run',runId);if(!run)throw Error('NOT_FOUND');if(terminalRuns.has(run.state))return run;this.store.put('run',{...run,stopRequested:true,state:'stopping',updatedAt:this.now()});this.refresh(runId);return this.store.get('run',runId)!;});
+    return this.repo.transaction(()=>{
+      const run=this.store.get('run',runId);if(!run)throw Error('NOT_FOUND');
+      if(terminalRuns.has(run.state))return run;
+      this.store.put('run',{...run,stopRequested:true,state:'stopped',updatedAt:this.now()});
+      this.refresh(runId);return this.store.get('run',runId)!;
+    });
   }
   /** A local prepared job with zero operations proves no provider call was dispatched. */
   resumeUnsentProviderGeneration(attemptId:string){
@@ -160,19 +316,37 @@ export class PlanCenterService {
     });
   }
   private stages(plan:PlanCenterPlan):PlanCenterStage[] {
+    if(plan.workflow)return ['lyric_write','music_submit','music_assets',...(plan.outputs.cover?['cover' as const]:[]),'materials'];
+    if(plan.material.source==='creation')return [...(plan.outputs.music?['music_submit' as const,'music_assets' as const]:[]),...(plan.outputs.cover?['cover' as const]:[]),'materials'];
     if(plan.material.source==='pule_prompt')return ['music_submit','music_assets','cover','materials'];
     if(plan.songType==='instrumental')return ['music_submit','music_assets',...(plan.outputs.cover?['cover' as const]:[]),'materials'];
     return [...(plan.material.source==='provider'?['text_generate' as const]:['dot' as const]),'text_score',...(plan.outputs.music?['music_submit' as const,'music_assets' as const]:[]),...(plan.outputs.cover?['cover' as const]:[]),'materials'];
   }
   private stageGate(run:PlanCenterRun,item:PlanCenterItem,stage:PlanCenterStage):{state:string;reason?:string} {
     const profileIssue=frozenRouteIssue(this.repo,run.snapshot);if(profileIssue)return{state:'blocked',reason:profileIssue};
-    if(run.snapshot.needsConfiguration.length)return {state:'blocked',reason:run.snapshot.routing?run.snapshot.needsConfiguration[0]:'LEGACY_CONFIGURATION_REQUIRED'};
+    const configurationIssue=run.snapshot.needsConfiguration[0];
+    if(configurationIssue)return {state:'blocked',reason:run.snapshot.routing||configurationIssue.startsWith('DOWNLOAD_')?configurationIssue:'LEGACY_CONFIGURATION_REQUIRED'};
     if(stage==='dot'&&run.snapshot.material.source==='manual')return {state:'waiting_materials',reason:'MANUAL_MATERIAL_REQUIRED'};
     const cap=names[stage];
     if(cap&&!this.capabilities()[cap].available)return {state:stage==='dot'?'waiting_external_dot':'blocked',reason:this.capabilities()[cap].reason};
     if(stage==='dot'&&(!run.snapshot.material.channel||!run.snapshot.material.identity))return {state:'waiting_external_dot',reason:'DOT_IDENTITY_REQUIRED'};
     if(['text_generate','text_score'].includes(stage)&&(!run.snapshot.authorization.text||!run.snapshot.text.consent||!run.snapshot.text.profileId||!run.snapshot.text.profileRevision||!run.snapshot.text.modelId||!run.snapshot.text.budgetMicros))return {state:'blocked',reason:'TEXT_GRANT_REQUIRED'};
-    if(stage==='music_submit'&&run.snapshot.songType==='instrumental'&&run.snapshot.music.creditPolicy?.mode!=='uncapped_existing_credits')return {state:'blocked',reason:'MUSIC_GRANT_REQUIRED'};
+    if(stage==='lyric_write'){
+      const plan=run.snapshot, issue=planWorkflowIssue(this.repo,plan);
+      if(issue)return {state:'blocked',reason:issue};
+      if(plan.workflow?.graph&&item.ordinal>1&&this.store.all('item').some(previous=>previous.runId===run.id&&
+        previous.ordinal<item.ordinal&&!['completed','waiting_publication'].includes(previous.state)))
+        return {state:'waiting_workflow',reason:'PREVIOUS_WORKFLOW_PENDING'};
+      if(!plan.authorization.text||!plan.text.consent)return {state:'blocked',reason:'TEXT_AUTHORIZATION_REQUIRED'};
+      if(!(plan.routeSnapshot?.music.channel==='pule'||plan.routeSnapshot?.music.capability==='music_browser')||!plan.authorization.music||!plan.music.consent||plan.music.creditPolicy?.mode!=='uncapped_existing_credits')
+        return {state:'blocked',reason:'MUSIC_GRANT_REQUIRED'};
+    }
+    if(stage==='music_submit'&&(run.snapshot.songType==='instrumental'||run.snapshot.material.source==='creation'||run.snapshot.workflow)&&run.snapshot.music.creditPolicy?.mode!=='uncapped_existing_credits')return {state:'blocked',reason:'MUSIC_GRANT_REQUIRED'};
+    if((stage==='music_submit'||stage==='music_assets')&&workflowBrowserMusic(run.snapshot.workflow)){
+      const issue=planWorkflowMusicIssue(this.repo,run.snapshot);
+      return issue||!run.snapshot.authorization.music||!run.snapshot.music.consent
+        ?{state:'blocked',reason:issue??'MUSIC_GRANT_REQUIRED'}:{state:'ready'};
+    }
     if(stage==='music_submit'&&run.snapshot.songType!=='instrumental'&&run.snapshot.music.route==='manual')return item.workId?{state:'ready'}:{state:'waiting_materials',reason:'EXISTING_AUDIO_BINDING_REQUIRED'};
     if(stage==='music_submit'&&(!run.snapshot.authorization.music||!run.snapshot.music.consent||!run.snapshot.music.profileId||!run.snapshot.music.profileRevision||!run.snapshot.music.modelId||!run.snapshot.music.budgetCredits||!run.snapshot.music.maxCostPerRequestCredits||(!run.snapshot.music.pricingEvidence&&!run.snapshot.music.creditPolicy)))return {state:'blocked',reason:'MUSIC_GRANT_REQUIRED'};
     if(stage==='music_submit'&&!['yourmusic','pule'].includes(run.snapshot.music.route))return {state:'blocked',reason:'MUSIC_ROUTE_UNAVAILABLE'};
@@ -226,6 +400,11 @@ export class PlanCenterService {
     const item=this.store.get('item',attempt.itemId)!,run=this.store.get('run',attempt.runId)!;
     if(p.status==='succeeded') {
       if(!p.evidenceId)throw Error('EVIDENCE_REQUIRED');
+      if(attempt.stage==='lyric_write'){
+        if(run.stopRequested||attempt.externalTaskId!==p.evidenceId)throw Error('WORKFLOW_LYRICS_EVIDENCE_REQUIRED');
+        const material=verifiedPlanLyrics(this.repo,attempt.id,p.evidenceId,run.snapshot);
+        this.store.put('item',{...item,material,updatedAt:this.now()});
+      }
       if(attempt.stage==='dot')this.validateDot(run,item,p.result);
       if(attempt.stage==='text_generate'){
         const proof=providerPlanProof(this.repo,run,item,safeId.parse(p.result?.providerJobId),false);
@@ -438,16 +617,34 @@ export class PlanCenterService {
   }
   refreshPublication(runId:string){this.refresh(runId);}
   private refresh(runId:string) {
-    const run=this.store.get('run',runId)!;if(terminalRuns.has(run.state))return;
+    const run=this.store.get('run',runId)!;if(terminalRuns.has(run.state)&&!(run.state==='stopped'&&run.stopRequested))return;
     const stages=this.store.all('stage').filter(a=>a.runId===run.id),publish=this.store.all('publish').filter(a=>a.runId===run.id),items=this.store.all('item').filter(i=>i.runId===run.id),now=this.now();
     if(run.stopRequested) {
-      const outstanding=stages.some(a=>inFlight.has(a.state))||publish.some(a=>publishInFlight.has(a.state))||this.store.all('album').some(a=>a.createdByRunId===run.id&&['dispatching','unknown'].includes(a.state));
-      this.store.put('run',{...run,state:outstanding?'stopping':'stopped',updatedAt:now});return;
+      for(const attempt of stages.filter(a=>planStageCancelsOnStop(run,a))){
+        const reason=attempt.stage==='music_assets'?'WORKFLOW_DOWNLOAD_STOPPED':'WORKFLOW_STAGE_STOPPED';
+        this.store.put('stage',{...attempt,state:'failed',reason,updatedAt:now});
+      }
+      if(run.snapshot.workflow?.graph){
+        for(const item of items.filter(item=>item.state!=='completed'&&item.state!=='stopped'))
+          this.store.put('item',{...item,state:'stopped',reason:undefined,updatedAt:now});
+      }
+      // A stopped run can still receive evidence for a request it already sent.
+      if(run.state!=='stopped')this.store.put('run',{...run,state:'stopped',updatedAt:now});
+      return;
     }
+    if(isLocalPublicationWorkflow(run.snapshot.workflow?.graph))return;
+    const workflowPublishes=run.snapshot.authorization.publish&&workflowPublicationPlatforms(run.snapshot.workflow?.graph).length>0;
+    const workflowPublication=workflowPublishes?readWorkflowPublication(this.repo,run.id):undefined;
     let complete=0,blocked=false,waiting=false;
     for(const item of items) {
       const required=this.stages(run.snapshot),next=required.find(s=>!stages.some(a=>a.itemId===item.id&&a.stage===s&&a.state==='succeeded'));
       if(!next) {
+        if(workflowPublishes&&workflowPublication?.state!=='completed'){
+          waiting=true;
+          blocked ||= workflowPublication?.state==='action_required'||workflowPublication?.state==='failed';
+          this.store.put('item',{...item,state:'waiting_publication',reason:workflowPublication?.detail??'WORKFLOW_PUBLICATION_PENDING',updatedAt:now});
+          continue;
+        }
         if(run.snapshot.fanqie&&run.snapshot.authorization.publish){
           const job=this.repo.maybe('settings','plan-fanqie:'+item.id)?.value;
           if(!job||!['uploaded','existing'].includes(job.state)){
@@ -464,12 +661,23 @@ export class PlanCenterService {
       blocked ||= ['blocked','failed','not_found','unknown'].includes(gate.state);waiting ||= gate.state.startsWith('waiting');
       this.store.put('item',{...item,...gate,updatedAt:now});
     }
-    this.store.put('run',{...run,state:complete===items.length?'completed':blocked?'blocked':waiting?'waiting':'running',updatedAt:now});
+    this.store.put('run',{...run,state:complete===items.length?'completed':workflowPublication?.state==='failed'?'failed':blocked?'blocked':waiting?'waiting':'running',updatedAt:now});
   }
   private recover() {
     this.repo.transaction(()=>{
-      const ids=new Set<string>();
-      for(const a of this.store.all('stage'))if(a.state==='dispatching'){this.store.put('stage',{...a,state:'unknown',reason:'RESTART_RECONCILE_REQUIRED',updatedAt:this.now()});ids.add(a.runId);}
+      const runs=this.store.all('run');
+      const graphs=new Map(runs.filter(run=>run.snapshot.workflow?.graph).map(run=>[run.id,run]));
+      const ids=new Set(runs.filter(run=>run.state==='stopping'&&run.stopRequested).map(run=>run.id));
+      for(const a of this.store.all('stage')){
+        if(a.state!=='dispatching'||a.stage==='lyric_write')continue;
+        const graph=graphs.get(a.runId);
+        if(graph&&(a.stage==='materials'||a.stage==='cover'))continue;
+        const localDownload=graph&&a.stage==='music_assets';
+        this.store.put('stage',localDownload
+          ?{...a,state:'waiting',reason:'ORIGINAL_ASSETS_PENDING',updatedAt:this.now()}
+          :{...a,state:'unknown',reason:'RESTART_RECONCILE_REQUIRED',updatedAt:this.now()});
+        ids.add(a.runId);
+      }
       for(const a of this.store.all('publish'))if(a.state==='dispatching'){this.store.put('publish',{...a,state:'unknown',reason:'RESTART_RECONCILE_REQUIRED',updatedAt:this.now()});ids.add(a.runId);}
       for(const a of this.store.all('album'))if(a.state==='dispatching'){this.store.put('album',{...a,state:'unknown',reason:'RESTART_RECONCILE_REQUIRED',updatedAt:this.now()});if(a.createdByRunId)ids.add(a.createdByRunId);}
       for(const id of ids)this.refresh(id);

@@ -1,0 +1,180 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>[hidden] { display: none !important; }</style>
+<div class="create-model"><button class="current-model">苏诺模型</button></div>
+<div class="c-suno">
+  <button id="custom">自定义模式</button>
+  <div id="fields" hidden>
+    <section data-suno-form-section="basic"><input id="title" placeholder="请输入歌曲名称"></section>
+    <section aria-labelledby="suno-custom-lyrics-heading" id="lyrics-section"><textarea id="lyrics"></textarea></section>
+    <section class="custom-style-area"><textarea id="style"></textarea></section>
+    <div class="custom-vocal-row">
+      <button role="switch" aria-checked="false" id="pure" class="el-switch__core">纯音乐</button>
+      <div class="custom-vocal-segment"><button>随机</button><button>男声</button><button>女声</button></div>
+    </div>
+    <button aria-controls="suno-custom-advanced-content" aria-expanded="false" id="advanced">高级设置：音色、参考音频与生成参数</button>
+    <div id="suno-custom-advanced-content" hidden>
+      <div class="persona-select-section"><button id="choose">选择音色</button></div>
+      <div class="audio-weight-section"><input type="range" id="weight" min="0" max="1" step="0.01" value="0.25"></div>
+      <input type="range" id="style-weight" aria-label="风格参考度" min="0" max="1" step="0.01" value="0.50">
+    </div>
+    <button class="suno-custom-create-action" id="create">创作（2首/10）</button>
+  </div>
+</div>
+<div class="persona-list-content" id="personas" hidden><div class="mine-list"><button id="voice-option">小川</button></div></div>
+<div class="create-list-panel"><header>我的创作</header><div class="create-list-scroll"></div></div>
+<div class="menu_popover" id="menu" hidden><button id="edit">编辑管理</button><button id="export">下载导出</button></div>
+<div class="menu_popover_sub" id="rename-menu" hidden><button id="rename">修改歌曲名称</button></div>
+<div class="menu_popover_sub" id="wave-menu" hidden><button id="wave-request">下载wav音频</button></div>
+<div role="dialog" id="rename-dialog" hidden><span>修改歌曲名称</span><input id="new-title"><button id="confirm">确定</button></div>
+<div class="download-dialog-body" id="wave-dialog" hidden>
+  <span>WAV 音频下载</span>
+  <div class="download-dialog-ready" id="wave-ready" hidden><button id="wave"> 下载 WAV</button></div>
+</div>
+
+<script>
+const byId = id => document.getElementById(id);
+const log = data => console.log("fixture:" + JSON.stringify(data));
+const scenario = "SCENARIO";
+const list = document.querySelector(".create-list-scroll");
+const popup = byId("menu");
+const waveDialog = byId("wave-dialog");
+const waveReady = byId("wave-ready");
+const waveAttempts = new Map();
+let activeSong, voice = "随机", timbre = "";
+if (scenario === "wav-label-variant") byId("wave-request").textContent = "下载 WAV 音频";
+if (scenario === "wav-menu-missing") byId("wave-request").textContent = "下载原始音频";
+if (scenario === "signed-out" || scenario === "login-hydration") {
+  const login = document.createElement("button");
+  login.textContent = "登录";
+  document.body.prepend(login);
+  if (scenario === "login-hydration") setTimeout(() => login.remove(), 650);
+}
+
+function song(id, title) {
+  const row = document.createElement("div");
+  row.className = "song-item";
+  row.dataset.id = id;
+  const label = document.createElement("span");
+  label.className = "song-title";
+  label.textContent = title;
+  const more = document.createElement("button");
+  more.className = "icon-more";
+  more.textContent = "...";
+  more.onclick = () => { activeSong = row; popup.hidden = false; };
+  row.append(label, more);
+  return row;
+}
+list.append(song("old", "旧歌"));
+
+byId("custom").onclick = () => { byId("fields").hidden = false; };
+if (scenario === "layout-overflow") {
+  const shell = document.createElement("main");
+  shell.className = "main-shell";
+  shell.style.cssText = "width:1100px;height:650px;overflow:hidden";
+  const workspace = document.createElement("div");
+  workspace.className = "create-pc-workspace";
+  workspace.style.cssText = "min-width:1200px;min-height:700px;padding:126px 100px";
+  shell.append(workspace);
+  document.body.prepend(shell);
+  workspace.append(...document.querySelectorAll(".create-model, .c-suno, .create-list-panel"));
+  byId("custom").addEventListener("click", () => {
+    shell.scrollTo(80, 126);
+    shell.dataset.scrollAfterMode = [shell.scrollLeft, shell.scrollTop].join(",");
+  });
+}
+if (scenario === "already-pending") {
+  const pending = document.createElement("div");
+  pending.textContent = "正在生成...";
+  list.prepend(pending);
+}
+byId("pure").onclick = event => {
+  const on = event.target.getAttribute("aria-checked") !== "true";
+  event.target.setAttribute("aria-checked", String(on));
+  byId("lyrics-section").hidden = on;
+  document.querySelector(".custom-vocal-segment").hidden = on;
+};
+document.querySelector(".custom-vocal-segment").onclick = event => {
+  if (event.target.tagName !== "BUTTON") return;
+  for (const button of event.currentTarget.querySelectorAll("button")) button.classList.toggle("is-active", button === event.target);
+  voice = event.target.textContent;
+};
+byId("advanced").onclick = event => {
+  event.target.setAttribute("aria-expanded", "true");
+  byId("suno-custom-advanced-content").hidden = false;
+};
+byId("choose").onclick = () => { byId("personas").hidden = false; };
+byId("voice-option").onclick = () => { timbre = "小川"; byId("personas").hidden = true; };
+
+byId("create").onclick = () => {
+  const title = byId("title").value;
+  log({ title, lyrics: byId("lyrics").value, style: byId("style").value, voice, timbre,
+    instrumental: byId("pure").getAttribute("aria-checked") === "true",
+    weights: ["weight", "style-weight"].map(id => Math.round(Number(byId(id).value) * 100)) });
+  const pending = document.createElement("div");
+  pending.textContent = "进行中";
+  list.prepend(pending);
+  setTimeout(() => {
+    const second = song("B", title);
+    if (scenario === "generation-repaint") {
+      second.querySelector(".song-title").remove();
+      setTimeout(() => second.replaceWith(song("B", title)), 320);
+    }
+    list.prepend(song("A", title), second);
+    pending.remove();
+  }, 120);
+};
+byId("edit").onmouseenter = () => { byId("rename-menu").hidden = false; };
+byId("export").onmouseenter = () => { byId("wave-menu").hidden = false; };
+byId("rename").onclick = () => {
+  popup.hidden = byId("rename-menu").hidden = true;
+  byId("new-title").value = activeSong.querySelector(".song-title").textContent;
+  byId("rename-dialog").hidden = false;
+};
+byId("confirm").onclick = () => {
+  activeSong.querySelector(".song-title").textContent = byId("new-title").value;
+  log(`rename:${activeSong.dataset.id}:${byId("new-title").value}`);
+  byId("rename-dialog").hidden = true;
+};
+byId("wave-request").onclick = () => {
+  popup.hidden = byId("wave-menu").hidden = true;
+  waveReady.hidden = true;
+  waveDialog.hidden = false;
+  const songId = activeSong.dataset.id;
+  const attempt = (waveAttempts.get(songId) ?? 0) + 1;
+  waveAttempts.set(songId, attempt);
+  if (scenario === "wav-prepare-timeout" || scenario === "wav-prepare-rejected") {
+    log(`prepare:${songId}:${attempt}`);
+    if (songId === "A" && attempt === 1) {
+      setTimeout(() => {
+        waveDialog.hidden = true;
+        const notification = document.createElement("p");
+        notification.setAttribute("role", "alert");
+        notification.textContent = scenario === "wav-prepare-timeout" ? "获取wav文件超时，请稍后重试" : "创建wav转换任务失败";
+        document.body.append(notification);
+      }, 150);
+      return;
+    }
+  }
+  setTimeout(() => { waveReady.hidden = false; }, 100);
+};
+const downloadClicks = new Map();
+byId("wave").onclick = () => {
+  log(`download:${activeSong.dataset.id}`);
+  const songId = activeSong.dataset.id;
+  const clicks = (downloadClicks.get(songId) ?? 0) + 1;
+  downloadClicks.set(songId, clicks);
+  if (scenario === "wav-download-not-started" && songId === "A" && clicks === 1) {
+    waveDialog.hidden = true;
+    return;
+  }
+  const bytes = new Uint8Array(68);
+  bytes.set(new TextEncoder().encode("RIFF\u0000\u0000\u0000\u0000WAVE"));
+  const url = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "music.wav";
+  link.click();
+  waveDialog.hidden = true;
+};
+</script>

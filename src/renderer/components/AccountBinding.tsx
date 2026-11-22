@@ -191,7 +191,7 @@ export default function AccountBinding({
         </button>
       </div>
       {!accountId || !artistId ? (
-        <p className="muted">先选择本平台账号资料和本地艺人。</p>
+        <p className="muted">先选择本平台账号和艺人。</p>
       ) : (
         <p className="muted">
           {names[account?.provider] ?? account?.provider} · {account?.name}

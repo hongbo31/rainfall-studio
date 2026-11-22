@@ -55,7 +55,7 @@ export default function PlanFanqieFields({
       const config = await window.rainfall.fanqieUpload("configuration", scope);
       if (!active.current) return;
       if (!config.ok || !config.value.configurationHash)
-        throw Error("请先保存该番茄账号的发布配置。");
+        throw Error("请先保存该账号的番茄上传授权。");
       const opened = await window.rainfall.fanqieCatalog("open", scope);
       if (!active.current) return;
       if (!opened.ok) throw Error(opened.error.message);

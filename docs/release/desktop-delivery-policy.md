@@ -1,14 +1,14 @@
 # 桌面统一交付规范
 
-用户于2026-10-16明确要求：“后续有新版了，都往我的桌面生成最新的一版”。含义是后续验收通过的交付版继续更新同一个 `C:\Users\CLOUD_USER\Desktop\Rainfall Studio 音乐客户端.lnk`，不让用户在测试候选文件夹间寻找新版。未验收测试候选不得覆盖桌面入口；保留原作品、素材、配置及可回退版本。这是持续交付要求，不代表开启在线自动更新。
+用户于2026-10-16明确要求：“后续有新版了，都往我的桌面生成最新的一版”。含义是后续验收通过的交付版继续更新同一个 当前用户桌面的 `Rainfall Studio 音乐客户端.lnk`，不让用户在测试候选文件夹间寻找新版。未验收测试候选不得覆盖桌面入口；保留原作品、素材、配置及可回退版本。这是持续交付要求，不代表开启在线自动更新。
 
 ## 固定入口与数据根
 
-桌面入口调用 PowerShell 7 和稳定脚本 `C:\Users\CLOUD_USER\AppData\Local\RainfallStudioLauncher\Launch-Verified.ps1`。该脚本的源码在 `scripts/Launch-Verified.ps1`。
+桌面入口调用 PowerShell 7 和稳定脚本 `%LOCALAPPDATA%\RainfallStudioLauncher\Launch-Verified.ps1`。该脚本的源码在 `scripts/Launch-Verified.ps1`。
 
 当前权威指针是同目录 `verified-desktop.json`，包含已验收标记、源码提交、可执行文件、完整包目录、显式dataRoot和关键程序文件哈希。每次启动先校验包和现有SQLite头/版本，再启动真实本地库；已由该入口启动的同一窗口会复用。发现其他旧窗口时不强制关闭，保留未保存编辑并提示。缺库或包变化时不启动空白库。
 
-已采用的现有数据根：`C:\Users\CLOUD_USER\Documents\Codex\2026-10-15\task\rainfall-studio-tme-mvp\out\tme-readiness-f98b20328ab4-1792145753240\candidate-data`。这是当前交付使用的持久库，不是可以随测试候选清理的临时目录。后续只换运行包，必须复用权威指针中的这个根；以后如需迁到其他稳定目录，须先备份、验证作品ID/数量/素材SHA256及配置，再显式切换，不能指向新包默认的空库。
+现有数据根以 `verified-desktop.json` 中的 `dataRoot` 为准。它是持续使用的作品库。后续更换运行包时必须复用该目录。如需迁移数据，先备份并验证作品 ID、数量、素材 SHA-256 和配置，再显式切换。
 
 旧版管理器的 `Launch.ps1/current.json` 留作历史回退，没有被篡改为与其asar目录格式不兼容的新指针。当前桌面不再调用该旧入口。旧版独立目录和数据保持原样。
 

@@ -23,6 +23,7 @@ export function executeUnifiedPublication(s:Studio,action:string,input:unknown={
  if(s.mode!=='production')throw Error('PRODUCTION_REQUIRED');
  const service=unifiedPublicationService(s);
  if(action==='list'){z.strictObject({}).parse(input);return service.list()}
+ if(action==='current')return service.assertWorkflowCurrent(z.strictObject({id:z.uuid()}).parse(input).id);
  if(action==='claim')return service.claim(input);
  if(action==='update')return service.update(input);
  if(action==='linkReviewed')return service.linkReviewed(input);

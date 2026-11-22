@@ -169,7 +169,7 @@ export function createProductionFlowBroker(o: Options) {
           const assets = [];
           for (const [ordinal, songId] of request.songIds.entries()) {
             const song = songs.find((s: any) => s.id === songId);
-            const audio = await adapter.download(song.audio_url);
+            const audio = await adapter.download(song.audio_url, { retry: true });
             guard();
             const asset = await rpc("importAudio", {
               id,

@@ -30,7 +30,10 @@ export default function HelpHint({
           position(true);
         }}
         onKeyDown={(event) => {
-          if (event.key === "Escape") setDismissed(true);
+          if (event.key === "Escape" && !dismissed) {
+            event.preventDefault();
+            setDismissed(true);
+          }
         }}
       >
         ?

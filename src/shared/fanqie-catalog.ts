@@ -8,15 +8,56 @@ const statuses = {
 export type FanqieCatalogRow = {
   id: string; title: string; stage: FanqieStage; officialStatus: string;
   createdAtText: string; publishedAtText: string;
+  contract?: {state: 'not_created'} | {state: 'awaiting_signature'; id?: string};
 };
+export type FanqieCatalogQuery = {title: string; id?: string; waitForReceipt?: boolean};
 export type FanqieCatalog = {
   source: 'browser' | 'fixture'; url: string; observedAt: string;
   total: number; complete: boolean; rows: FanqieCatalogRow[];
+  searchedTitles?: readonly string[];
 };
 export type FanqieCatalogReport = FanqieCatalog & {accountKey: string; maskedAccount: string};
+
+export function pendingFanqieContractId(row: Pick<FanqieCatalogRow, 'stage' | 'contract'> | undefined) {
+  const id = row?.stage === 'contract_pending' && row.contract?.state === 'awaiting_signature' ? row.contract.id : undefined;
+  return typeof id === 'string' && /^[1-9]\d{4,24}$/u.test(id) ? id : undefined;
+}
+
+type WorkFields = {title: string; idText: string};
 type CatalogReadback = {
-  selectedTab: string; query: string; headers: string[]; rows: string[][];
+  selectedTab: string; query: string; headers: string[]; rows: string[][]; workFields?: (WorkFields | null)[];
 };
+type RowErrorCode = 'FANQIE_CATALOG_WORK_TITLE_UNVERIFIED' | 'FANQIE_CATALOG_WORK_ID_UNVERIFIED' | 'FANQIE_CATALOG_DUPLICATE_ID';
+
+export class FanqieCatalogRowError extends Error {
+  page?: number;
+  constructor(code: RowErrorCode, readonly row: number) { super(code); }
+}
+
+export function fanqieWorkIdTextPattern(id?: string) {
+  if (id !== undefined && !/^[1-9]\d{4,24}$/u.test(id)) throw Error('FANQIE_CATALOG_WORK_ID_UNVERIFIED');
+  const digits = id === undefined ? '([1-9１-９][0-9０-９]{4,24})' : Array.from(id, digit =>
+    '[' + digit + String.fromCharCode(digit.charCodeAt(0) + 0xfee0) + ']').join('');
+  return new RegExp('^作品\\s*[IiＩｉ]\\s*[DdＤｄ](?:\\s*[:：]\\s*|\\s+)' + digits + '(?:\\s*复制)?$', 'u');
+}
+
+const workIdLabel = fanqieWorkIdTextPattern();
+export function parseFanqieWorkIdentity(cell: string, fields: WorkFields | null | undefined, row: number) {
+  const [fallbackTitle = '', ...rest] = cell.trim().split(/\r?\n/u);
+  const title = (fields?.title ?? fallbackTitle).trim();
+  if (!title || workIdLabel.test(title)) throw new FanqieCatalogRowError('FANQIE_CATALOG_WORK_TITLE_UNVERIFIED', row);
+  const id = workIdLabel.exec((fields?.idText ?? rest.join('\n')).trim())?.[1];
+  if (!id) throw new FanqieCatalogRowError('FANQIE_CATALOG_WORK_ID_UNVERIFIED', row);
+  return {title, id: id.normalize('NFKC')};
+}
+
+export function readFanqieWorkStatus(text: string): Pick<FanqieCatalogRow, 'stage' | 'officialStatus'> {
+  const status = text.trim();
+  const key = status.replace(/\s+/gu, '');
+  if (Object.hasOwn(statuses, key)) return {stage: statuses[key as keyof typeof statuses], officialStatus: key};
+  return {stage: 'unknown', officialStatus: status || '状态未读取'};
+}
+
 export function assertFanqieCatalogUrl(raw: string | undefined) {
   const u = raw ? new URL(raw) : null;
   if (!u || u.origin !== fanqieOrigin || u.pathname !== fanqieCatalogPath ||
@@ -31,28 +72,27 @@ export function parseFanqieCatalog(raw: CatalogReadback) {
   const total = Number(count[1]);
   if (!Number.isSafeInteger(total) || total < 0) throw Error('FANQIE_CATALOG_COUNT_INVALID');
   const seen = new Set<string>();
-  const rows = raw.rows.map(cells => {
+  const rows = raw.rows.map((cells, index) => {
     if (cells.length !== 5) throw Error('FANQIE_CATALOG_LAYOUT_CHANGED');
-    const info = /^(.+)\n作品ID[：:]\s*([1-9]\d{4,24})$/.exec(cells[0].trim());
-    const status = cells[1].trim();
-    if (!info || !Object.hasOwn(statuses, status)) throw Error('FANQIE_CATALOG_ROW_UNVERIFIED');
-    if (seen.has(info[2])) throw Error('FANQIE_CATALOG_DUPLICATE_ID');
-    seen.add(info[2]);
-    return {id: info[2], title: info[1].trim(), stage: statuses[status as keyof typeof statuses],
-      officialStatus: status, createdAtText: cells[2].trim(), publishedAtText: cells[3].trim()};
+    const identity = parseFanqieWorkIdentity(cells[0], raw.workFields?.[index], index + 1);
+    if (seen.has(identity.id)) throw new FanqieCatalogRowError('FANQIE_CATALOG_DUPLICATE_ID', index + 1);
+    seen.add(identity.id);
+    return {...identity, ...readFanqieWorkStatus(cells[1]), createdAtText: cells[2].trim(), publishedAtText: cells[3].trim()};
   });
   if (rows.length > total) throw Error('FANQIE_CATALOG_COUNT_INVALID');
   // A page with fewer rows than the total cannot prove absence on other pages.
   return {total, complete: rows.length === total, rows};
 }
 
-const normalizedTitle = (title: string) => title.normalize('NFKC').replace(/\s+/gu, '').toLocaleLowerCase('en-US');
+export const fanqieTitleKey = (title: string) => title.normalize('NFKC').replace(/\s+/gu, '').toLocaleLowerCase('en-US');
 /** A matching title is a duplicate warning, never proof of matching audio bytes. */
 export function checkFanqieNewUpload(catalog: FanqieCatalog, title: string) {
   assertFanqieCatalogUrl(catalog.url);
   if (!title.trim()) throw Error('FANQIE_TITLE_INVALID');
-  const matches = catalog.rows.filter(row => normalizedTitle(row.title) === normalizedTitle(title));
+  const matches = catalog.rows.filter(row => fanqieTitleKey(row.title) === fanqieTitleKey(title));
   if (matches.length) return {allowed: false as const, reason: 'FANQIE_OFFICIAL_RECORD_ALREADY_EXISTS', matches};
-  if (!catalog.complete || catalog.rows.length !== catalog.total) return {allowed: false as const, reason: 'FANQIE_CATALOG_INCOMPLETE', matches};
+  if (!catalog.complete || catalog.rows.length !== catalog.total ||
+    (catalog.searchedTitles && !catalog.searchedTitles.includes(title.trim())))
+    return {allowed: false as const, reason: 'FANQIE_CATALOG_INCOMPLETE', matches};
   return {allowed: true as const, reason: null, matches};
 }

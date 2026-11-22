@@ -20,11 +20,11 @@ function duration(n?: number) {
 export default function PublicationMaterialResult({
   request: r,
   onTrack,
-  onConfigure,
+  onManageAccount,
 }: {
   request: SimplePublicationRequest;
   onTrack: () => void;
-  onConfigure: () => void;
+  onManageAccount: () => void;
 }) {
   const m = r.materialSnapshot,
     a = m?.audio,
@@ -78,11 +78,8 @@ export default function PublicationMaterialResult({
         {r.issues.some((v) => v.includes("权益") || v.includes("翻唱")) && (
           <button onClick={onTrack}>核对权属</button>
         )}
-        {(!metadata?.lyricist || !metadata?.composer) && (
-          <button onClick={onConfigure}>补署名</button>
-        )}
-        <button className="text-button" onClick={onConfigure}>
-          配置 {names[r.target]}
+        <button className="text-button" onClick={onManageAccount}>
+          {metadata?.lyricist && metadata?.composer ? "管理账号" : "管理艺人署名"}
         </button>
       </div>
       {!!r.issues.length && (

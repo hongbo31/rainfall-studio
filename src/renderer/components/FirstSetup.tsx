@@ -2,28 +2,21 @@ import React, { useEffect, useState } from "react";
 import { useStudio } from "../context";
 import HelpNote from "./HelpNote";
 
-export default function FirstSetup({
-  onModels,
-  onDirectories,
-}: {
-  onModels: () => void;
-  onDirectories: () => void;
-}) {
+export default function FirstSetup({ onModels }: { onModels: () => void }) {
   const { call, go } = useStudio();
   const [counts, setCounts] = useState<{
     profiles: number;
     plans: number;
-    sources: number;
   } | null>(null);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     let active = true;
     const load = async () => {
       try {
-        const [profiles, textConfigs, directory] = await Promise.all([
+        const [profiles, textConfigs, { plans }] = await Promise.all([
           call("apiProfile.list", {}),
           call("textConfig.list", {}),
-          call("directoryTasks.status", {}),
+          call("planCenter.list", {}),
         ]);
         if (active) {
           setCounts({
@@ -42,10 +35,7 @@ export default function FirstSetup({
                       c.profileId === p.id && c.modelId,
                   )),
             ).length,
-            plans: directory.plans.length,
-            sources: directory.sources.filter(
-              (s: { planId: string | null }) => s.planId,
-            ).length,
+            plans: plans.length,
           });
           setFailed(false);
         }
@@ -73,21 +63,13 @@ export default function FirstSetup({
       action: () => go("plans"),
       button: "打开计划中心",
     },
-    {
-      title: "任务目录",
-      count: counts?.sources,
-      action: onDirectories,
-      button: "配置任务目录",
-    },
   ];
   return (
     <section className="first-setup" aria-label="空间准备">
-      <div className="directory-heading">
+      <div className="first-setup-heading">
         <h2>空间准备</h2>
         <HelpNote label="准备顺序">
-          先保存文本模型配置，再在计划中心选择配置、预算与授权，最后选择目录并绑定已保存的计划。
-          这里显示已保存的设置数量；凭据和真实连接是否可用，需要在模型 API
-          中核对。保存目录后仍需单独启用扫描。
+          先保存文本模型配置，再到计划中心选择模型、预算和授权。在模型 API 中核对实际连接状态。
         </HelpNote>
       </div>
       {failed && <p role="status">暂时无法核对准备状态，可继续打开设置。</p>}

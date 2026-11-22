@@ -41,6 +41,10 @@ export const tables = [
   "inboxBatches",
   "inboxReceipts",
   "textCandidates",
+  "promptTemplates",
+  "accountLocalArtists",
+  "lyricJobs",
+  "inspirationJobs",
 ] as const;
 export type Table = (typeof tables)[number];
 const columns: Partial<Record<Table, string[]>> = {
@@ -143,18 +147,31 @@ export class Repository {
     this.db.pragma("user_version=3");
   }
   all(table: Table): Row[] {
-    return (
+    const rows = (
       this.db
         .prepare(`SELECT data FROM ${this.check(table)} ORDER BY rowid`)
         .all() as { data: string }[]
     ).map((x) => JSON.parse(x.data));
+    return table === "accounts" ? rows.filter(row => !row.deleted) : rows;
+  }
+  settingsByPrefix(prefix: string, filter?: { path: string; values: readonly string[] }): Row[] {
+    if (filter?.values.length === 0) return [];
+    const pattern = prefix.replace(/[\[*?]/g, char => `[${char}]`) + "*";
+    const rows = filter
+      ? this.db.prepare(`SELECT data FROM settings WHERE id GLOB ?
+          AND json_extract(data, ?) IN (SELECT value FROM json_each(?)) ORDER BY rowid`)
+          .all(pattern, filter.path, JSON.stringify(filter.values))
+      : this.db.prepare("SELECT data FROM settings WHERE id GLOB ? ORDER BY rowid").all(pattern);
+    return (rows as { data: string }[]).map(row => JSON.parse(row.data));
   }
   get(table: Table, id: string): Row {
     const r = this.db
       .prepare(`SELECT data FROM ${this.check(table)} WHERE id=?`)
       .get(id) as { data: string } | undefined;
     if (!r) throw Error("NOT_FOUND");
-    return JSON.parse(r.data);
+    const row = JSON.parse(r.data);
+    if (table === "accounts" && row.deleted) throw Error("NOT_FOUND");
+    return row;
   }
   maybe(table: Table, id: string) {
     try {

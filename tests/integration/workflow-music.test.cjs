@@ -14,6 +14,53 @@ test('official generic binary M4A needs an MP4 file-type box and still rejects H
  await assert.rejects(adapter(Buffer.from('<html>not an audio file</html>')).download('https://oss.yourmusic.fun/my-music/audio/own-song.m4a'),/DOWNLOAD_REJECTED/);
  await assert.rejects(adapter(header).download('https://oss.yourmusic.fun/my-music/audio/own-song.mp3'),/DOWNLOAD_REJECTED/);
 });
+test('official audio downloads retry the same URL three times for transient HTTP failures', async () => {
+ const url = 'https://oss.yourmusic.fun/my-music/audio/own-song.wav';
+ const body = Buffer.from('fixture audio');
+ for (const succeeds of [true, false]) {
+  const statuses = [503, 429, 408, succeeds ? 200 : 503];
+  const requests = [];
+  const adapter = new w.YourMusicAdapter({ source: 'external', credential: async () => assert.fail('unexpected download auth'),
+   request: async input => {
+    requests.push(input);
+    return { status: statuses.shift(), headers: { 'content-type': 'audio/wav' }, body };
+   },
+  });
+  if (succeeds) assert.deepEqual(await adapter.download(url, { retry: true }), { bytes: body, mime: 'audio/wav' });
+  else await assert.rejects(adapter.download(url, { retry: true }), /PULE_WAV_TRANSFER_FAILED/);
+  assert.deepEqual(requests.map(input => [input.url, input.method, input.headers]), Array.from({ length: 4 }, () => [url, 'GET', undefined]));
+ }
+});
+
+test('official audio download leaves retries to callers that already track attempts', async () => {
+ let attempts = 0;
+ const adapter = new w.YourMusicAdapter({ source: 'external', credential: async () => assert.fail('unexpected download auth'),
+  request: async () => { attempts++; return { status: 503, body: Buffer.alloc(0) }; },
+ });
+ await assert.rejects(adapter.download('https://oss.yourmusic.fun/fixture.wav'), /PULE_WAV_TRANSFER_FAILED/);
+ assert.equal(attempts, 1);
+});
+
+test('official audio downloads cancel each incomplete transfer at the ten-minute limit', async t => {
+ t.mock.timers.enable({ apis: ['setTimeout'] });
+ const signals = [];
+ const adapter = new w.YourMusicAdapter({ source: 'external', credential: async () => assert.fail('unexpected download auth'),
+  request: input => { signals.push(input.signal); return new Promise(() => {}); },
+ });
+ const result = adapter.download('https://oss.yourmusic.fun/slow.wav', { retry: true }).catch(error => error.message);
+ for (let attempt = 1; attempt <= 4; attempt++) {
+  assert.equal(signals.length, attempt);
+  const signal = signals[attempt - 1];
+  t.mock.timers.tick(10 * 60_000 - 1);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(signal?.aborted, false);
+  t.mock.timers.tick(1);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(signal.aborted, true);
+ }
+ assert.equal(await result, 'PULE_DOWNLOAD_TIMEOUT');
+ assert.equal(signals.length, 4);
+});
 test('real HTTPS transport preserves HTTP status without exposing malformed response text',async()=>{
  const vm=require('node:vm'),{EventEmitter}=require('node:events'),{createRequire}=require('node:module');
  const bundle=process.env.RAINFALL_WORKFLOW_BUNDLE,load=createRequire(bundle),source=fs.readFileSync(bundle,'utf8');

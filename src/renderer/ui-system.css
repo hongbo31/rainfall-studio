@@ -28,6 +28,42 @@
 .configuration-guide { margin: 0 0 20px; }
 .configuration-guide > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
 
+/* Keep dialog actions outside the region that scrolls. */
+.scroll-panel:where(:not(dialog), [open]) {
+  display: flex;
+  flex-direction: column;
+}
+.scroll-panel:is(.plan-editor, .platform-automation-dialog) {
+  overflow: hidden;
+  padding: 0;
+}
+.scroll-panel > .section-title {
+  flex: none;
+  margin: 0;
+  padding: var(--space-4) var(--scroll-panel-gutter, 24px);
+  border-bottom: 1px solid var(--line);
+}
+.scroll-panel > .section-title h2 {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.scroll-panel > .section-title > button {
+  flex: none;
+  white-space: nowrap;
+}
+.scroll-panel > .scroll-panel-body {
+  flex: auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-4) var(--scroll-panel-gutter, 24px) var(--scroll-panel-gutter, 24px);
+}
+.plan-editor.scroll-panel { --scroll-panel-gutter: 28px; }
+@media (max-width: 640px) {
+  .scroll-panel:is(.plan-editor, .platform-automation-dialog) { --scroll-panel-gutter: 16px; }
+}
+
 /* The plan theme has an unlayered muted rule. Keep this card's help text readable. */
 .cover-handoff .muted { color: var(--muted); }
 
@@ -287,8 +323,7 @@
   }
   .button-row,
   .actions,
-  .configuration-tabs,
-  .platform-tabs {
+  .configuration-tabs {
     gap: var(--space-2);
   }
   .button-row {
@@ -631,10 +666,7 @@
   }
 }
 
-/* Directory tasks and the shared configuration preparation entry. */
-.first-setup,
-.directory-source,
-.directory-history {
+.first-setup {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -642,22 +674,18 @@
   color: var(--text);
   margin: 0 0 20px;
 }
-.directory-heading,
-.directory-path,
-.directory-actions {
+.first-setup-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+  margin-bottom: 12px;
 }
-.directory-heading h2,
-.directory-heading h3 { margin: 0; }
-.directory-heading { margin-bottom: 12px; }
-.directory-actions { justify-content: flex-start; }
+.first-setup-heading h2 { margin: 0; }
 .first-setup-steps {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
   list-style: none;
   padding: 0;
@@ -667,38 +695,7 @@
 .first-setup-steps li > div { display: grid; gap: 2px; flex: 1; }
 .first-setup-steps li > div > span { color: var(--text); font-size: 12px; }
 .first-setup-number { width: 28px; height: 28px; border-radius: 50%; background: var(--panel); color: var(--text); display: grid; place-items: center; }
-.directory-tabs { display: flex; gap: 8px; margin: 20px 0; }
-.directory-tabs [aria-selected="true"] { background: var(--accent-soft); color: var(--text); border-color: var(--line); }
-.directory-settings .directory-note { color: var(--text); margin: 8px 0 12px; font-size: 12px; }
-.directory-path { margin-bottom: 16px; }
-.directory-path code { overflow-wrap: anywhere; flex: 1; min-width: 0; color: var(--text); }
-.directory-status { background: var(--panel); color: var(--muted); border-radius: 20px; padding: 4px 12px; font-size: 12px; }
-.directory-status.on { background: var(--panel); color: var(--muted); }
-.directory-fields { display: grid; grid-template-columns: 2fr 1fr 1.5fr; gap: 16px; }
-.directory-fields label { color: var(--muted); min-width: 0; }
-.directory-fields select,
-.directory-fields input { width: 100%; }
-.directory-settings .directory-warning { color: var(--warning); }
-.directory-settings .directory-error,
-.directory-row-error { color: var(--danger); }
-.directory-error { background: var(--danger-soft); border: 1px solid var(--danger); border-radius: 8px; padding: 10px 12px; }
-.directory-example { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }
-.directory-example summary,
-.directory-history summary { cursor: pointer; color: var(--text); }
-.directory-example pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; }
-.directory-empty { padding: 24px; margin-bottom: 20px; border: 1px dashed var(--line); border-radius: 12px; text-align: center; }
-.directory-table-scroll { overflow-x: auto; }
-.directory-history table { width: 100%; border-collapse: collapse; text-align: left; }
-.directory-history th,
-.directory-history td { padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
-.directory-history th { background: var(--panel); color: var(--text); font-weight: 600; }
-.directory-history code { overflow-wrap: anywhere; }
-.directory-row-error { display: block; font-size: 12px; margin-top: 4px; }
-.directory-error-list { list-style: none; padding: 0; }
-.directory-error-list li { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 8px 0; }
-.directory-settings .help-note,
 .first-setup .help-note { margin: 0; }
 @media (max-width: 1100px) {
   .first-setup-steps { grid-template-columns: 1fr; }
-  .directory-fields { grid-template-columns: 1fr; }
 }

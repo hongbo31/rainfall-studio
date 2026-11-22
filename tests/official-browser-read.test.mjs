@@ -1,3 +1,4 @@
+import { launchHeadlessChromium } from "../scripts/lib/headless-chromium.mjs";
 import test,{before,after} from 'node:test';
 import assert from 'node:assert/strict';
 import {build} from 'esbuild';
@@ -20,7 +21,7 @@ const payload=(rows=[record])=>({code:'0',data:{content:rows}});
 const releasedRecord={id:record.id,name:record.name,albumid:record.albumId,albumName:record.albumName,singerName:'Test Artist',status:1,statusStr:'审核通过',qqmusicstatus:1,kugoustatus:1,platformPublishStatusStr:'QQ音乐、酷狗音乐已上架<br/>酷我音乐上架中',publishTimeStr:'2026/10/19 01:17'};
 const expectedReleased={id:String(record.id),name:record.name,albumId:String(record.albumId),albumName:record.albumName,artistName:'Test Artist'};
 let browser;
-before(async()=>{browser=await chromium.launch({executablePath:process.env.RAINFALL_TEST_CHROME||'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true});});
+before(async()=>{browser=await launchHeadlessChromium(chromium);});
 after(async()=>{await browser?.close();});
 
 const artistHtml=name=>`<div class="mod_top_login"><div class="top_login__links"><span class="name">${name}</span></div></div>`;

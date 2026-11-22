@@ -1,7 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),path=require('node:path'),{randomUUID}=require('node:crypto'),sharp=require('sharp');
-const {createPlanFanqiePublisher,recoverPlanFanqie,planFanqieAction,YourMusicAdapter,Studio,planPuleAction,
- tickPlanCenter,planCoverImage,scanCoverInbox,recoverCoverImages,createPlanCoverImageRunner,ApiCredentials,openAiCoverModel}=require('../output/plan-fanqie/index.cjs');
+const {createPlanFanqiePublisher,recoverPlanFanqie,planFanqieAction,planFanqieBatchSettled,YourMusicAdapter,Studio,planPuleAction,
+ tickPlanCenter,planCoverImage,scanCoverInbox,recoverCoverImages,createPlanCoverImageRunner,ApiCredentials,openAiCoverModel,setDownloadDirectory}=require('../output/plan-fanqie/index.cjs');
 function harness(){
  const jobs=[1,2].map(i=>({id:'item'+i,workId:'work'+i,variant:'A',accountKey:'a'.repeat(64),configurationHash:'b'.repeat(64),fingerprint:'c'.repeat(64),state:'ready'}));
  const calls=[];let writes=0,fail=false,stopped=false,epoch=1;
@@ -39,6 +39,14 @@ test('uncertain upload pauses remaining works; restart does not dispatch unknown
  await createPlanFanqiePublisher(options).pump();assert.deepEqual(h.jobs.map(j=>j.state),['unknown','ready']);
  await createPlanFanqiePublisher(options).pump();assert.equal(h.writes,0);assert.deepEqual(h.jobs.map(j=>j.state),['unknown','ready']);
 });
+test('scheduled legacy uploads cannot claim work after their local account was deleted',async()=>{
+ const h=harness(),publisher=createPlanFanqiePublisher({rpc:h.rpc,upload:h.upload,available:()=>true,
+  generation:()=>h.epoch,assertAccount:async()=>{throw Error('ACCOUNT_NOT_FOUND');}});
+ await publisher.pump();
+ assert.deepEqual(h.calls,['list']);
+ assert.equal(h.writes,0);
+ assert.deepEqual(h.jobs.map(job=>job.state),['ready','ready']);
+});
 test('stop check is executed before browser writes',async()=>{
  const h=harness();h.stop();await createPlanFanqiePublisher({rpc:h.rpc,upload:h.upload,available:()=>true,generation:()=>h.epoch}).pump();
  assert.equal(h.writes,0);assert.equal(h.jobs[0].reason,'STOP_REQUESTED');
@@ -50,6 +58,39 @@ test('manual publisher lock prevents scheduled claims for the same account',asyn
 test('concurrent timer ticks share a single publisher and do not double claim',async()=>{
  const h=harness(),p=createPlanFanqiePublisher({rpc:h.rpc,upload:h.upload,available:()=>true,generation:()=>h.epoch});
  await Promise.all([p.pump(),p.pump()]);assert.equal(h.writes,2);
+});
+test('the plan publisher verifies pending contract generation by the original work and account',async()=>{
+ const accountId=randomUUID(),accountKey='a'.repeat(64);
+ const record={id:'90001',title:'夜雨',stage:'contract_pending',officialStatus:'待授权',createdAtText:'',publishedAtText:''};
+ const job={accountId,accountKey,record,state:'uploaded',authorization:'awaiting_signature',continueAfterContract:true};
+ const generated={...record,contract:{state:'awaiting_signature',id:'80001'}};
+ const observed=[];
+ const publisher=createPlanFanqiePublisher({
+  available:()=>true,generation:()=>1,upload:{status:()=>({busy:false}),publishScheduled:()=>assert.fail('replayed upload')},
+  rpc:async(method,input)=>{
+   if(method.endsWith('.list'))return {ok:true,value:[job]};
+   assert.equal(method,'internal.planFanqie.observeAuthorization');
+   observed.push(input);
+   return {ok:true};
+  },
+  readAuthorization:async(id,queries)=>{
+   assert.equal(id,accountId);
+   assert.deepEqual(queries,[{id:record.id,title:record.title}]);
+   return {source:'browser',complete:true,accountKey,rows:[{...generated,id:'90002'},generated]};
+  },
+ });
+ await publisher.pump();
+ assert.deepEqual(observed,[{accountId,accountKey,records:[generated]}]);
+});
+test('a complete unsigned batch needs the same generated contract for each pending song',()=>{
+ const receipt=(id,contractId)=>({batchSize:2,state:'uploaded',record:{
+  id,stage:'contract_pending',contract:{state:'awaiting_signature',id:contractId},
+ }});
+ const first=receipt('90001','80001'),other=receipt('90002','80002'),matching=receipt('90002','80001');
+ assert.equal(planFanqieBatchSettled([first],true),false);
+ assert.equal(planFanqieBatchSettled([first,other],true),false);
+ assert.equal(planFanqieBatchSettled([first,matching],false),false);
+ assert.equal(planFanqieBatchSettled([first,matching],true),true);
 });
 test('a ten-song occurrence waits for all materials and prepares exactly one scoped contract',async()=>{
  const accountId='00000000-0000-4000-8000-000000000013',runId='scheduled-run';
@@ -107,7 +148,7 @@ test('a ten-song occurrence waits for all materials and prepares exactly one sco
 });
 test('Core restart preserves uncertain intent rather than returning it to ready',()=>{
  const rows=[{id:'plan-fanqie:one',value:{id:'one',state:'dispatching'}},{id:'plan-fanqie:two',value:{id:'two',state:'uploaded'}}];
- const s={repo:{all:()=>rows},save:(_,row)=>{rows[rows.findIndex(x=>x.id===row.id)]=row;}};
+ const s={repo:{settingsByPrefix:prefix=>rows.filter(row=>row.id.startsWith(prefix))},save:(_,row)=>{rows[rows.findIndex(x=>x.id===row.id)]=row;}};
  recoverPlanFanqie(s);assert.equal(rows[0].value.state,'unknown');assert.equal(rows[1].value.state,'uploaded');
 });
 test('Core rejects fabricated completion without official work ID',()=>{
@@ -138,18 +179,24 @@ function audioFixture(){
  data.write('data',36);data.writeUInt32LE(samples*2,40);
  return data;
 }
-async function coverPlan(t,{generate=false,count=2,instrumental=false}={}){
+async function coverPlan(t,{generate=false,count=2,instrumental=false,zhipu=false}={}){
  const root=path.resolve('output/test-runs/plan-cover-'+randomUUID()),s=new Studio(root,'production');
  t.after(()=>s.close());
+ const account=await s.call('account.save',{provider:'fanqie',name:'离线番茄账号',dailyLimit:3});
+ if(!instrumental){
+  const downloads=path.join(root,'downloads');
+  fs.mkdirSync(downloads);
+  setDownloadDirectory(s.repo,{root:downloads,expectedRevision:0});
+ }
  const music=await s.call('apiProfile.save',{profile:{id:randomUUID(),kind:'music',providerId:'yourmusic',label:'Fixture music',modelId:'chirp-v6',executionEnabled:false},expectedRevision:null});
- const image=generate?await s.call('apiProfile.save',{profile:{id:randomUUID(),kind:'image',providerId:'openai_image',label:'Fixture image',modelId:openAiCoverModel,executionEnabled:false},expectedRevision:null}):null;
+ const image=generate?await s.call('apiProfile.save',{profile:{id:randomUUID(),kind:'image',providerId:zhipu?'zhipu_image':'openai_image',label:'Fixture image',modelId:zhipu?'cogview-3-flash':openAiCoverModel,executionEnabled:false},expectedRevision:null}):null;
  const center=s.planCenterService(),artistId=s.all('artists')[0].id;
  const plan=center.save({plan:{
   id:randomUUID(),artistId,title:'Fixture release',theme:'恋爱',count,schedule:{kind:'daily',localTime:'09:00'},
   material:{source:instrumental?'provider':'pule_prompt'},...(instrumental?{songType:'instrumental'}:{}),text:{},music:{route:'pule',profileId:music.id,profileRevision:music.revision,modelId:music.modelId,budgetCredits:100,maxCostPerRequestCredits:20,consent:true,creditPolicy:{mode:'uncapped_existing_credits',noRecharge:true,actualCostUnknown:true,consent:true}},
   routing:{text:{source:'default'},music:{source:'override',profileId:music.id},image:image?{source:'override',profileId:image.id}:{source:'default'}},
   outputs:{lyrics:true,music:true,cover:instrumental},
-  authorization:{text:false,music:true,publish:true},fanqie:{accountKey:'a'.repeat(64),configurationHash:'b'.repeat(64),materialsConsent:true},
+  authorization:{text:false,music:true,publish:true},fanqie:{accountId:account.id,accountKey:'a'.repeat(64),configurationHash:'b'.repeat(64),materialsConsent:true},
  },expectedRevision:null});
  assert.equal(plan.outputs.cover,true);
  const preview=center.preview({id:plan.id}),run=center.run({id:plan.id,expectedRevision:plan.revision,summaryHash:preview.summaryHash,requestId:randomUUID(),source:'manual'});
@@ -218,20 +265,24 @@ test('instrumental plan uses custom music without text stages and prepares lyric
  assert.deepEqual(center.list().stageAttempts.map(row=>row.stage),['music_submit','music_assets','cover','materials']);
  assert.equal(planFanqieAction(s,'list',{}).length,1);
 });
-test('configured image service sends each final song brief once and persists the generated cover',async t=>{
- const {s,center,entries,image}=await coverPlan(t,{generate:true});
+for (const zhipu of [false,true]) test(`${zhipu?'智谱':'OpenAI'} sends each final song brief once and persists the generated cover`,async t=>{
+ const {s,center,entries,image}=await coverPlan(t,{generate:true,zhipu});
  const prompts=[],images=[await fixtureCover('#99aa87'),await fixtureCover('#cd9c77')];
  const credentials=new ApiCredentials({
   vault:{isAvailable:()=>true,has:()=>true,get:()=>'offline-test-key'},
   context:()=>({mode:'production',generation:1}),getProfile:async()=>image,
   connectionRequest:async input=>{
-   assert.equal(input.url,'https://api.openai.com/v1/images/generations');
-   assert.equal(input.body.model,openAiCoverModel);
-   assert.equal(input.body.n,1);
+   if(zhipu&&input.method==='GET'){
+    assert.equal(input.url,'https://sfile.chatglm.cn/testpath/fixture.jpg');
+    return {status:200,body:images.shift()};
+   }
+   assert.equal(input.url,zhipu?'https://open.bigmodel.cn/api/paas/v4/images/generations':'https://api.openai.com/v1/images/generations');
+   assert.equal(input.body.model,image.modelId);
    await input.assertDispatch();
    input.assertActive();
    prompts.push(input.body.prompt);
-   return {status:200,body:{data:[{b64_json:images.shift().toString('base64')}]}};
+   const result=zhipu?{url:'https://sfile.chatglm.cn/testpath/fixture.jpg'}:{b64_json:images.shift().toString('base64')};
+   return {status:200,body:{data:[result]}};
   },
  });
  const rpc=async(method,raw)=>{
@@ -253,6 +304,7 @@ test('configured image service sends each final song brief once and persists the
  assert.equal(planFanqieAction(s,'list',{}).length,2);
  assert.equal(prompts.length,2);
  assert(center.list().stageAttempts.filter(row=>row.stage==='cover').every(row=>row.result.generationVerified));
+ assert((await s.call('cover.list',{})).receipts.every(receipt=>receipt.provenance.producer===image.providerId));
 });
 test('an interrupted image request is not sent again and can be resolved by importing a cover',async t=>{
  const {s,entries}=await coverPlan(t,{generate:true,count:1});

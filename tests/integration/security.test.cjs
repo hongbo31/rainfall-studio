@@ -80,14 +80,13 @@ test("managed-media junction cannot redirect reads outside the hash store", asyn
 test("oversized text and paid-autopublish requests are blocked at service schemas", async () => {
   const { s } = setup();
   const a = s.all("artists")[0];
-  await assert.rejects(
-    s.call("creation.start", {
-      artistId: a.id,
-      title: "QA",
-      story: "x".repeat(20001),
-      overrides: {},
-    }),
-  );
+  await assert.rejects(s.call("creation.start", {
+    artistId: a.id, title: "QA", story: "QA", overrides: {},
+  }), /METHOD_NOT_ALLOWED/);
+  await assert.rejects(s.call("work.save", {
+    artistId: a.id, title: "QA", story: "x".repeat(20001),
+    parameters: {}, lyrics: "", prompt: "", rights: "", ai: "none",
+  }));
   await assert.rejects(s.call("createPublishGrant", {}));
   await assert.rejects(s.call("credentials.get", { accountId: a.id }));
   assert.equal(s.externalRequests, 0);

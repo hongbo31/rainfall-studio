@@ -1,24 +1,27 @@
 import fs from 'node:fs';import path from 'node:path';import {fileURLToPath} from 'node:url';import {execFileSync} from 'node:child_process';import {randomUUID} from 'node:crypto';
 import {approveRelease,catalogRelease,verifyRelease,deliver,applyPending,rollback,atomicJSON,readJSON,digest,withManagerLock,assertPlainPath} from '../src/updater/local-release.mjs';
 import {backupProduction,migrateBackup,assertSourceUnchanged,inspectDatabase} from '../src/updater/production-data.mjs';
+import {powerShell7Path,windowsDesktopDirectory} from './lib/powershell-7.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..'),args=process.argv.slice(2);
 const get=(key,fallback)=>{const i=args.indexOf(key);return i<0?fallback:args[i+1];};
-const manager=path.resolve(get('--manager',path.join(process.env.LOCALAPPDATA,'RainfallStudioLauncher'))),ps=path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe');
+const manager=path.resolve(get('--manager')??path.join(process.env.LOCALAPPDATA,'RainfallStudioLauncher')),ps=powerShell7Path();
 const stamp=()=>new Date().toISOString().replace(/[:.]/g,'-')+'-'+randomUUID().slice(0,8);
 const psRun=(script,args=[])=>execFileSync(ps,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',script,...args],{encoding:'utf8',windowsHide:true,timeout:15000});
 function isRunning(){return execFileSync(ps,['-NoProfile','-NonInteractive','-Command',"if (@(Get-Process -Name RainfallStudio -ErrorAction SilentlyContinue).Count -gt 0) { 'running' } else { 'idle' }"],{encoding:'utf8',windowsHide:true,timeout:10000}).trim()==='running';}
 function contained(base,target){const r=path.relative(path.resolve(base),path.resolve(target));return r!==''&&!r.startsWith('..'+path.sep)&&r!=='..'&&!path.isAbsolute(r);}
 async function initialize(){
  if(fs.existsSync(path.join(manager,'delivery-config.json')))throw Error('ALREADY_INITIALIZED');
- const legacyPackage=path.resolve(get('--legacy-package',path.join(root,'out/RainfallStudio-win32-x64'))),legacyData=path.resolve(get('--legacy-data',path.join(process.env.APPDATA,'RainfallStudio')));
+ const legacyPackage=path.resolve(get('--legacy-package',path.join(root,'out/RainfallStudio-win32-x64'))),legacyData=path.resolve(get('--legacy-data')??path.join(process.env.APPDATA,'RainfallStudio'));
+ const dataBase=path.resolve(get('--data-base')??path.join(process.env.APPDATA,'RainfallStudioManaged/data'));
+ const desktopLink=path.resolve(get('--desktop-link')??path.join(windowsDesktopDirectory(ps),'Rainfall Studio 音乐客户端.lnk'));
  if(inspectDatabase(path.join(legacyData,'production/library.sqlite')).schema!==1)throw Error('LEGACY_SCHEMA');
  const legacy=catalogRelease(legacyPackage,{id:'legacy-0.2.0',version:'0.2.0-original',sourceCommit:'0'.repeat(40),schemas:[1]});verifyRelease(legacy);
  await withManagerLock(manager,async()=>{
-  for(const file of ['scripts/deliver-local-release.mjs','src/updater/local-release.mjs','src/updater/production-data.mjs','launcher/migrate.cjs','launcher/Install-Shortcut.ps1']){const target=path.join(manager,file);fs.mkdirSync(path.dirname(target),{recursive:true});fs.copyFileSync(path.join(root,file),target);}
+  for(const file of ['scripts/deliver-local-release.mjs','scripts/lib/powershell-7.mjs','src/shared/host-executable-paths.ts','src/updater/local-release.mjs','src/updater/production-data.mjs','launcher/migrate.cjs','launcher/Install-Shortcut.ps1']){const target=path.join(manager,file);fs.mkdirSync(path.dirname(target),{recursive:true});fs.copyFileSync(path.join(root,file),target);}
   for(const [source,target] of [['launcher/Launch.ps1','Launch.ps1'],['launcher/Install-Shortcut.ps1','launcher/Install-Shortcut.ps1']])fs.writeFileSync(path.join(manager,target),'\uFEFF'+fs.readFileSync(path.join(root,source),'utf8').replace(/^\uFEFF/,''));
   const catalogFile=path.join(manager,'catalogs/legacy-0.2.0.json');atomicJSON(catalogFile,legacy);
   atomicJSON(path.join(manager,'current.json'),{format:1,current:{releaseId:legacy.id,catalogFile,catalogHash:digest(catalogFile),dataRoot:legacyData,schema:1,activatedAt:new Date().toISOString()},previous:null});
-  atomicJSON(path.join(manager,'delivery-config.json'),{format:1,nodeExecutable:process.execPath,nodeHash:digest(process.execPath),legacyData,dataBase:path.resolve(get('--data-base',path.join(process.env.APPDATA,'RainfallStudioManaged/data'))),desktopLink:path.resolve(get('--desktop-link',path.join(process.env.USERPROFILE,'Desktop/Rainfall Studio 音乐客户端.lnk'))),remoteUpdateSource:null});
+  atomicJSON(path.join(manager,'delivery-config.json'),{format:1,nodeExecutable:process.execPath,nodeHash:digest(process.execPath),legacyData,dataBase,desktopLink,remoteUpdateSource:null});
  });
 }
 async function prepare(previous,c){

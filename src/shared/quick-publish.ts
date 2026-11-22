@@ -1,3 +1,6 @@
+import { accountSupportsTarget } from './platform-accounts';
+import type { PlatformTarget } from './platform-config';
+
 export type RecordingSelection = { workId: string; slot: 'audio_A' | 'audio_B' };
 export type QuickPublishInput = {
   workIds: string[];
@@ -5,7 +8,7 @@ export type QuickPublishInput = {
   recordings: RecordingSelection[];
   accountOverrides: Record<string, string>;
 };
-type Workspace = { mode: string; works: any[]; accounts: any[]; bindings: any[] };
+type Workspace = { mode: string; works: any[]; accounts: any[]; bindings: any[]; localArtistIds?: string[] };
 // Pure local resolution, shared by UI and Core. It never grants authorization.
 export function resolveQuickPublish(data: Workspace, input: QuickPublishInput) {
   const issues: string[] = [], destinations: any[] = [];
@@ -28,10 +31,18 @@ export function resolveQuickPublish(data: Workspace, input: QuickPublishInput) {
     else for (const slot of slots.length ? slots : ['audio_A' as const]) recordings.push({workId:w.id,slot});
   }
   const options: Record<string, { account: any; binding: any; eligible: boolean }[]> = {};
+  const artistId = works[0]?.artistId;
+  const localArtist = data.localArtistIds?.includes(artistId);
   for (const target of targets) {
-    const candidates = data.bindings.filter(b => b.artistId === works[0]?.artistId && b.status !== 'revoked' && b.targets.includes(target))
+    const targetBindings = data.bindings.filter(b => b.artistId === artistId && b.targets.includes(target));
+    const matched = targetBindings.filter(b => b.status !== 'revoked')
       .map(binding => ({binding, account:data.accounts.find(a => a.id === binding.accountId)}))
-      .filter(({account}) => account && (account.provider === target || (account.provider === 'tme' && ['qqmusic','kugou'].includes(target))))
+      .filter(({account}) => account && accountSupportsTarget(account.provider, target as PlatformTarget));
+    const direct = localArtist ? data.accounts.filter(account =>
+      accountSupportsTarget(account.provider, target as PlatformTarget) &&
+      !targetBindings.some(binding => binding.accountId === account.id),
+    ).map(account => ({ account, binding: null })) : [];
+    const candidates = [...matched, ...direct]
       .map(c => ({...c, eligible:data.mode === 'simulation'
         ? c.account.authStatus === 'simulation'
         : c.account.authStatus === 'connected' && !!c.account.remoteSubject}));
@@ -40,9 +51,9 @@ export function resolveQuickPublish(data: Workspace, input: QuickPublishInput) {
     const available = candidates.filter(c => c.eligible);
     const match = override ? candidates.find(c => c.account.id === override) : available.length === 1 ? available[0] : undefined;
     if (artistIds.size !== 1) continue;
-    if (match?.eligible) destinations.push({target,accountId:match.account.id,bindingId:match.binding.id,kind:target === 'douyin' ? 'video_post' : 'audio_distribution'});
+    if (match?.eligible) destinations.push({target,accountId:match.account.id,bindingId:match.binding?.id ?? null,kind:target === 'douyin' ? 'video_post' : 'audio_distribution'});
     else if (!override && available.length > 1) issues.push(`${target} 有多个有效账号，请在页面内选择。`);
-    else issues.push(`${target} 缺少已核实授权与艺人绑定的账号，请检查授权状态。`);
+    else issues.push(localArtist ? `${target} 缺少已核实授权的账号，请检查授权状态。` : `${target} 缺少已核实授权与艺人绑定的账号，请检查授权状态。`);
   }
   return {issues:[...new Set(issues)],destinations,recordings,options};
 }

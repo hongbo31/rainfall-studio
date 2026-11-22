@@ -32,6 +32,18 @@ test('Beijing scheduled occurrence is stable, manual/debug isolated and count me
   assert.equal(rows.items.length,4); assert.equal(rows.plans[0].enabled,true);
   assert.equal(rows.runs[1].source,'scheduled'); assert.equal(rows.runs[1].snapshot.count,2);
 });
+test('an independent scheduled occurrence can start while a task owns another run of the same plan', t => {
+  const x = setup(t), plan = x.save({ outputs: { lyrics: true, music: true, cover: false } });
+  const { summaryHash } = x.service.preview({ id: plan.id });
+  const taskRun = x.service.runForPublication({ id: plan.id, expectedRevision: plan.revision, summaryHash, requestId: randomUUID() }, true);
+  x.now('2026-10-18T01:00:01Z');
+  x.service.tick();
+  const rows = x.service.list();
+  const scheduled = rows.runs.find(run => run.source === 'scheduled');
+  assert.equal(scheduled?.planId, plan.id);
+  assert.equal(rows.occurrences[0]?.runId, scheduled.id);
+  assert.deepEqual(rows.runs.find(run => run.id === taskRun.id), taskRun);
+});
 test('weekly and once schedules use local Shanghai calendar and bounded latest catchup', t=> {
   const x=setup(t); x.save({schedule:{kind:'weekly',localTime:'09:00',weekdays:[1]}});
   x.now('2026-10-18T12:00:00Z'); x.service.tick(); assert.equal(x.service.list().runs.length,0);
@@ -176,12 +188,18 @@ test('migration converts original UTC schedule to Beijing while preserving sourc
   const x=setup(t);const id=randomUUID();x.repo.save('plans',{id,title:'utc',artistId:x.plan.artistId,enabled:true,timezone:'Etc/UTC',localTime:'09:00'});
   const m=x.service.migrateLegacy(),p=x.service.list().plans[0];assert.equal(p.schedule.localTime,'17:00');assert.equal(m.entries[0].original.timezone,'Etc/UTC');
 });
-test('stopping album dispatch keeps unknown operation in reconciliation until evidence settles it',t=>{
+test('stopping album dispatch closes the run and keeps the receipt available for reconciliation',t=>{
   const x=setup(t,{capabilities:full}),p=x.save({publishTargets:[{platform:'tme',accountId:'a',enabled:true,album:{mode:'new',title:'雨集'}}]}),r=trigger(x,p);
-  const a=x.service.claimAlbum({runId:r.id,platform:'tme',accountId:'a'});x.service.stop({runId:r.id});assert.equal(x.service.list().runs[0].state,'stopping');
+  const a=x.service.claimAlbum({runId:r.id,platform:'tme',accountId:'a'});
+  const stopped=x.service.stop({runId:r.id});assert.equal(stopped.state,'stopped');
+  x.repo.save('settings',{id:'plan-center:run:'+r.id,value:{...stopped,state:'stopping'}});
   const restarted=new w.PlanCenterService(x.repo,x.opts);assert.equal(restarted.list().albumBindings[0].state,'unknown');
-  assert.equal(restarted.list().runs[0].state,'stopping');
-  restarted.recordAlbum({bindingId:a.id,status:'bound',albumId:'fixture',evidenceId:'verified-query'});assert.equal(restarted.list().runs[0].state,'stopped');
+  assert.equal(restarted.list().runs[0].state,'stopped');
+  const next=trigger({...x,service:restarted},p);
+  assert.throws(()=>restarted.claimAlbum({runId:next.id,platform:'tme',accountId:'a'}),/ALBUM_RECONCILE_REQUIRED/);
+  restarted.recordAlbum({bindingId:a.id,status:'bound',albumId:'fixture',evidenceId:'verified-query'});
+  assert.equal(restarted.list().runs[0].state,'stopped');
+  assert.equal(restarted.claimAlbum({runId:next.id,platform:'tme',accountId:'a'}).albumId,'fixture');
 });
 function scoreable(t,changes={}) {
   const x=setup(t,{capabilities:full}),p=x.save({count:1,authorization:{text:true,music:true,publish:false},text:{profileId:'fixture-text-profile',profileRevision:1,modelId:'deepseek-chat',maxOutputTokens:2048,budgetMicros:10000,consent:true,threshold:75,maxRewrites:2,maxScoreRetries:2},music:{route:'yourmusic',profileId:'fixture-music-profile',profileRevision:1,modelId:'fixture-model',budgetCredits:100,maxCostPerRequestCredits:10,pricingEvidence:'fixture-pricing',consent:true,versionPolicy:'first'},...changes}),r=trigger(x,p),i=x.service.list().items[0];

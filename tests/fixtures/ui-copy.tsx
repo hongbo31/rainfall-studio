@@ -2,8 +2,6 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Context } from "../../src/renderer/context";
 import Overview from "../../src/renderer/pages/Overview";
-import Library from "../../src/renderer/pages/Library";
-import Create from "../../src/renderer/pages/Create";
 import Insights from "../../src/renderer/pages/Insights";
 import CoverStudio from "../../src/renderer/pages/CoverStudio";
 import HelpNote from "../../src/renderer/components/HelpNote";
@@ -34,8 +32,6 @@ const data = {
 };
 const pages = {
   overview: Overview,
-  library: Library,
-  create: Create,
   insights: Insights,
   cover: CoverStudio,
 };
@@ -95,7 +91,7 @@ export function helpNoteInteraction() {
     tooltipId: tooltip.props.id,
     role: tooltip.props.role,
   };
-  button.props.onKeyDown({ key: "Escape" });
+  button.props.onKeyDown({ key: "Escape", preventDefault() {} });
   tree = render();
   const escaped = tree.props.className.includes("is-dismissed");
   button = React.Children.toArray(tree.props.children)[0] as any;
@@ -104,6 +100,7 @@ export function helpNoteInteraction() {
   const refocused = !tree.props.className.includes("is-dismissed");
   (React.Children.toArray(tree.props.children)[0] as any).props.onKeyDown({
     key: "Escape",
+    preventDefault() {},
   });
   tree = render();
   tree.props.onMouseEnter();

@@ -1,3 +1,4 @@
+import { launchHeadlessChromium } from "../scripts/lib/headless-chromium.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -29,15 +30,8 @@ test("existing publish center ready list, explicit version, selection and unavai
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   let browser;
   try {
-    browser = await chromium.launch({
-      headless: true,
-      executablePath:
-        process.env.CHROME_PATH ??
-        [
-          "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-          "/usr/bin/chromium",
-        ].find((p) => fs.existsSync(p)),
-    });
+    browser = await launchHeadlessChromium(chromium, {
+      });
     const page = await browser.newPage();
     await page.goto("http://127.0.0.1:" + server.address().port);
     await page.getByRole("checkbox", { name: "选择歌曲 Ready Song" }).check();

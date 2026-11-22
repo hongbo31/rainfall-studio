@@ -1,6 +1,6 @@
 import HelpNote from "./HelpNote";
 import React, { useEffect, useState } from "react";
-import { useStudio, Badge } from "../context";
+import { useStudio, Badge, localMusicians } from "../context";
 import MusicCandidates from "./MusicCandidates";
 const evaluationNames:Record<string,string>={model_pending:'等待模型评估',model_evaluating:'模型评估中',model_passed:'模型评估达标',model_failed:'未达质量阈值',model_error:'模型评估失败',model_blocked:'模型评估已阻塞',model_unknown:'结果未知，等待对账',model_stale:'素材已更新，评估失效'};
 export default function TextCandidates() {
@@ -11,7 +11,7 @@ export default function TextCandidates() {
     revision: 0,
   });
   const [rows, setRows] = useState<any>({ candidates: [], drafts: [] });
-  const [artistId, setArtist] = useState(data.artists[0]?.id ?? "");
+  const [artistId, setArtist] = useState(localMusicians(data)[0]?.id ?? "");
   const [workspaceRef, setWorkspace] = useState("rainfall-personal"),
     [artistRef, setArtistRef] = useState("creator");
   const [seriesId, setSeries] = useState(""),
@@ -133,7 +133,7 @@ export default function TextCandidates() {
                 setSeries("");
               }}
             >
-              {data.artists.map((a: any) => (
+              {localMusicians(data).map((a: any) => (
                 <option key={a.id} value={a.id}>
                   {a.name}
                 </option>

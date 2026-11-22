@@ -1,12 +1,21 @@
 // Offline diagnosis of the currently installed local-template plan. Production DB is opened readonly.
 import fs from 'node:fs';import path from 'node:path';import assert from 'node:assert/strict';import {randomUUID,createHash} from 'node:crypto';import {build} from 'esbuild';import {createRequire} from 'node:module';import Database from 'better-sqlite3';
-const out=path.resolve('output/daily-lyrics-audit-20261018'),root=path.join(out,'isolated-local-'+Date.now());fs.mkdirSync(path.join(root,'production'),{recursive:true});
-const pointer=JSON.parse(fs.readFileSync('C:/Users/31559/AppData/Local/RainfallStudioLauncher/verified-desktop.json','utf8'));
+import {compileFunction} from 'node:vm';
+import {readVerifiedDesktop} from './lib/verified-desktop.mjs';
+const repo=path.resolve(import.meta.dirname,'..');
+const pointer=readVerifiedDesktop();
+const buildRoot=path.resolve(repo,process.env.RAINFALL_BUILD_ROOT || path.join('..',path.basename(repo)+'-build'));
+const out=path.join(buildRoot,'diagnostics','daily-lyrics-audit-20261018');
+fs.mkdirSync(out,{recursive:true});
+const root=fs.mkdtempSync(path.join(out,'isolated-local-'));
+fs.mkdirSync(path.join(root,'production'));
 const source=new Database(path.join(pointer.dataRoot,'production/library.sqlite'),{readonly:true,fileMustExist:true});let before,after;
 const digest=()=>Object.fromEntries(['settings','works','operations'].map(t=>[t,createHash('sha256').update(JSON.stringify(source.prepare('SELECT data FROM '+t+' ORDER BY id').all())).digest('hex')]));
 try{before=digest();await source.backup(path.join(root,'production/library.sqlite'));}catch(e){source.close();throw e}
-const bundle=path.join(out,'local-debug.cjs');await build({stdin:{contents:"export {Studio} from './src/core/studio';",resolveDir:process.cwd()},outfile:bundle,bundle:true,platform:'node',format:'cjs',packages:'external'});
-const require=createRequire(import.meta.url);require(path.resolve('tests/fixtures/offline-only.cjs'));const {Studio}=require(bundle);let s=new Studio(root,'production');
+const {outputFiles}=await build({stdin:{contents:"export {Studio} from './src/core/studio';",resolveDir:repo},write:false,bundle:true,platform:'node',format:'cjs',packages:'external'});
+const require=createRequire(import.meta.url);require(path.join(repo,'tests/fixtures/offline-only.cjs'));
+const compiled={exports:{}};compileFunction(outputFiles[0].text,['module','exports','require','__dirname'])(compiled,compiled.exports,require,path.join(repo,'build'));
+const {Studio}=compiled.exports;let s=new Studio(root,'production');
 try{
  let service=s.productionFlowService();const plan=service.list().plans.find(p=>p.id==='160b098d-84a3-465c-ba6f-a4598fd71c94');assert.ok(plan);assert.equal(plan.candidateMode,'local_template');assert.equal(plan.scoreMode,'rule_based');assert.equal(plan.text,null);assert.equal(plan.music,null);assert.equal(plan.publication,null);
  const requestId=randomUUID(),triggered=service.trigger({planId:plan.id,requestId});assert.equal(service.trigger({planId:plan.id,requestId}).id,triggered.id);

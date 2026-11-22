@@ -1,9 +1,14 @@
 import {_electron as electron} from '@playwright/test';import electronPath from 'electron';import fs from 'node:fs';import path from 'node:path';import {createRequire} from 'node:module';import {randomUUID,createHash} from 'node:crypto';import sharp from 'sharp';import assert from 'node:assert/strict';
+import {windowsDesktopDirectory} from './lib/powershell-7.mjs';
+import {readVerifiedDesktop,verifiedDesktopPointerPath} from './lib/verified-desktop.mjs';
 const require=createRequire(import.meta.url),{Studio}=require('../build/core.cjs');
 const run=path.resolve('output/playwright/tme-desktop-'+randomUUID()),root=path.join(run,'data');fs.mkdirSync(run,{recursive:true});
 const hash=p=>createHash('sha256').update(fs.readFileSync(p)).digest('hex');
-const manager=path.join(process.env.LOCALAPPDATA,'RainfallStudioLauncher'),current=JSON.parse(fs.readFileSync(path.join(manager,'current.json'),'utf8'));
-const protectedFiles=[path.join(manager,'current.json'),path.join(process.env.USERPROFILE,'Desktop','Rainfall Studio 音乐客户端.lnk'),path.join(process.env.APPDATA,'RainfallStudio','production','library.sqlite'),path.join(current.current.dataRoot,'production','library.sqlite')];
+const current=readVerifiedDesktop();
+const productionDatabase=root=>path.join(root,'production','library.sqlite');
+const protectedFiles=[verifiedDesktopPointerPath(),path.join(windowsDesktopDirectory(),'Rainfall Studio 音乐客户端.lnk'),productionDatabase(current.dataRoot)];
+const legacy=process.env.APPDATA&&productionDatabase(path.join(process.env.APPDATA,'RainfallStudio'));
+if(legacy&&fs.existsSync(legacy)&&!protectedFiles.includes(legacy))protectedFiles.push(legacy);
 const before=Object.fromEntries(protectedFiles.map(p=>[p,hash(p)]));
 const audio=path.join(run,'synthetic-fixture.wav'),rate=8000,n=rate*2,b=Buffer.alloc(44+n*2);b.write('RIFF');b.writeUInt32LE(36+n*2,4);b.write('WAVEfmt ',8);b.writeUInt32LE(16,16);b.writeUInt16LE(1,20);b.writeUInt16LE(1,22);b.writeUInt32LE(rate,24);b.writeUInt32LE(rate*2,28);b.writeUInt16LE(2,32);b.writeUInt16LE(16,34);b.write('data',36);b.writeUInt32LE(n*2,40);for(let i=0;i<n;i++)b.writeInt16LE(Math.sin(i*2*Math.PI*220/rate)*500,44+i*2);fs.writeFileSync(audio,b);
 const cover=path.join(run,'original-fixture.png');await sharp(Buffer.from('<svg width="1000" height="1000"><rect width="1000" height="1000" fill="#30273d"/><circle cx="650" cy="330" r="180" fill="#ae8bc2"/><text x="70" y="900" fill="white" font-size="50">LOCAL FIXTURE ONLY</text></svg>')).png().toFile(cover);

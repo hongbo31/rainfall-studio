@@ -65,7 +65,7 @@ export function createMaterialWorkbenchBroker(o: Options) {
         await rpc("recordProgress", { jobId: job.id, state: "downloading" });
         check();
         for (const song of ready) {
-          const audio = await adapter.download(song.audio_url);
+          const audio = await adapter.download(song.audio_url, { retry: true });
           check();
           await rpc("importAudio", {
             jobId: job.id,

@@ -35,7 +35,9 @@ test('a duplicate on a later catalog page remains visible to preflight',async t=
     document.querySelector('.arco-pagination-item-active').textContent='2';
     setTimeout(()=>{
      const cells=document.querySelector('tbody tr').cells;
-     cells[0].innerHTML='<div>第二页重复作品</div><div>作品ID：9876543210987654322</div>';
+     cells[0].innerHTML='<div class="task-title-content-main"><div class="music-ellipsis-text">第二页重复作品</div><div class="music-ellipsis-text music-ellipsis-holder">截断副本</div></div>'+
+       '<div>原创音乐 · 单曲</div><div class="task-title-content-desc"><div class="music-ellipsis-text">作品 ID ： ９８７６５４３２１０９８７６５４３２２</div><button>复制</button></div>';
+     cells[1].textContent='处理中';
     },300);
    };
   </script>`}));
@@ -46,6 +48,7 @@ test('a duplicate on a later catalog page remains visible to preflight',async t=
  const full=await readFanqieCatalogPages(page,()=>{});
  assert.equal(full.complete,true);
  assert.deepEqual(full.rows.map(row=>row.id),['9876543210987654321','9876543210987654322']);
+ assert.equal(full.rows[1].stage,'unknown');
  assert.equal(checkFanqieNewUpload(full,'第二页重复作品').reason,'FANQIE_OFFICIAL_RECORD_ALREADY_EXISTS');
 });
 
@@ -57,6 +60,49 @@ test('artist reader waits for the roster after its search field has already moun
   const page=await context.newPage();await page.goto('https://www.novelfm.com/creator/music/account/artist');
   const result=await readFanqieArtists(nativeFanqiePage(page));assert.deepEqual(result.artists,[{artistId:'123456789',name:'测试艺人'}]);
  }finally{await browser.close();}
+});
+
+test('an open account detects a delayed login redirect and turns valid after signing in', async t => {
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'rainfall-fanqie-login-'));
+ const context=await chromium.launchPersistentContext(path.join(root,'profile'),{channel:'chrome',headless:true,serviceWorkers:'block'});
+ t.after(async()=>{await context.close();fs.rmSync(root,{recursive:true,force:true});});
+ const origin='https://www.novelfm.com', home=origin+'/creator/music/home';
+ let signedIn=false, inlineSignIn=false, profileReads=0;
+ const now=Date.now.bind(Date);
+ let elapsed=0;
+ t.mock.method(Date,'now',()=>now()+elapsed);
+ await context.route('**/*',async route=>{
+  const url=new URL(route.request().url());
+  if(url.origin!==origin)return route.abort();
+  const form='<input placeholder="请输入手机号"><input placeholder="请输入验证码"><button>登录/注册</button>';
+  let body='创作首页';
+  if(url.pathname==='/creator/music/login')body=form;
+  if(url.pathname==='/creator/music/account/profile'){
+   profileReads++;
+   body=signedIn?'<div class="profile-desc"><span>UID</span><div>12345678</div></div>':inlineSignIn?form:
+    '<script>setTimeout(()=>location.replace("/creator/music/login"),350)</script>';
+  }
+  return route.fulfill({contentType:'text/html; charset=utf-8',body});
+ });
+ const session=new FanqieCatalogSession({root,available:()=>true,generation:()=>1,launch:async()=>context});
+ await session.ui('open');
+ const [primary]=context.pages();
+ const extraTabs=[];
+ context.on('page',page=>extraTabs.push(page));
+ assert.equal(await session.loginState(),'expired');
+ assert.equal(primary.url(),home);
+ assert.equal(context.pages().length,1);
+ signedIn=true;
+ elapsed=6_000;
+ assert.equal(await session.loginState(),'valid');
+ signedIn=false;
+ inlineSignIn=true;
+ elapsed=37_000;
+ assert.equal(await session.loginState(),'expired');
+ assert.equal(primary.url(),home);
+ assert.equal(context.pages().length,1);
+ assert.equal(profileReads,3);
+ assert.deepEqual(extraTabs,[]);
 });
 
 async function nativeFixture(t, options={}) {
@@ -99,6 +145,8 @@ test('native broker reads delayed catalog, uploads once, verifies saved ID and r
  const f=await nativeFixture(t);
  const foregroundTabs=t.mock.method(f.context,'newPage');
  const read=await f.session.ui('read');assert.equal(read.report.complete,true);assert.equal(read.report.total,1);
+ assert.equal(read.report.rows[0].stage,'unknown');
+ assert.equal(checkFanqieNewUpload(read.report,'已有合成作品').reason,'FANQIE_OFFICIAL_RECORD_ALREADY_EXISTS');
  assert.equal(foregroundTabs.mock.callCount(),0,'Catalog reads must stay in the background');
  const selection={workId:'00000000-0000-4000-8000-000000000003',variant:'A'};
  await assert.rejects(f.broker.ui('publishConfigured',selection),/FANQIE_CONFIGURATION_REQUIRED/);

@@ -1,4 +1,5 @@
 import { _electron as electron } from "@playwright/test";
+import { openCreationWork } from "./lib/open-creation-work.mjs";
 import electronPath from "electron";
 import fs from "node:fs";
 import path from "node:path";
@@ -155,8 +156,7 @@ try {
   );
   await page.getByTestId("cover-handoff").scrollIntoViewIfNeeded();
   await page.screenshot({ path: path.join(run, "cover-handoff.png") });
-  await page.getByRole("button", { name: "作品库", exact: true }).click();
-  await page.getByRole("heading", { name: work.title, exact: true }).click();
+  await openCreationWork(page, work.id);
   await choose(audio);
   await page.getByRole("button", { name: "导入音频 A", exact: true }).click();
   await page.getByText("本地音频已受管", { exact: true }).waitFor();

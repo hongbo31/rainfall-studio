@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>创作 · 谱乐 AI 测试</title>
+<aside id="accountSidebar">
+  <button id="accountToggle" aria-label="登录 · 更多" aria-haspopup="dialog" aria-expanded="false" onclick="accountMenu.showModal()">
+    <span id="accountName">登录</span><span>个人空间</span>
+  </button>
+</aside>
+<dialog id="accountMenu"><h2>个人中心</h2><button onclick="openLogin()">登录</button></dialog>
+<dialog id="signIn">
+  <h2>继续你的音乐创作</h2>
+  <button aria-label="Close" onclick="dismissLogin()">×</button>
+  <button onclick="finishLogin()">测试完成登录</button>
+</dialog>
+<dialog id="creditReward">
+  <p>你真的要离开吗？</p>
+  <button onclick="eventLog('claimed-reward')">登录领取积分</button>
+  <button onclick="creditReward.close(); eventLog('reward-closed')">关闭</button>
+</dialog>
+<button role="tab" onclick="showForm()">自定义模式</button>
+<main id="creation-area" hidden>
+  <div>
+    <div>
+  <button onclick="upload.showModal()">上传音频</button>
+  <button onclick="eventLog('timbre'); tones.showModal()">选择音色</button>
+  <div id="appliedVoice" hidden><h3></h3></div>
+  <label><input type="checkbox" role="switch" onchange="lyrics.hidden=this.checked">纯音乐</label>
+  <textarea placeholder="输入歌曲标题" maxlength="80" id="songTitle"></textarea>
+  <textarea placeholder="输入您自己的歌词" maxlength="5000" id="lyrics"></textarea>
+  <textarea placeholder="例如：流行摇滚、强劲电吉他" maxlength="1000" id="style"></textarea>
+  <div id="genders">
+    <button class="bg-secondary" onclick="gender(this)">不限</button>
+    <button onclick="gender(this)">男声</button>
+    <button onclick="gender(this)">女声</button>
+  </div>
+  <button><span><span id="rate">5 积分/2首</span></span> 切换</button>
+    </div>
+    <div><div><div></div><div><div>
+      <button id="makeSong" onclick="requestGeneration()">立即制作</button>
+    </div></div></div></div>
+  </div>
+  <dialog id="tones">
+    <div role="listbox">
+      <div role="option" aria-selected="false" onclick="selectVoice(this)"><h3>小川</h3></div>
+      <div role="option" aria-selected="false" onclick="selectVoice(this)"><h3>小川少年</h3></div>
+    </div>
+    <button id="useTone" disabled onclick="applyVoice()">使用此音色</button>
+  </dialog>
+  <dialog id="upload"><button onclick="upload.close(); copyright.showModal()">🎧版权歌曲上传支持翻唱</button></dialog>
+  <dialog id="copyright">
+    <input id="audio" type="file" hidden onchange="chooseFile()">
+    <button onclick="audio.click()">选择音频文件</button>
+    <button id="save" hidden onclick="saveUpload()">保存</button>
+  </dialog>
+  <button id="processAudio" hidden onclick="processUpload()">开始处理（50 积分）</button>
+  <span id="uploading" hidden>版权歌曲上传中...</span>
+  <button id="cover" hidden onclick="eventLog('cover'); this.hidden=true">翻唱此歌曲</button>
+  <button id="oldCover" hidden onclick="eventLog('old cover')">翻唱此歌曲</button>
+  <dialog id="agreement"><p>请先同意版权服务协议</p><button onclick="eventLog('accepted')">同意并继续</button></dialog>
+</main>
+<dialog id="pairPrompt" aria-label="提示">
+  <p>每次生成模型都会同时生成两首歌曲以供选择。</p>
+  <button onclick="pairPrompt.close(); eventLog('pair-cancelled')">取消</button>
+  <button onclick="confirmPair()">确定</button>
+</dialog>
+<dialog id="unrelatedPrompt" aria-label="提示">
+  <p>该操作可能会替换当前作品。</p>
+  <button onclick="eventLog('unrelated-confirmed')">确定</button>
+</dialog>
+<div data-panel-group-direction="horizontal">
+  <div id="music-list">
+    <p id="emptySongs" hidden>在左侧开始你的第一首歌</p>
+    <ul id="songs" class="w-full"></ul>
+  </div>
+</div>
+<dialog id="editSongName">
+  <h2>修改歌名</h2>
+  <label>新歌名 <input type="text" id="newSongName"></label>
+  <button onclick="editSongName.close()">取消</button>
+  <button onclick="saveSongName()">保存</button>
+</dialog>
+<script>
+  const config = __TEST_OPTIONS__;
+  oldCover.hidden = !config.oldCover;
+  const eventLog = value => console.log("fixture:" + value);
+  let tone = "";
+  let submittedAt = 0;
+  let renameTarget;
+  let sessionReady = !config.expired && !config.restoringSession;
+  if (config.currentForm) {
+    const title = document.createElement("input");
+    title.id = songTitle.id;
+    title.placeholder = "输入歌曲标题（必填）";
+    title.setAttribute("aria-label", "标题");
+    title.maxLength = 80;
+    songTitle.replaceWith(title);
+    genders.firstElementChild.remove();
+    for (const button of genders.querySelectorAll("button"))
+      button.setAttribute("aria-pressed", String(button.textContent === config.selectedGender));
+    const separator = document.createElement("span");
+    separator.setAttribute("aria-hidden", "true");
+    separator.textContent = "·";
+    makeSong.replaceChildren("立即制作 ", separator, " 5 积分/2首");
+    document.getElementById("creation-area").append(makeSong);
+  }
+  function showAccount(authenticated) {
+    const name = authenticated ? "谱乐测试账号" : "登录";
+    accountToggle.setAttribute("aria-label", name + " · 更多");
+    accountName.textContent = name;
+  }
+  accountSidebar.hidden = !!config.restoringSession;
+  showAccount(sessionReady);
+  if (config.redundantLogin) signIn.showModal();
+  if (config.rewardsPrompt) creditReward.showModal();
+  if (config.ariaLabelDiffers) makeSong.setAttribute("aria-label", "谱乐创作提交");
+  if (config.noGenerationPrice) rate.textContent = "音乐模型";
+  if (config.restoringSession) setTimeout(() => {
+    sessionReady = true;
+    showAccount(true);
+    accountSidebar.hidden = false;
+  }, 600);
+  function openLogin() {
+    eventLog("login-opened");
+    accountMenu.close();
+    signIn.showModal();
+  }
+  function finishLogin() {
+    sessionReady = true;
+    showAccount(true);
+    signIn.close();
+    eventLog("signed-in");
+  }
+  function dismissLogin() {
+    signIn.close();
+    eventLog("login-closed");
+    creditReward.showModal();
+  }
+  function selectVoice(item) {
+    const previous = tones.querySelector('[aria-selected="true"]');
+    if (previous) previous.setAttribute("aria-selected", "false");
+    item.setAttribute("aria-selected", "true");
+    tone = item.textContent.trim();
+    useTone.disabled = false;
+  }
+  function applyVoice() {
+    eventLog("apply:" + tone);
+    appliedVoice.querySelector("h3").textContent = tone;
+    appliedVoice.hidden = false;
+    tones.close();
+  }
+  function gender(button) {
+    const select = () => {
+      if (config.currentForm) {
+        const pressed = button.getAttribute("aria-pressed") === "true";
+        for (const option of genders.querySelectorAll("button"))
+          option.setAttribute("aria-pressed", String(option === button && !pressed));
+      } else {
+        genders.querySelector(".bg-secondary")?.classList.remove("bg-secondary");
+        button.classList.add("bg-secondary");
+      }
+      eventLog("gender:" + button.textContent);
+    };
+    if (config.slowFields) setTimeout(select, 140);
+    else select();
+  }
+  function chooseFile() { eventLog("file:" + audio.files[0].name); save.hidden = false; }
+  function saveUpload() {
+    eventLog("save");
+    copyright.close();
+    processAudio.hidden = false;
+  }
+  function processUpload() {
+    eventLog("process");
+    processAudio.hidden = true;
+    uploading.hidden = false;
+    if (!config.incompleteCover)
+      setTimeout(() => { uploading.hidden = true; cover.hidden = false; }, 120);
+  }
+  function addSong(id, name, before = null) {
+    const row = document.createElement("li");
+    if (id.endsWith("a")) row.dataset.songId = id;
+    const details = document.createElement("div");
+    const description = document.createElement("div");
+    const title = document.createElement("div");
+    const heading = document.createElement("a");
+    heading.href = "/musicPlay/" + id;
+    heading.textContent = name;
+    title.append(heading);
+    description.append(title);
+    details.append(document.createElement("div"), description);
+    const controls = document.createElement("div");
+    const more = document.createElement("button");
+    more.setAttribute("aria-label", "更多");
+    more.textContent = "更多";
+    more.onclick = () => {
+      eventLog("more:" + id);
+      if (config.realSubmitDelay) eventLog("after-submit-ms:" + Math.round(performance.now() - submittedAt));
+      const menu = document.createElement("div");
+      menu.setAttribute("role", "menu");
+      menu.style.cssText = "position:fixed;right:20px;bottom:20px;height:120px;overflow-y:auto;background:white";
+      const entry = document.createElement("a");
+      entry.setAttribute("role", "menuitem");
+      entry.href = "#download-wav";
+      const wav = document.createElement("span");
+      wav.textContent = "下载 WAV 音频";
+      entry.append(wav);
+      entry.onclick = event => {
+        event.preventDefault();
+        eventLog("wav-menu:" + id);
+        menu.remove();
+        if (config.missingDownloadDialog === id) {
+          const unrelated = document.createElement("button");
+          unrelated.textContent = "下载文件";
+          unrelated.onclick = () => eventLog("unrelated-download-click");
+          document.body.append(unrelated);
+          return;
+        }
+        const clickedAt = performance.now();
+        const show = () => setTimeout(() => showDownloadDialog(id, config.wavRetries?.[id] ?? 0, clickedAt, heading.textContent), 120);
+        if (config.wavRequestIds) void requestWave(id).then(link => { if (link.code === 200) show(); });
+        else show();
+      };
+      const coverEntry = document.createElement("button");
+      coverEntry.textContent = "下载歌曲封面";
+      coverEntry.onclick = () => eventLog("unexpected-provider-cover:" + id);
+      const spacer = document.createElement("div");
+      spacer.style.height = "270px";
+      const rename = document.createElement("button");
+      const renameText = document.createElement("span");
+      renameText.textContent = "修改歌名";
+      rename.append(renameText);
+      rename.onclick = () => {
+        if (menu.scrollTop > 0) eventLog("rename-menu-scrolled:" + id);
+        menu.remove();
+        renameTarget = { id, row, heading };
+        newSongName.value = heading.textContent;
+        editSongName.showModal();
+      };
+      menu.append(entry, coverEntry, spacer, rename);
+      document.body.append(menu);
+    };
+    controls.append(more);
+    row.append(details, controls);
+    songs.insertBefore(row, before);
+  }
+  function requestWave(id) {
+    return fetch("/api/music/v2/wav/make", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ songId: config.wavRequestIds?.[id] ?? id }) }).then(response => response.json());
+  }
+  function showDownloadDialog(id, remainingFailures, clickedAt, title) {
+    const modal = document.createElement("dialog");
+    const section = document.createElement("section");
+    section.setAttribute("role", "dialog");
+    const form = document.createElement("form");
+    form.action = "/fixture-" + id + ".wav";
+    const confirm = document.createElement("button");
+    confirm.textContent = "下载文件";
+    confirm.onclick = event => {
+      eventLog("download-file:" + id);
+      if (config.providerWav) {
+        event.preventDefault();
+        const saveBlob = (blob, name) => {
+          const href = URL.createObjectURL(blob);
+          const anchor = document.createElement("a");
+          anchor.href = href;
+          anchor.download = name;
+          document.body.append(anchor);
+          anchor.click();
+          anchor.remove();
+          setTimeout(() => URL.revokeObjectURL(href), 300);
+        };
+        if (config.unrelatedBlob && id === "new-a") setTimeout(() => {
+          saveBlob(new Blob(["unrelated download"], { type: "text/plain" }), "unrelated.txt");
+        }, 80);
+        void (async () => {
+          const link = await requestWave(id);
+          if (link.code !== 200) return;
+          if (config.providerWav === "popup") {
+            window.open(link.data, "_blank");
+          } else {
+            const response = await fetch(link.data);
+            if (!response.ok) throw Error("WAV source unavailable");
+            saveBlob(await response.blob(), id + ".wav");
+          }
+          modal.remove();
+        })().catch(() => eventLog("provider-wave-failed:" + id));
+        return;
+      }
+      if (config.stallDownloadFile === id) {
+        event.preventDefault();
+        const spinner = document.createElement("p");
+        spinner.setAttribute("role", "status");
+        spinner.textContent = "正在下载...";
+        modal.append(spinner);
+        eventLog("download-spinner:" + id);
+        return;
+      }
+      if (config.fadeFirstDownloadDialog && id === "new-a") {
+        close.disabled = true;
+        setTimeout(() => { modal.remove(); eventLog("download-dialog-dismissed:" + id); }, 900);
+      } else if (!config.keepFirstDownloadDialog || id !== "new-a") setTimeout(() => modal.remove(), 0);
+    };
+    const close = document.createElement("button");
+    close.type = "button";
+    close.setAttribute("aria-label", "关闭");
+    close.onclick = () => { modal.remove(); eventLog("download-dialog-closed:" + id); };
+    function renderDownloadAction() {
+      if (!remainingFailures) {
+        form.replaceChildren(confirm, close);
+        return;
+      }
+      const error = document.createElement("p");
+      error.setAttribute("role", "alert");
+      error.textContent = "音频处理失败";
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.textContent = "重试";
+      retry.onclick = () => {
+        eventLog("retry:" + id);
+        if (config.realDownloadDelay) eventLog("retry-delay:" + Math.round(performance.now() - clickedAt));
+        retry.disabled = true;
+        setTimeout(() => {
+          remainingFailures--;
+          renderDownloadAction();
+        }, 60);
+      };
+      form.replaceChildren(error, retry, close);
+    }
+    renderDownloadAction();
+    if (config.wavRequestIds) {
+      const filename = document.createElement("p");
+      filename.textContent = (config.wavTitleMismatch === id ? "另一首歌" : title) + ".wav";
+      section.append(filename);
+    }
+    section.append(form);
+    modal.append(section);
+    document.body.append(modal);
+    modal.showModal();
+  }
+  function saveSongName() {
+    const { id, row, heading } = renameTarget;
+    const name = newSongName.value;
+    eventLog("save-name:" + id + ":" + name);
+    editSongName.close();
+    if (config.renameFails) return;
+    setTimeout(() => {
+      heading.textContent = name;
+      if (config.renameReorders) songs.prepend(row);
+      eventLog("name-applied:" + id + ":" + name);
+    }, 100);
+  }
+  function showForm() {
+    document.querySelector("main").hidden = false;
+    if (config.emptyHistory) emptySongs.hidden = false;
+    else addSong("old", config.previousTitle ?? "之前的歌曲");
+    for (const song of config.savedSongs ?? []) addSong(song.id, song.title);
+    if (config.oldSameTitle) addSong("old-same-title", "雨夜未归人");
+    if (config.slowFields) {
+      for (const field of [songTitle, lyrics, style]) {
+        field.readOnly = true;
+        setTimeout(() => { field.readOnly = false; }, 1_650);
+        field.addEventListener("input", () => {
+          const entered = field.value;
+          field.value = "";
+          setTimeout(() => { field.value = entered; eventLog("field-ready:" + field.id); }, 120);
+        });
+      }
+    }
+    if (config.restoringSession && !sessionReady) {
+      eventLog("form-before-session");
+      accountSidebar.hidden = false;
+    }
+    if (config.refreshingSession) {
+      showAccount(false);
+      setTimeout(() => showAccount(true), 220);
+    }
+    if (config.unrelatedLogin) {
+      const promo = document.createElement("button");
+      promo.textContent = "立即登录";
+      document.querySelector("main").append(promo);
+    }
+    if (config.agreement) agreement.showModal();
+    if (config.lowCredits) {
+      const message = document.createElement("p");
+      message.setAttribute("role", "alert");
+      message.textContent = "积分不足";
+      document.querySelector("main").append(message);
+    }
+  }
+  function requestGeneration() {
+    if (config.unrelatedPrompt) {
+      unrelatedPrompt.showModal();
+      return;
+    }
+    if (config.pairPromptDelay !== undefined) {
+      eventLog("make-click");
+      setTimeout(() => pairPrompt.showModal(), config.pairPromptDelay);
+      return;
+    }
+    generate();
+  }
+  function confirmPair() {
+    eventLog("pair-confirmed");
+    pairPrompt.close();
+    generate();
+  }
+  function generate() {
+    submittedAt = performance.now();
+    const instrumental = document.querySelector('[role="switch"]').checked;
+    eventLog("generate:" + [songTitle.value, lyrics.value, style.value, instrumental ? "instrumental" : "vocal"].join("|"));
+    if (config.currentForm) eventLog("submitted-voice:" + (genders.querySelector('[aria-pressed="true"]')?.textContent ?? "不限"));
+    const busy = document.createElement("span");
+    busy.textContent = "生成中";
+    songs.before(busy);
+    setTimeout(() => {
+      const previousFirst = config.leaveOldFirst ? null : songs.querySelector("li");
+      emptySongs.hidden = true;
+      addSong("new-a", songTitle.value, previousFirst);
+      if (!config.incomplete) addSong("new-b", songTitle.value, previousFirst);
+    }, 55);
+    setTimeout(() => { busy.remove(); eventLog("settled"); }, 200);
+  }
+</script>
+</html>

@@ -8,6 +8,124 @@ test('real SQLite pure lyrics cover failure recovers via saved final work, hando
  const {receipt,request}=await receive(s,work.id);assert.equal(s.get('works',work.id).assets.cover,undefined,'receiving is not selecting');await s.call('work.selectAsset',{workId:work.id,role:'cover',assetId:receipt.assetId});
  const retry=await s.call('planCenter.retry',{attemptId:failed.id});assert.equal(retry.state,'dispatching');api.tickPlanCenter(s);const success=x.center.list().stageAttempts.find(a=>a.id===retry.id);assert.equal(success.state,'succeeded');assert.equal(success.result.receiptId,receipt.id);assert.equal(success.result.requestId,request.id);api.tickPlanCenter(s);assert.equal(x.center.list().runs[0].state,'completed');assert.equal(s.all('operations').length,0);assert.equal(s.externalRequests,0);
 });
+
+for (const modelId of ['cogview-3-flash', 'glm-image']) test(`智谱 cover uses ${modelId}, downloads without the key, and preserves the selected cover`, async t => {
+ const s = setup(t);
+ const paid = modelId === 'glm-image';
+ const profile = {id:randomUUID(), kind:'image', providerId:'zhipu_image', label:'智谱 AI', modelId, executionEnabled:false};
+ await assert.rejects(s.call('apiProfile.save', {profile:{...profile, modelId:'gpt-image-2.6-sunburst'}, expectedRevision:null}));
+ const saved = await s.call('apiProfile.save', {profile, expectedRevision:null});
+ await s.call('generationConfig.save', {role:'image', profileId:saved.id, expectedRevision:0});
+ const work = s.saveWork({title:'雨中漫步', artistId:s.all('artists')[0].id, story:'夜雨', lyrics:'雨声轻轻', prompt:'', parameters:{}, rights:'隔离测试', ai:'unknown'});
+ const original = await receive(s, work.id);
+ await s.call('work.selectAsset', {workId:work.id, role:'cover', assetId:original.receipt.assetId});
+ assert.deepEqual(api.planCoverImage(s, 'list', {}), [], 'external requests do not send an API call');
+ const draft = {workId:work.id, requestId:randomUUID(), brief:'城市夜雨', prompt:paid ? '雨夜🌧'.repeat(400) : '城市夜雨，水彩风格'};
+ if (paid) await assert.rejects(s.call('cover.generate', draft), /IMAGE_MODEL_CONFIRMATION_REQUIRED/);
+ const input = paid ? {...draft, confirmedModelId:modelId} : draft;
+ const entry = await s.call('cover.generate', input);
+ assert.equal((await s.call('cover.generate', input)).requestId, entry.requestId);
+ await assert.rejects(s.call('cover.generate', {...input, requestId:randomUUID()}), /COVER_GENERATION_PENDING/);
+ const key = 'fixture.zhipu', download = 'https://sfile.chatglm.cn/testpath/cover.png';
+ const edge = paid ? 1280 : 1024;
+ const bytes = await sharp({create:{width:edge,height:edge,channels:3,background:'blue'}}).png().toBuffer();
+ const calls = [];
+ const credentials = new api.ApiCredentials({
+  vault:{isAvailable:()=>true, has:()=>true, get:()=>key}, getProfile:async()=>saved,
+  context:()=>({mode:'production',generation:1}),
+  connectionRequest:async request => {
+   await request.assertDispatch?.();
+   request.assertActive?.();
+   calls.push(request.method);
+   if (request.method === 'POST') {
+    assert.equal(request.url, 'https://open.bigmodel.cn/api/paas/v4/images/generations');
+    assert.equal(request.headers.Authorization, 'Bearer ' + key);
+    const prompt = paid ? Array.from(input.prompt).slice(0, 1000).join('') : input.prompt;
+    assert.deepEqual(request.body, {model:modelId, prompt, size:`${edge}x${edge}`});
+    return {status:200, body:{data:[{url:download}]}};
+   }
+   assert.equal(request.url, download);
+   assert.equal(request.headers?.Authorization, undefined);
+   assert.equal(request.binary, true);
+   return {status:200, body:bytes};
+  },
+ });
+ const runner = api.createPlanCoverImageRunner({credentials, available:()=>true, generation:()=>1,
+  rpc:async (method, value)=>({ok:true,value:api.planCoverImage(s,method.split('.').at(-1),value)}),
+ });
+ await runner.pump();
+ await runner.pump();
+ assert.deepEqual(calls, ['POST', 'GET']);
+ fs.utimesSync(path.join(entry.directory, 'generated.jpg'), new Date(0), new Date(0));
+ await api.scanCoverInbox(s);
+ const result = (await s.call('cover.list', {workId:work.id})).receipts.find(receipt=>receipt.requestId===entry.requestId);
+ assert.deepEqual(result.provenance, {producer:'zhipu_image', model:modelId, generatedAt:null});
+ assert.equal(result.generationVerified, true);
+ assert.ok(s.get('works', work.id).assetHistory.includes(result.assetId));
+ assert.equal(s.get('works', work.id).assets.cover, original.receipt.assetId);
+});
+
+for (const modelId of ['doubao-seedream-5-5-261028', 'doubao-seedream-5-0-pro-260628']) test(`方舟封面使用 ${modelId} 的已确认配置`, async t => {
+ const s = setup(t);
+ const profile = {id:randomUUID(), kind:'image', providerId:'doubao_image', label:'方舟封面', modelId, executionEnabled:false};
+ await assert.rejects(s.call('apiProfile.save', {profile:{...profile,modelId:'doubao-seedance-2-5-260628'},expectedRevision:null}), /IMAGE_MODEL_REQUIRED/);
+ const saved = await s.call('apiProfile.save', {profile,expectedRevision:null});
+ await s.call('generationConfig.save', {role:'image',profileId:saved.id,expectedRevision:0});
+ const work = s.saveWork({title:'夜归',artistId:s.all('artists')[0].id,story:'夜雨',lyrics:'雨声轻轻',prompt:'',parameters:{},rights:'隔离测试',ai:'unknown'});
+ const cover = await s.call('cover.list', {workId:work.id});
+ assert.deepEqual(cover.manualCover, {providerId:'doubao_image', modelId});
+ const input = {workId:work.id,requestId:randomUUID(),brief:'',prompt:'城市夜雨，水彩风格'};
+ await assert.rejects(s.call('cover.generate', input), /IMAGE_MODEL_CONFIRMATION_REQUIRED/);
+ await assert.rejects(s.call('cover.generate', {...input,confirmedModelId:'glm-image'}), /IMAGE_MODEL_CONFIRMATION_REQUIRED/);
+ assert.deepEqual(api.planCoverImage(s, 'list', {}), []);
+ const entry = await s.call('cover.generate', {...input,confirmedModelId:modelId});
+ assert.equal(api.planCoverImage(s, 'list', {})[0].model, modelId);
+ const bytes = await sharp({create:{width:1536,height:1536,channels:3,background:'blue'}}).jpeg().toBuffer();
+ const requests = [];
+ const credentials = new api.ApiCredentials({
+  vault:{isAvailable:()=>true,has:()=>true,get:()=> 'fixture-ark'}, getProfile:async()=>saved,
+  context:()=>({mode:'production',generation:1}),
+  connectionRequest:async request=>{
+   await request.assertDispatch();
+   requests.push(request.body);
+   assert.equal(request.method, 'POST');
+   assert.equal(request.url, 'https://ark.cn-beijing.volces.com/api/v3/images/generations');
+   assert.equal(request.purpose, 'doubao_image');
+   assert.equal(request.headers.Authorization, 'Bearer fixture-ark');
+   return {status:200,body:{model:modelId,data:[{b64_json:bytes.toString('base64'),size:'1536x1536'}]}};
+  },
+ });
+ const runner = api.createPlanCoverImageRunner({credentials,available:()=>true,generation:()=>1,
+  rpc:async (method,value)=>({ok:true,value:api.planCoverImage(s,method.split('.').at(-1),value)}),
+ });
+ await runner.pump();
+ await runner.pump();
+ assert.deepEqual(requests,[{model:modelId,prompt:input.prompt,size:'1536x1536',response_format:'b64_json',output_format:'jpeg'}]);
+ fs.utimesSync(path.join(entry.directory, 'generated.jpg'), new Date(0), new Date(0));
+ await api.scanCoverInbox(s);
+ const result = (await s.call('cover.list',{workId:work.id})).receipts.find(row=>row.requestId===entry.requestId);
+ assert.ok(result, 'the downloaded JPEG is imported as a cover version');
+ assert.equal(result.generationVerified,true);
+ assert.deepEqual(result.provenance,{producer:'doubao_image', model:modelId, generatedAt:null});
+ assert.equal(s.externalRequests,0);
+});
+
+test('智谱 cover rejects untrusted result URLs before starting a download', async () => {
+ const profile = {id:randomUUID(), kind:'image', providerId:'zhipu_image', label:'智谱 AI', modelId:'cogview-3-flash', executionEnabled:false, revision:1};
+ const scope = {profileId:profile.id, expectedRevision:profile.revision};
+ for(const url of ['http://sfile.chatglm.cn/cover.png', 'https://sfile.chatglm.cn.example.org/cover.png', 'https://sfile.chatglm.cn:8443/cover.png', 'https://user@sfile.chatglm.cn/cover.png']){
+  const calls = [];
+  const credentials = new api.ApiCredentials({
+   vault:{get:()=>'offline-fixture'}, getProfile:async()=>profile, context:()=>({mode:'production', generation:1}),
+   connectionRequest:async request=>{calls.push(request.method);return {status:200, body:{data:[{url}]}};},
+  });
+  await assert.rejects(credentials.generatePlanCover(scope, 'offline prompt', async()=>{}, ()=>{}), /IMAGE_DOWNLOAD_URL_REJECTED/);
+  assert.deepEqual(calls, ['POST']);
+ }
+ await assert.rejects(api.nodeHttpsTransport({method:'GET', url:'https://sfile.chatglm.cn/cover.png', binary:true,
+  headers:{authorization:'offline-fixture'}}), /DOWNLOAD_AUTH_REJECTED/);
+ await assert.rejects(api.nodeHttpsTransport({method:'POST', url:'https://open.bigmodel.cn/api/paas/v4/chat/completions'}), /HTTP_HOST_REJECTED/);
+});
 test('materials explicit retry consumes its persisted attempt once',async t=>{
  const s=setup(t),x=fixture(s,api),cover=x.center.claim({runId:x.run.id,itemId:x.item().id,stage:'cover'});x.center.record({attemptId:cover.id,status:'succeeded',evidenceId:'isolated-cover'});const material=x.center.claim({runId:x.run.id,itemId:x.item().id,stage:'materials'});x.center.record({attemptId:material.id,status:'failed',reason:'ISOLATED_LOCAL_INTERRUPTION'});const retry=x.center.retry({attemptId:material.id});api.tickPlanCenter(s);assert.equal(x.center.list().stageAttempts.find(a=>a.id===retry.id).state,'succeeded');assert.equal(x.center.list().stageAttempts.filter(a=>a.stage==='materials').length,2);
 });

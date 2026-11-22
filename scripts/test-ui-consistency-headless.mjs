@@ -1,3 +1,4 @@
+import { launchHeadlessChromium } from "./lib/headless-chromium.mjs";
 // Actual built renderer in headless Chrome; synthetic bridge and isolated fixture, no Electron or desktop input.
 import { chromium, expect } from "@playwright/test";
 import fs from "node:fs";
@@ -8,6 +9,7 @@ import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import electronPath from "electron";
 import { auditDeepCopy } from "./lib/deep-copy-audit.mjs";
+import { openCreationWork } from "./lib/open-creation-work.mjs";
 const out = path.resolve(process.env.RAINFALL_UI_QA_OUTPUT ?? "output/ui-consistency");
 const fixtureFile=path.resolve("output/ui-consistency/visual-fixture.json");
 const uiRoot = path.resolve(process.argv[2] ?? "build/ui");
@@ -64,9 +66,7 @@ const checks = [],
   external = [],
   calls = [];
 try {
-  browser = await chromium.launch({
-    executablePath: "C:/Program Files/Google/Chrome/Application/chrome.exe",
-    headless: true,
+  browser = await launchHeadlessChromium(chromium, {
     args: [
       "--no-startup-window",
       "--disable-background-networking",
@@ -155,7 +155,7 @@ try {
           if (method === "platformConfig.list")
             return ok(fixture.platformConfigurations);
           if (method === "publish.selection.save") return ok(input);
-          if (["planCenter.fanqieStatus", "manualCreation.list"].includes(method)) return ok([]);
+          if (["apiProfile.list", "planCenter.fanqieStatus", "creationTasks.taskStatus"].includes(method)) return ok([]);
           if (method === "generationConfig.read") return ok({ roles: {} });
           if (method.endsWith(".list"))
             return ok(structuredClone(empty));
@@ -192,8 +192,8 @@ try {
     userAgent.includes("HeadlessChrome"),
     "A genuinely headless browser is required",
   );
-  await page.getByRole("button", { name: "作品库", exact: true }).click();
-  await page.getByRole("textbox", { name: "搜索作品", exact: true }).waitFor();
+  await page.getByRole("button", { name: "创作中心", exact: true }).click();
+  await page.getByRole("searchbox", { name: "搜索作品", exact: true }).waitFor();
   const versionLabel = page.getByLabel("客户端版本", { exact: true });
   await expect(versionLabel).toHaveText("v" + appMetadata.version);
   await expect(versionLabel).toBeVisible();
@@ -222,7 +222,7 @@ try {
       };
     }),
   );
-  assert.equal(header.length, 3);
+  assert.equal(header.length, 4);
   assert(
     header.every((x) => x.height === 36),
     "header heights differ: " + JSON.stringify(header),
@@ -233,15 +233,15 @@ try {
   );
   assert.equal(new Set(header.map((x) => x.y)).size, 1);
   checks.push({
-    name: "Header status, workspace select and backup button align at 36px/13px",
+    name: "Header status, workspace select and actions align at 36px/13px",
     measurements: header,
   });
-  await expect(page.locator(".page-head h1")).toHaveText("作品库");
+  await expect(page.locator(".page-head h1")).toHaveText("创作中心");
   assert.equal(await page.locator(".page-head .eyebrow").count(), 0);
   checks.push({
-    name: "Library uses compact title and no decorative English heading",
+    name: "Creation center uses a compact title and no decorative English heading",
   });
-  const toolbar = await page.locator(".library-toolbar :is(input, select, button)").evaluateAll((nodes) =>
+  const toolbar = await page.locator(".creation-works > label input, .creation-works > .section-title button").evaluateAll((nodes) =>
     nodes.map((n) => ({
       height: n.getBoundingClientRect().height,
       font: getComputedStyle(n).fontSize,
@@ -252,7 +252,7 @@ try {
     JSON.stringify(toolbar),
   );
   checks.push({
-    name: "Library filters and publish button share 40px/14px",
+    name: "Work search and selection controls share 40px/14px",
     measurements: toolbar,
   });
   async function shot(name) {
@@ -277,20 +277,22 @@ try {
     await page.screenshot({ path: file, fullPage: false });
     screens.push(file);
   }
-  await shot("01-library-headless");
+  await shot("01-creation-works-headless");
   await page
-    .getByRole("textbox", { name: "搜索作品", exact: true })
+    .getByRole("searchbox", { name: "搜索作品", exact: true })
     .fill("那天刚好下雨");
-  const libraryRows = page.locator(".library-table tbody tr[data-work-id]");
-  await expect(libraryRows).toHaveCount(1);
-  await page.getByRole("textbox", { name: "搜索作品", exact: true }).fill("");
-  await expect(libraryRows).toHaveCount(fixture.works.length);
+  const workRows = page.locator(".creation-work-items [data-work-id]");
+  const visibleWorkCount = () => workRows.evaluateAll(rows => new Set(rows.map(row => row.dataset.workId)).size);
+  await expect.poll(visibleWorkCount).toBe(1);
+  await page.getByRole("searchbox", { name: "搜索作品", exact: true }).fill("");
+  await expect.poll(visibleWorkCount).toBe(fixture.works.length);
   checks.push({
-    name: "Library filtering preserves actual page behavior on fixture data",
+    name: "Creation work search includes saved works on fixture data",
   });
-  await page.locator(".library-series summary").click();
-  const libraryControls = await page
-    .locator(".page-head button.primary,.library-series .form-grid input")
+  await page.getByRole("button", { name: "总览", exact: true }).click();
+  await page.getByText("管理系列", { exact: true }).click();
+  const seriesControls = await page
+    .locator("details[open] .form-grid input")
     .evaluateAll((ns) =>
       ns.map((n) => ({
         height: n.getBoundingClientRect().height,
@@ -298,10 +300,10 @@ try {
         family: getComputedStyle(n).fontFamily,
       })),
     );
-  assert(libraryControls.every((x) => x.height === 40 && x.font === "14px"));
-  assert.equal(new Set(libraryControls.map((x) => x.family)).size, 1);
+  assert(seriesControls.every((x) => x.height === 40 && x.font === "14px"));
+  assert.equal(new Set(seriesControls.map((x) => x.family)).size, 1);
   const hierarchy = await page
-    .locator("h1,h2,h3")
+    .locator("#content > .page-head h1, #content > .section-title h2")
     .evaluateAll((ns) =>
       ns.map((n) => ({ tag: n.tagName, size: getComputedStyle(n).fontSize })),
     );
@@ -312,11 +314,11 @@ try {
   );
   checks.push({
     name: "Create and series fields share sizing and font while headings retain hierarchy",
-    libraryControls,
+    seriesControls,
     hierarchy,
   });
-  await libraryRows.first().locator(".library-title").click();
-  await expect(page.locator(".page-head h1")).toHaveText(
+  const workDetails = await openCreationWork(page, fixture.works[0].id);
+  await expect(workDetails.locator(".page-head h1")).toHaveText(
     fixture.works[0].title,
   );
   await expect(page.getByTestId("lyrics-publication")).toBeVisible();
@@ -330,14 +332,17 @@ try {
   checks.push({
     name: "Work detail, A/B controls and lyric preview render from fixture with no write or playback",
   });
+  await expect(page.getByRole("button", { name: "手动模板", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "作品库", exact: true })).toHaveCount(0);
+  await workDetails.getByRole("button", { name: "关闭详情", exact: true }).click();
+  await expect(page.locator(".page-head h1")).toHaveText("创作中心");
   for (const [nav, title] of [
     ["总览", "总览"],
-    ["手动模板", "本地模板"],
+    ["创作中心", "创作中心"],
     ["封面工作室", "封面工作室"],
-    ["发布中心", "发布中心"],
+    ["任务中心", "任务中心"],
     ["数据看板", "数据看板"],
     ["配置中心", "配置中心"],
-    ["创作中心", "AI 聊天创作"],
   ]) {
     await page.getByRole("button", { name: nav, exact: true }).first().click();
     await expect(page.locator(".page-head h1").first()).toHaveText(title);
@@ -351,20 +356,20 @@ try {
     await shot(nav + "-headless");
     checks.push({ name: nav + " renders without horizontal overflow" });
   }
-  await page.getByText("历史创作与旧任务（保留原路线）", { exact: true }).click();
-  const feeHelp = page.getByRole("button", { name: "费率参考", exact: true });
-  await feeHelp.scrollIntoViewIfNeeded();
-  await feeHelp.focus();
-  const feePopup = page.getByRole("tooltip").filter({ visible: true });
-  await expect(feePopup).toBeVisible();
-  const feeBox = await feePopup.boundingBox();
-  const triggerBox = await feeHelp.boundingBox();
+  await openCreationWork(page, fixture.works[0].id);
+  const audioHelp = page.getByRole("button", { name: "音频入库说明", exact: true });
+  await audioHelp.scrollIntoViewIfNeeded();
+  await audioHelp.focus();
+  const audioPopup = page.getByRole("tooltip").filter({ visible: true });
+  await expect(audioPopup).toBeVisible();
+  const audioBox = await audioPopup.boundingBox();
+  const triggerBox = await audioHelp.boundingBox();
   assert(
-    feeBox.x >= 12 &&
-      feeBox.y >= 12 &&
-      feeBox.x + feeBox.width <= 1440 - 12 &&
-      feeBox.y + feeBox.height <= 1000 - 80,
-    "HelpNote escapes safe viewport: " + JSON.stringify({ feeBox, triggerBox }),
+    audioBox.x >= 12 &&
+      audioBox.y >= 12 &&
+      audioBox.x + audioBox.width <= 1440 - 12 &&
+      audioBox.y + audioBox.height <= 1000 - 80,
+    "HelpNote escapes safe viewport: " + JSON.stringify({ audioBox, triggerBox }),
   );
   assert(
     triggerBox.y + triggerBox.height <= 920,
@@ -375,6 +380,7 @@ try {
   const noteBounds = [];
   for (const note of await page.locator(".help-note-trigger").filter({visible:true}).all()) {
     await note.scrollIntoViewIfNeeded();
+    await note.evaluate(element => element.blur());
     await note.focus();
     await expect
       .poll(async () => {
@@ -402,13 +408,11 @@ try {
     await page.keyboard.press("Escape");
   }
   const bottomNote = page.getByRole("button", {
-    name: "文本任务说明",
+    name: "授权记录说明",
     exact: true,
   });
-  await bottomNote.evaluate((button) => {
-    button.blur();
-    window.scrollBy(0, button.getBoundingClientRect().top - (innerHeight - 38));
-  });
+  await bottomNote.scrollIntoViewIfNeeded();
+  await bottomNote.evaluate(element => element.blur());
   await bottomNote.focus();
   await expect
     .poll(async () => {
@@ -426,14 +430,15 @@ try {
   await page.keyboard.press("Escape");
   checks.push({
     name: "Keyboard HelpNote stays within viewport and above fixed player",
-    feeBox,
+    audioBox,
     triggerBox,
     noteBounds,
     bottomAnchor,
     bottomPopup,
   });
   await page.getByRole("button", { name: "配置中心", exact: true }).click();
-  const help = page.getByRole("button", { name: "平台说明", exact: true });
+  await page.getByRole("tab", { name: "下载目录", exact: true }).click();
+  const help = page.getByRole("button", { name: "下载目录说明", exact: true });
   await help.focus();
   await expect(
     page.getByRole("tooltip").filter({ visible: true }),
@@ -467,7 +472,7 @@ try {
     { width: 960, height: 800 },
   ]) {
     await page.setViewportSize(size);
-    await page.getByRole("button", { name: "作品库", exact: true }).click();
+    await page.getByRole("button", { name: "创作中心", exact: true }).click();
     await expect(versionLabel).toBeVisible();
     const bounds = await versionLabel.boundingBox();
     assert(
@@ -486,9 +491,9 @@ try {
       false,
       JSON.stringify(size),
     );
-    await shot("library-" + size.width + "-headless");
+    await shot("creation-" + size.width + "-headless");
     checks.push({
-      name: "Library has no horizontal overflow at " + size.width,
+      name: "Creation center has no horizontal overflow at " + size.width,
     });
   }
   if(process.env.RAINFALL_DEEP_COPY_AUDIT==='1'){

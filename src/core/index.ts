@@ -14,8 +14,8 @@ import { Studio } from "./studio";
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { zip } from "./backup";
-import { exportCover } from "./assets";
+import { downloadArtifact } from "./download-artifact";
+import { isConfiguredDownloadKind } from "../shared/download-archive";
 import { hash } from "./database";
 import {stageLiveMusic,liveMusicContext,materializeLiveMusic} from './live-music';
 import type {MusicAdapter} from './workflow/yourmusic';
@@ -23,11 +23,23 @@ import {ProductionFlowSchemas} from '../shared/production-flow';
 import {importProductionAudio} from './production-integration';
 import {executeTmeAiPrepare} from './tme-ai-prepare-integration';
 import {resolveFanqieWork} from './fanqie-work';
+import {readFanqieDownloadArchive} from './fanqie-downloads';
+import {resolveFanqieArtistCreation} from './fanqie-artist';
+import { resolveMusicBrowserCoverProfile, resolvePlatformImage } from './platform-image';
+import { archiveFanqieDownloads, archiveImportedCertificate, findRecordingArchiveArtist, resolveDownloadArchiveRoot, resolvePuleDownloadArchive, setDownloadDirectory } from './download-archive';
 import {resolveQishuiWork} from './qishui-work';
+import {recordWorkflowQishuiSubmission, workflowQishuiScope} from './plan-workflow-publication';
+import {PlanWorkflowQishuiScopeSchema} from '../shared/plan-workflow-publication';
+import {z} from 'zod';
 import {publishSimple} from './simple-publication';
 import {QishuiReleaseSchema} from '../shared/qishui';
-import { AccountProviderSchema, AccountWorkWindowSchema } from "../shared/platform-accounts";
+import { accountSupportsTarget, AccountProviderSchema, AccountWorkWindowSchema } from "../shared/platform-accounts";
+import { puleDownloadTimeoutMs, puleScopeSchema, type PuleScope, type SunoCoverScope } from "../shared/pule-browser";
+import { artistRecordingSingers, artistSongType } from "../shared/local-artist";
+import { coverResolutionSchema } from "../shared/cover-handoff";
+import { imageChoiceSchema } from "../shared/platform-image";
 import {planFanqieAction,recoverPlanFanqie} from './plan-fanqie';
+import {planFanqieDirectoryAction} from './plan-fanqie-directory';
 import {planPuleAction} from './plan-pule';
 import {executeTmeAiSubmission} from './tme-ai-submission-integration';
 import {createAccountIdentityBridge} from './account-identity-channel';
@@ -138,7 +150,16 @@ export async function importLegacy(s: Studio, file: string) {
 const port = (process as any).parentPort;
 if (port) {
   const networkPending=new Map<string,{resolve:(value:any)=>void;reject:(e:Error)=>void;timer:NodeJS.Timeout}>();
-  const network=(action:string,operationId:string,url?:string)=>new Promise<any>((resolve,reject)=>{const id=randomUUID(),timer=setTimeout(()=>{networkPending.delete(id);reject(Error('PROVIDER_RESPONSE_TIMEOUT'))},120000);networkPending.set(id,{resolve,reject,timer});port.postMessage({kind:'music-provider',id,action,operationId,url})});
+  const network = (action: string, operationId: string, url?: string) => new Promise<any>((resolve, reject) => {
+    const id = randomUUID();
+    const responseTime = 120_000 + (action === 'download' ? puleDownloadTimeoutMs : 0);
+    const timer = setTimeout(() => {
+      networkPending.delete(id);
+      reject(Error('PROVIDER_RESPONSE_TIMEOUT'));
+    }, responseTime);
+    networkPending.set(id, { resolve, reject, timer });
+    port.postMessage({ kind: 'music-provider', id, action, operationId, url });
+  });
   const audioOwners=new Map<string,string>();
   const liveAdapter:MusicAdapter={source:'external',capabilities:{provider:'yourmusic',version:'openapi-1.0.0',maximumOutputs:2,lookupByClientKey:false,automaticPaid:false},submit:input=>network('submit',input.operationId),query:async ids=>{const op=studio.all('operations').find(o=>o.kind==='music'&&JSON.stringify(o.songIds)===JSON.stringify(ids));if(!op)throw Error('LIVE_OPERATION_REQUIRED');const result=await network('query',op.id);for(const song of result.songs??[])if(song.audio_url)audioOwners.set(song.audio_url,op.id);return result},download:async url=>{const id=audioOwners.get(url);if(!id)throw Error('UNVERIFIED_AUDIO_URL');const result=await network('download',id,url);return{bytes:Buffer.from(result.bytes),mime:result.mime}}};
   const identityBridge=createAccountIdentityBridge(port,{invalidated:()=>studio.accountIdentityService().invalidateSessions()});
@@ -151,6 +172,7 @@ if (port) {
   recoverPlanFanqie(studio);
   recoverCoverImages(studio);
   const execute = async (method: string, input: any) => {
+    if(method.startsWith('internal.planFanqieDirectory.'))return planFanqieDirectoryAction(studio,method.slice('internal.planFanqieDirectory.'.length),input);
     if(method.startsWith('internal.planFanqie.'))return planFanqieAction(studio,method.slice('internal.planFanqie.'.length),input);
     if(method.startsWith('internal.planPule.'))return planPuleAction(studio,method.slice('internal.planPule.'.length),input);
     if(method.startsWith('internal.planCoverImage.'))return planCoverImage(studio,method.slice('internal.planCoverImage.'.length),input);
@@ -178,7 +200,21 @@ if (port) {
       if(action==='stop')return service.stop(input.ownerKey);
       throw Error('METHOD_NOT_ALLOWED');
     }
+    if (method.startsWith("internal.lyricWriting.")) {
+      if (studio.mode !== "production") throw Error("PRODUCTION_REQUIRED");
+      const service = studio.lyricWritingService();
+      switch (method.slice("internal.lyricWriting.".length)) {
+        case "list": return service.ready();
+        case "claim": return { request: service.claim(input.id) };
+        case "context": return service.context(input.id);
+        case "record": return service.record(input);
+        case "note": return service.note(input.id, input.reason);
+        default: throw Error("METHOD_NOT_ALLOWED");
+      }
+    }
     if(method==='internal.directoryTasks.configureDirectory')return studio.directoryTasks().configureDirectory(input);
+    if(method==='internal.downloadArchive.configureDirectory')return setDownloadDirectory(studio.repo,input);
+    if(method==='internal.downloadArchive.fanqie')return archiveFanqieDownloads(studio,input);
     if(method.startsWith('internal.planAlbums.'))return executeInternalPlanAlbums(studio,method.slice('internal.planAlbums.'.length),input);
     if(method==='internal.planCenter.recordModelEvidence')return recordPlanModelEvidence(studio.repo,input,studio.now().toISOString());
     if(method==='internal.planCenter.invalidateModelEvidence')return invalidatePlanModelEvidence(studio.repo,input);
@@ -239,11 +275,67 @@ if (port) {
       return true;
     }
     if (method === 'internal.fanqie.work') return resolveFanqieWork(studio,input);
+    if (method === 'internal.fanqie.downloads') return readFanqieDownloadArchive(studio,input);
+    if (method === 'internal.fanqie.artistScope') return resolveFanqieArtistCreation(studio,input);
+    if (method === 'internal.platformImage.scope') {
+      if (studio.mode !== 'production') throw Error('PRODUCTION_REQUIRED');
+      return resolvePlatformImage(studio.repo,input);
+    }
     if (method === 'internal.qishui.work') return resolveQishuiWork(studio,input);
+    if (method === 'internal.planWorkflow.qishuiScope') {
+      const {readOnly,...scope}=PlanWorkflowQishuiScopeSchema.extend({readOnly:z.boolean()}).parse(input);
+      return workflowQishuiScope(studio,scope,readOnly);
+    }
+    if (method === 'internal.planWorkflow.qishuiSubmitted') return recordWorkflowQishuiSubmission(studio,input);
     if (method === 'internal.qishui.prepare') {
       if (studio.mode !== 'production') throw Error('PRODUCTION_REQUIRED');
       const {accountId,workIds}=QishuiReleaseSchema.parse(input);
       return publishSimple(studio,{workIds,targets:['qishui'],accountOverrides:{qishui:accountId}},false);
+    }
+    if (method === "internal.sunoCnBrowser.coverScope") {
+      if (studio.mode !== "production") throw Error("PRODUCTION_REQUIRED");
+      const folderName = z.string().min(1).max(200);
+      const { folders, coverImage } = z.strictObject({
+        folders: z.strictObject({ A: folderName, B: folderName }).optional(), coverImage: imageChoiceSchema.optional(),
+      }).parse(input);
+      const artist = folders && findRecordingArchiveArtist(studio.repo, folders);
+      const resolution = coverResolutionSchema.safeParse(artist?.defaults?.coverResolution);
+      return {
+        archiveRoot: resolveDownloadArchiveRoot(studio.repo),
+        coverProfile: resolveMusicBrowserCoverProfile(studio.repo, coverImage),
+        coverResolution: resolution.success ? resolution.data : undefined,
+        singers: artist && artistRecordingSingers({ accountLocalArtist: true, profile: artist.profile, secondSinger: artist.secondSinger }),
+        coverStyle: artist?.defaults?.coverStyle, mood: artist?.defaults?.mood, genre: artist?.defaults?.genre,
+      } satisfies SunoCoverScope;
+    }
+    if (method === "internal.puleBrowser.scope" || method === "internal.sunoCnBrowser.scope") {
+      if (studio.mode !== "production") throw Error("PRODUCTION_REQUIRED");
+      const suno = method === "internal.sunoCnBrowser.scope";
+      const { accountId, artistId, publication, coverImage } = puleScopeSchema.parse(input);
+      const account = studio.repo.maybe("accounts", accountId);
+      if (account?.provider !== (suno ? "suno_cn" : "yourmusic")) throw Error(suno ? "SUNO_CN_ACCOUNT_REQUIRED" : "PULE_ACCOUNT_REQUIRED");
+      const publishingAccount = publication && studio.repo.maybe("accounts", publication.accountId);
+      if (publication && (!publishingAccount || !accountSupportsTarget(publishingAccount.provider, publication.platform)))
+        throw Error("PULE_PUBLICATION_ACCOUNT_REQUIRED");
+      const artist = studio.repo.maybe("accountLocalArtists", artistId);
+      if (!artist || (publishingAccount && artist.accountId !== publishingAccount.id)) throw Error("PULE_ARTIST_REQUIRED");
+      const singers = artistRecordingSingers({
+        accountLocalArtist: true, profile: artist.profile, secondSinger: artist.secondSinger,
+      }) ?? { A: artist.name, B: artist.secondSinger?.name ?? artist.name };
+      const resolution = coverResolutionSchema.safeParse(artist.defaults?.coverResolution);
+      return {
+        accountName: account.name,
+        gender: artist.profile?.gender ?? (suno && ["female", "male"].includes(artist.defaults?.voice) ? artist.defaults.voice : undefined),
+        timbre: artist.profile?.voicePersona?.trim(),
+        ...(suno ? { songType: artistSongType(artist.defaults), timbreWeight: artist.profile?.timbreWeight,
+          styleWeight: artist.profile?.styleWeight } : {}),
+        ...resolvePuleDownloadArchive(studio.repo, account, artist, publishingAccount),
+        singers,
+        coverProfile: resolveMusicBrowserCoverProfile(studio.repo, coverImage),
+        coverResolution: resolution.success ? resolution.data : undefined,
+        coverStyle: artist.defaults?.coverStyle,
+        mood: artist.defaults?.mood,
+      } satisfies PuleScope;
     }
     if (method === "internal.accountSession.get") {
       const { accountId,artistId } = AccountWorkWindowSchema.parse(input);
@@ -275,6 +367,16 @@ if (port) {
       throw Error('METHOD_NOT_ALLOWED');
     }
     if (method === "internal.import") {
+      if(input.role==='certificate'){
+        if(!input.workId)throw Error('WORK_ID_REQUIRED');
+        const asset=await studio.importFile(input.source,'certificate',input.workId);
+        try {
+          const archived=archiveImportedCertificate(studio,input.workId);
+          return {...asset,notice:archived.length?'原创证书已导入并归档':'原创证书已导入作品库'};
+        } catch {
+          return {...asset,notice:'原创证书已导入作品库，下载目录归档失败'};
+        }
+      }
       if(input.role==='lyrics')return studio.lyricService().importText(input.source,input.workId);
       if(input.role==='coverResultImage'||input.role==='coverResultManifest')return studio.coverHandoff().receiveFile(input.source,input.workId,input.requestId,input.role==='coverResultManifest'?'manifest':'image');
       if (input.role === "backup") return studio.restore(input.source);
@@ -283,41 +385,8 @@ if (port) {
       return studio.importFile(input.source, input.role, input.workId);
     }
     if (method === "internal.export") {
-      if(input.kind==='coverRequest'){const request=studio.coverHandoff().exportRequest(input.input.requestId);fs.writeFileSync(input.destination,JSON.stringify(request,null,2),'utf8');return{path:input.destination,notice:'已导出文件交接请求，尚未执行图像生成'};}
+      if (isConfiguredDownloadKind(input.kind)) return downloadArtifact(studio, input.kind, input.input);
       if (input.kind === "backup") return studio.backup(input.destination);
-      if (input.kind === "cover")
-        return exportCover(
-          studio,
-          input.input.workId,
-          input.destination,
-          input.input,
-        );
-      if (input.kind === "coverTask") {
-        const task = await studio.call("cover.task", {
-          workId: input.input.workId,
-          brief: input.input.brief || "",
-        });
-        const edited = input.input.editedText;
-        if (
-          edited !== undefined &&
-          (typeof edited !== "string" || edited.length > 200000)
-        )
-          throw Error("COVER_TASK_INVALID");
-        const text = edited || task.text;
-        fs.writeFileSync(input.destination, text, "utf8");
-        const work = studio.get("works", input.input.workId);
-        studio.save("works", {
-          ...work,
-          coverTaskText: text,
-          coverBrief: input.input.brief || "",
-        });
-        return { path: input.destination };
-      }
-      if (input.kind === "materials") {
-        const files = materialEntries(studio, input.input.batchId);
-        await zip(input.destination, files);
-        return { path: input.destination, uploaded: false };
-      }
       if (input.kind === "diagnostics") {
         fs.writeFileSync(
           input.destination,

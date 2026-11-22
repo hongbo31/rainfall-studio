@@ -1,5 +1,7 @@
 # 雨序 Rainfall Studio
 
+> 以下为历史原型记录。当前浏览器工作台请使用 [Start-Rainfall-Browser.bat](../Start-Rainfall-Browser.bat)。
+
 AI 音乐创作到发布工作台 · 独立本地交互原型，非已打包 Windows 客户端。
 
 机器：目标 Windows 设备。项目路径：<本机用户目录中的项目路径>

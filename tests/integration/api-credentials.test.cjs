@@ -454,6 +454,92 @@ test("YourMusic connection check sends only one authenticated history GET and re
   } finally {x.s.close()}
 });
 
+test("saved and existing cover keys can be displayed as a provider-scoped mask", async () => {
+  const x = await setup();
+  try {
+    const records = [
+      ["openai_image", "opfixture1234", "op*******1234"],
+      ["zhipu_image", "zpfixture5678", "zp*******5678"],
+      ["doubao_image", "arfixture9012", "ar*******9012"],
+    ];
+    const identities = [];
+    for (const [providerId, secret, maskedKey] of records) {
+      const profile = await x.s.call("platformImage.prepareCredential", { providerId });
+      const identity = { profileId: profile.id, expectedRevision: profile.revision };
+      identities.push(identity);
+      assert.equal((await x.service.writeApiCredential({ ...identity, secret })).maskedKey, maskedKey);
+    }
+    assert.equal(new Set(identities.map(identity => identity.profileId)).size, records.length);
+
+    const restarted = new (api().ApiCredentials)({ ...x.options, vault: new CredentialVault(x.vaultRoot, x.storage) });
+    for (const [index, { profileId }] of identities.entries()) {
+      assert.equal((await restarted.apiCredentialStatus({ profileId })).maskedKey, undefined);
+      const read = await restarted.apiCredentialStatus({ profileId, includeMaskedKey: true });
+      assert.equal(read.maskedKey, records[index][2]);
+      assert.ok(!JSON.stringify(read).includes(records[index][1]));
+    }
+
+    const [openai, zhipu] = identities;
+    const cleared = await restarted.clearApiCredential(openai);
+    assert.equal(cleared.configured, false);
+    assert.equal(cleared.maskedKey, undefined);
+    assert.equal((await restarted.apiCredentialStatus({ profileId: zhipu.profileId, includeMaskedKey: true })).maskedKey, "zp*******5678");
+    const short = await restarted.writeApiCredential({ ...openai, secret: "123456" });
+    assert.equal(short.maskedKey, "******");
+
+    await restarted.writeApiCredential({ profileId: x.p.id, expectedRevision: 1, secret: "QA_MUSIC_ONLY" });
+    assert.equal((await restarted.apiCredentialStatus({ profileId: x.p.id, includeMaskedKey: true })).maskedKey, undefined);
+    x.setMode("simulation");
+    const simulated = await restarted.apiCredentialStatus({ profileId: zhipu.profileId, includeMaskedKey: true });
+    assert.equal(simulated.maskedKey, undefined);
+    assert.equal(simulated.configured, false);
+  } finally { x.s.close(); }
+});
+
+test("cover Key checks authenticate each provider with a scoped read-only GET", async () => {
+  const x = await setup();
+  try {
+    const records = [
+      ["openai_image", "https://api.openai.com/v1/models"],
+      ["zhipu_image", "https://open.bigmodel.cn/api/paas/v4/files?purpose=batch&limit=1"],
+      ["doubao_image", "https://ark.cn-beijing.volces.com/api/v3/models"],
+    ];
+    for (const [providerId, endpoint] of records) {
+      const profile = await x.s.call("platformImage.prepareCredential", { providerId });
+      const identity = { profileId: profile.id, expectedRevision: profile.revision };
+      const secret = "QA_IMAGE_CONNECTION_" + providerId;
+      await x.service.writeApiCredential({ ...identity, secret });
+      let status = 200;
+      let body = { object: "list", data: [{ id: "private-remote-id" }], has_more: false };
+      const requests = [];
+      const service = new (api().ApiCredentials)({ ...x.options, connectionRequest: async request => {
+        requests.push(request);
+        return { status, body };
+      } });
+      const result = await service.checkApiConnection(identity);
+      assert.equal(result.state, "connected");
+      assert.equal(result.providerId, providerId);
+      assert.equal(result.scope, "authentication_only");
+      assert.equal(result.paidGenerationRequested, false);
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0].method, "GET");
+      assert.equal(requests[0].url, endpoint);
+      assert.equal(requests[0].purpose, "image_credential_check");
+      assert.equal(requests[0].headers.Authorization, "Bearer " + secret);
+      assert.equal(requests[0].body, undefined);
+      assert.ok(!JSON.stringify(result).includes("private-remote-id"));
+      assert.ok(!JSON.stringify(result).includes(secret));
+
+      body = { error: { message: secret } };
+      assert.equal((await service.checkApiConnection(identity)).state, "invalid_response");
+      status = 401;
+      assert.equal((await service.checkApiConnection(identity)).state, "unauthorized");
+      status = 403;
+      assert.equal((await service.checkApiConnection(identity)).state, "forbidden");
+    }
+  } finally { x.s.close(); }
+});
+
 test("connection checks distinguish auth, credit, rate and malformed responses without reflecting secrets", async () => {
   const x=await setup(), secret="QA_CHECK_ERROR_SECRET";
   try{

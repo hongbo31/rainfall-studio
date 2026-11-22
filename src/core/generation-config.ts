@@ -1,12 +1,16 @@
 import type { Repository } from "./database";
 import {
   GenerationConfigSaveSchema,
+  frozenRouteModelMatches,
   type GenerationRole,
   type FrozenRoute,
   type RouteSnapshot,
 } from "../shared/generation-config";
 import { listApiProfiles } from "./api-profiles";
+import { supportsImageApiModel, musicApiChannel, textProviderBaseUrls } from "../shared/api-profiles";
+import { artistRecordingSingers } from "../shared/local-artist";
 import type { PlanCenterPlan } from "../shared/plan-center";
+import { browserMusicProviders, workflowBrowserMusic } from "../shared/plan-workflow-fields";
 const key = "generation-config:v1";
 export type GenerationDefaults = {
   revision: number;
@@ -67,7 +71,7 @@ export function freezeRoute(
   };
   if (!profile) return base;
   if (profile.kind !== role) throw Error("GENERATION_ROLE_MISMATCH");
-  if (role === "text" && ["deepseek", "doubao"].includes(profile.providerId))
+  if (role === "text" && Object.hasOwn(textProviderBaseUrls, profile.providerId))
     return {
       ...base,
       capability: profile.modelId ? "text_api" : "unavailable",
@@ -75,7 +79,7 @@ export function freezeRoute(
     };
   if (
     role === "image" &&
-    profile.providerId === "openai_image"
+    supportsImageApiModel(profile.providerId, profile.modelId)
   )
     return { ...base, capability: "image_api", reason: null };
   if (
@@ -92,10 +96,11 @@ export function freezeRoute(
       capability: "external_import",
       reason: null,
     };
-  if (role === "music" && profile.providerId === "yourmusic")
+  const musicChannel = role === "music" ? musicApiChannel(profile.providerId) : undefined;
+  if (musicChannel)
     return {
       ...base,
-      channel: "pule",
+      channel: musicChannel,
       capability: profile.modelId ? "music_api" : "unavailable",
       reason: profile.modelId ? null : "MUSIC_MODEL_REQUIRED",
     };
@@ -109,21 +114,39 @@ export function freezeRoute(
           : "TEXT_ADAPTER_UNAVAILABLE",
   };
 }
+function freezePlanImage(repo: Repository, plan: PlanCenterPlan) {
+  if (!plan.workflow?.browserMusic) return freezeRoute(repo, "image", plan.routing!.image);
+  const choice = plan.workflow.browserMusic.coverImage;
+  const route = freezeRoute(repo, "image", { source: "override", profileId: choice?.profileId });
+  if (!choice || !choice.profileId || !choice.modelId) return {
+    ...route, capability: "unavailable" as const, reason: "WORKFLOW_IMAGE_SELECTION_REQUIRED",
+  };
+  if (route.capability !== "image_api" || route.providerId !== choice.providerId || !supportsImageApiModel(choice.providerId, choice.modelId))
+    return { ...route, capability: "unavailable" as const, reason: "WORKFLOW_IMAGE_SELECTION_INVALID" };
+  return { ...route, modelId: choice.modelId, modelOverride: true as const };
+}
+
 export function freezePlanRoutes(
   repo: Repository,
   plan: PlanCenterPlan,
 ): PlanCenterPlan {
   if (!plan.routing) return plan;
+  const browser = workflowBrowserMusic(plan.workflow);
+  const browserRoute = browser && browserMusicProviders[browser.provider].route;
   const snapshot: RouteSnapshot = {
     defaultsRevision: readGenerationConfig(repo).revision,
     text: freezeRoute(repo, "text", plan.routing.text),
-    image: freezeRoute(repo, "image", plan.routing.image),
-    music: freezeRoute(repo, "music", plan.routing.music),
+    image: freezePlanImage(repo, plan),
+    music: browser && browserRoute ? {
+      role: "music", source: "default", providerId: browser.provider, channel: browserRoute,
+      profileId: null, profileRevision: null, modelId: null, credentialRef: null, capability: "music_browser", reason: null,
+    } : freezeRoute(repo, "music", plan.routing.music),
   };
   const text = snapshot.text,
     music = snapshot.music;
   if (
     plan.outputs.music &&
+    !browser &&
     plan.music.consent &&
     plan.authorization.music &&
     (plan.music.profileId !== music.profileId ||
@@ -150,11 +173,11 @@ export function freezePlanRoutes(
       ? {
           ...plan.music,
           route:
-            music.channel === "pule"
+            browserRoute ?? (music.channel === "pule"
               ? "pule"
               : music.providerId === "suno"
                 ? "suno_official"
-                : "manual",
+                : "manual"),
           profileId: music.profileId ?? undefined,
           profileRevision: music.profileRevision ?? undefined,
           modelId: music.modelId ?? undefined,
@@ -168,9 +191,9 @@ export function planRouteIssue(
 ): string | undefined {
   if (!plan.routing || !plan.routeSnapshot) return;
   const roles: GenerationRole[] = [
-    ...(plan.material.source === "provider" && plan.songType !== "instrumental" ? ["text" as const] : []),
+    ...(plan.workflow || plan.material.source === "provider" && plan.songType !== "instrumental" ? ["text" as const] : []),
     ...(plan.outputs.cover && plan.material.source !== "pule_prompt" ? ["image" as const] : []),
-    ...(plan.outputs.music ? ["music" as const] : []),
+    ...(plan.outputs.music && !workflowBrowserMusic(plan.workflow) ? ["music" as const] : []),
   ];
   for (const role of roles) {
     const frozen = plan.routeSnapshot[role];
@@ -183,7 +206,7 @@ export function planRouteIssue(
       return frozen.reason ?? "GENERATION_ROUTE_UNAVAILABLE";
     const p = listApiProfiles(repo).find((p) => p.id === frozen.profileId);
     if (!p || p.kind !== role) return "ROUTE_PROFILE_MISSING";
-    if (p.revision !== frozen.profileRevision || p.modelId !== frozen.modelId)
+    if (p.revision !== frozen.profileRevision || p.providerId !== frozen.providerId || !frozenRouteModelMatches(frozen, p.providerId, p.modelId))
       return "ROUTE_PROFILE_CHANGED";
   }
   return;
@@ -200,13 +223,14 @@ export function freezeArtist(
   }
   const a = repo.maybe("artists", plan.artistId);
   if (!a) throw Error("ARTIST_REQUIRED");
+  const singers = artistRecordingSingers(a);
   return {
     ...plan,
     artistSnapshot: {
       id: a.id,
       revision: a.revision,
       name: a.name,
-      defaults: JSON.parse(JSON.stringify(a.defaults)),
+      defaults: { ...JSON.parse(JSON.stringify(a.defaults)), ...(singers ? { recordingSingers: singers } : {}) },
     },
   };
 }
@@ -231,6 +255,7 @@ export function planCreativeContext(plan: PlanCenterPlan, ordinal?: number) {
     : "";
   if (!plan.artistSnapshot)
     return { theme: theme + brief, styleTemplate: plan.styleTemplate };
+  const { recordingSingers, ...styleDefaults } = plan.artistSnapshot.defaults;
   return {
     theme: theme + brief,
     styleTemplate: [
@@ -239,7 +264,7 @@ export function planCreativeContext(plan: PlanCenterPlan, ordinal?: number) {
         artistId: plan.artistSnapshot.id,
         artistRevision: plan.artistSnapshot.revision,
         artistName: plan.artistSnapshot.name,
-        longTermStyle: plan.artistSnapshot.defaults,
+        longTermStyle: styleDefaults,
       }),
     ]
       .filter(Boolean)
@@ -253,9 +278,9 @@ export function frozenRouteIssue(
 ): string | undefined {
   if (!plan.routeSnapshot) return;
   const roles: GenerationRole[] = [
-    ...(plan.material.source === "provider" && plan.songType !== "instrumental" ? ["text" as const] : []),
+    ...(plan.workflow || plan.material.source === "provider" && plan.songType !== "instrumental" ? ["text" as const] : []),
     ...(plan.outputs.cover && plan.material.source !== "pule_prompt" ? ["image" as const] : []),
-    ...(plan.outputs.music ? ["music" as const] : []),
+    ...(plan.outputs.music && !workflowBrowserMusic(plan.workflow) ? ["music" as const] : []),
   ];
   for (const role of roles) {
     const f = plan.routeSnapshot[role],
@@ -268,7 +293,7 @@ export function frozenRouteIssue(
     if (
       p.revision !== f.profileRevision ||
       p.providerId !== f.providerId ||
-      p.modelId !== f.modelId
+      !frozenRouteModelMatches(f, p.providerId, p.modelId)
     )
       return "ROUTE_PROFILE_CHANGED";
   }

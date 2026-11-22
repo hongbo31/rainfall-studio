@@ -1,6 +1,6 @@
 import HelpNote from "./HelpNote";
 import React, { useEffect, useState } from "react";
-import { useStudio, Badge } from "../context";
+import { useStudio, Badge, localMusicians } from "../context";
 import type { ApiProfile } from "../../shared/api-profiles";
 import MusicCandidates from "./MusicCandidates";
 const stateNames: Record<string, string> = {
@@ -16,7 +16,7 @@ export default function LiveTextWorkspace() {
       (ApiProfile & { configured: boolean })[]
     >([]),
     [profileId, setProfile] = useState(""),
-    [artistId, setArtist] = useState(data.artists[0]?.id ?? "");
+    [artistId, setArtist] = useState(localMusicians(data)[0]?.id ?? "");
   const [instruction, setInstruction] = useState(""),
     [modelId, setModel] = useState("deepseek-flash"),
     [budget, setBudget] = useState(""),
@@ -161,7 +161,8 @@ export default function LiveTextWorkspace() {
                 resetConsent();
               }}
             >
-              {data.artists.map((a: any) => (
+              {!artistId && <option value="">请选择艺人</option>}
+              {localMusicians(data).map((a: any) => (
                 <option key={a.id} value={a.id}>
                   {a.name}
                 </option>
@@ -253,7 +254,7 @@ export default function LiveTextWorkspace() {
           />
           确认本轮文本调用预算及最多改写次数；准备本身不联网生成。
         </label>
-        <button disabled={busy || !consent || !profile?.configured}>
+        <button disabled={busy || !artistId || !consent || !profile?.configured}>
           准备本轮文本任务
         </button>{" "}
         <button type="button" onClick={() => go("accounts")}>

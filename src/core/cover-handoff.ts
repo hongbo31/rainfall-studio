@@ -5,13 +5,19 @@ import { randomUUID } from "node:crypto";
 import sharp from "sharp";
 import type { Studio } from "./studio";
 import { hash } from "./database";
-import { digest } from "./assets";
+import { assertVersionCover, digest } from "./assets";
 import { inboxHash } from "./inbox/service";
 import {assertPlanCoverWork} from './plan-cover-work';
+import {paidCoverModelId,supportsImageApiModel,supportsManualCover,type PaidCoverModelId} from '../shared/api-profiles';
+import {frozenRouteModelMatches} from '../shared/generation-config';
 import {
   CoverRequestSchema,
   CoverReceiptSchema,
   COVER_IMAGE_POLICY,
+  coverResolutionSchema,
+  coverAssetRole,
+  songCoverPrompt, recordingCoverPrompt,
+  type CoverVariant,
 } from "../shared/cover-handoff";
 
 function localFile(source: string) {
@@ -29,35 +35,39 @@ export class CoverHandoff {
   private rows(kind: string) {
     return this.s.all("settings").filter((r) => r.kind === kind);
   }
-  private context(workId: string) {
+  private context(workId: string, variant?: CoverVariant) {
     const w = this.s.get("works", workId),
       a = this.s.get("artists", w.artistId);
+    if (variant === "B" && !w.assets?.audio_B) throw Error("COVER_VERSION_AUDIO_REQUIRED");
+    const resolution = coverResolutionSchema.safeParse((w.artistSnapshot?.defaults ?? w.config)?.coverResolution);
     return {
       workId,
-      title: w.title,
+      title: variant === "B" ? w.alternateTitle?.trim() || w.title : w.title,
+      ...(variant ? { variant } : {}),
       artist: w.artistSnapshot?.name??a.name,
       lyrics: w.lyrics,
       story: w.story,
       genre: w.config.genre,
       mood: w.config.mood,
       coverStyle: w.config.coverStyle,
+      ...(resolution.success ? { coverResolution: resolution.data } : {}),
     };
   }
   private assertContext(r: any) {
-    if (inboxHash(this.context(r.workId)) !== r.contextHash)
+    if (inboxHash(this.context(r.workId, r.variant)) !== r.contextHash)
       throw Error("COVER_CONTEXT_CHANGED");
   }
-  verifiedSelectedReceipt(workId:string,assetId?:string){
-    const binding=assertPlanCoverWork(this.s,workId),work=this.s.get('works',workId),selected=assetId??work.assets?.cover;
+  verifiedSelectedReceipt(workId:string,assetId?:string,variant?:CoverVariant){
+    const binding=assertPlanCoverWork(this.s,workId),work=this.s.get('works',workId),selected=assetId??work.assets?.[coverAssetRole(variant)];
     if(!selected)throw Error('COVER_REQUIRED');
     const asset=this.s.get('assets',selected);
     if(asset.kind!=='image')throw Error('ASSET_ROLE');
     if(binding?.sourceCoverSha256===asset.sha256)throw Error('COVER_REFRESH_REQUIRED');
-    const candidates=this.rows('cover-receipt').map(r=>r.receipt).filter(r=>r.workId===workId&&r.assetId===selected&&r.image?.sha256===asset.sha256);
+    const candidates=this.rows('cover-receipt').map(r=>r.receipt).filter(r=>r.workId===workId&&r.variant===variant&&r.assetId===selected&&r.image?.sha256===asset.sha256);
     if(!candidates.length)throw Error('COVER_RECEIPT_REQUIRED');
-    const contextHash=inboxHash(this.context(workId));
+    const contextHash=inboxHash(this.context(workId,variant));
     // Keep proof stable for repeated same-context imports; stale contexts cannot mask a valid receipt.
-    const receipt=candidates.find(r=>{const request=this.s.repo.maybe('settings','cover-request:'+r.requestId)?.request;return request?.workId===workId&&request.contextHash===contextHash;});
+    const receipt=candidates.find(r=>{const request=this.s.repo.maybe('settings','cover-request:'+r.requestId)?.request;return request?.workId===workId&&request.variant===variant&&request.contextHash===contextHash;});
     if(!receipt)throw Error('COVER_CONTEXT_CHANGED');
     const request=this.get(receipt.requestId);
     if(request.workId!==workId)throw Error('COVER_SCOPE_MISMATCH');
@@ -72,8 +82,17 @@ export class CoverHandoff {
     if(workId&&this.s.repo.all('settings').some(r=>r.id.startsWith('plan-cover-work:')&&r.value?.workId===workId)){
       try{assertPlanCoverWork(this.s,workId);planRecovery={locked:false};}catch(error){planRecovery={locked:true,reason:error instanceof Error?error.message:'FINAL_MATERIAL_CHANGED'};}
     }
+    const defaultImage = workId && this.s.mode === 'production' && !planRecovery &&
+      !this.s.planCenterService().list().items.some(item=>item.workId===workId)
+      ? freezeRoute(this.s.repo,'image',{source:'default'}) : undefined;
+    const manualCover = defaultImage?.capability==='image_api'&&supportsManualCover(defaultImage.providerId)&&defaultImage.modelId
+      ? {providerId:defaultImage.providerId,modelId:defaultImage.modelId} : null;
+    const zhipuProfileId = manualCover?.providerId==='zhipu_image' ? defaultImage?.profileId ?? null : null;
     return {
       ...(planRecovery?{planRecovery}:{}),
+      zhipuProfileId,
+      zhipuModelId: zhipuProfileId ? defaultImage?.modelId : null,
+      manualCover,
       provider: {
         id: "image-api",
         state: "unconfigured",
@@ -88,10 +107,10 @@ export class CoverHandoff {
         .filter((r) => !workId || r.workId === workId),
     };
   }
-  request(raw: unknown) {
+  request(raw: unknown, manualGeneration = false, confirmedModelId?: PaidCoverModelId) {
     const i = CoverRequestSchema.parse(raw),
-      context = this.context(i.workId),
-      requestHash = inboxHash(i);
+      context = this.context(i.workId, i.variant),
+      requestHash = inboxHash(manualGeneration ? {...i, manualGeneration, ...(confirmedModelId ? {confirmedModelId} : {})} : i);
     return this.s.repo.transaction(() => {
       assertPlanCoverWork(this.s,i.workId);
       const previous = this.s.repo.maybe(
@@ -104,44 +123,61 @@ export class CoverHandoff {
         return previous.request;
       }
       const planBinding=assertPlanCoverWork(this.s,i.workId);
+      if(i.variant&&planBinding)throw Error('COVER_SCOPE_MISMATCH');
       const planRows=this.s.planCenterService().list(),owner=planRows.items.find(item=>item.workId===i.workId);
       const planRun=planRows.runs.find(r=>r.id===(planBinding?.runId??owner?.runId));
+      if(manualGeneration&&(planBinding||owner))throw Error('PLAN_COVER_GENERATION_REQUIRED');
       if(planRun&&planRun.snapshot.artistId!==this.s.get('works',i.workId).artistId)throw Error('ARTIST_MISMATCH');
       const frozenImage=planRun?.snapshot.routeSnapshot?.image;
       let generationRoute=frozenImage??(readGenerationConfig(this.s.repo).roles.image?freezeRoute(this.s.repo,'image',{source:'default'}):undefined);
       if(generationRoute){
         const p=this.s.repo.maybe('settings','api-profile:'+generationRoute.profileId);
         const reason=generationRoute.capability==='unavailable'?generationRoute.reason??'IMAGE_ADAPTER_UNAVAILABLE':
-          !p||p.kind!=='image'||p.revision!==generationRoute.profileRevision||p.providerId!==generationRoute.providerId?'ROUTE_PROFILE_CHANGED':null;
+          !p||p.kind!=='image'||p.revision!==generationRoute.profileRevision||p.providerId!==generationRoute.providerId||
+            !frozenRouteModelMatches(generationRoute,p.providerId,p.modelId)?'ROUTE_PROFILE_CHANGED':null;
         if(reason){
           if(planRun?.snapshot.material.source!=='pule_prompt')throw Error(reason);
           generationRoute=undefined;
         }
       }
+      if(manualGeneration){
+        if(generationRoute?.capability!=='image_api'||!supportsManualCover(generationRoute.providerId))
+          throw Error('ZHIPU_COVER_CONFIG_REQUIRED');
+        if(paidCoverModelId(generationRoute.modelId)!==confirmedModelId)
+          throw Error('IMAGE_MODEL_CONFIRMATION_REQUIRED');
+      }
+      const imageProvider=(frozenImage||manualGeneration)&&generationRoute?.capability==='image_api'&&
+        supportsImageApiModel(generationRoute.providerId,generationRoute.modelId) ? generationRoute.providerId : null;
       let workspace = this.s.repo.maybe("settings", "cover-workspace");
       if (!workspace)
         workspace = this.s.save("settings", {
           id: "cover-workspace",
           workspaceRef: randomUUID(),
         });
-      const prompt = i.prompt?.trim()
-        ? i.prompt
-        : `为歌曲《${context.title}》独立创作一张无字方形封面。取材于歌词里的具体场景、动作或道具，按本首情绪决定构图、色彩和媒介，避免通用渐变和套版。无文字、标志或水印。\n艺名：${context.artist}\n故事：${context.story}\n曲风：${context.genre}\n情绪：${context.mood}\n封面风格：${context.coverStyle}\n补充：${i.brief}\n歌词原文：\n${context.lyrics}`;
+      const browserMusic = planRun?.snapshot.workflow?.browserMusic;
+      const artist = planRun?.snapshot.workflowSnapshot;
+      const singer = (i.variant === "B" ? artist?.secondSinger?.name : undefined) ?? artist?.artist.singer;
+      const prompt = i.prompt?.trim() ? i.prompt : browserMusic
+        ? recordingCoverPrompt({ ...context, artist: singer ?? context.artist }, i.variant ?? "A")
+        : songCoverPrompt(context, i.brief, i.variant);
       const request = {
         id: i.requestId,
         workId: i.workId,
+        ...(i.variant ? { variant: i.variant } : {}),
         workspaceRef: workspace.workspaceRef,
         contextHash: inboxHash(context),
         requestHash,
         context,
         prompt,
         brief: i.brief,
-        imagePolicy: COVER_IMAGE_POLICY,
+        imagePolicy: context.coverResolution === undefined
+          ? COVER_IMAGE_POLICY : { ...COVER_IMAGE_POLICY, targetEdge: context.coverResolution },
         ...(generationRoute?{generationRoute}:{}),
-        provider: generationRoute?.capability==='image_api'&&frozenImage ? "openai_image" : "dot_handoff",
+        provider: imageProvider ?? "dot_handoff",
+        ...(manualGeneration?{manualGeneration}:{}),
         state: "awaiting_result",
         createdAt: this.s.now().toISOString(),
-        notice: generationRoute?.capability==='image_api'&&frozenImage ? "等待图像服务出图" : "等待外部出图或导入",
+        notice: imageProvider ? "等待图像服务出图" : "等待外部出图或导入",
       };
       this.s.save("settings", {
         id: "cover-request:" + request.id,
@@ -154,6 +190,7 @@ export class CoverHandoff {
   exportRequest(id: string) {
     const r = this.get(id);
     this.assertContext(r);
+    const targetEdge = r.imagePolicy?.targetEdge ?? COVER_IMAGE_POLICY.targetEdge;
     return {
       schemaVersion: 1,
       kind: "cover-request",
@@ -165,6 +202,7 @@ export class CoverHandoff {
         kind: "cover-result",
         workspaceRef: r.workspaceRef,
         workId: r.workId,
+        ...(r.variant ? { variant: r.variant } : {}),
         requestId: r.id,
         contextHash: r.contextHash,
         resultId: "unique-result-id",
@@ -172,8 +210,8 @@ export class CoverHandoff {
           fileName: "cover.png",
           sha256: "REPLACE_WITH_REAL_FILE_SHA256",
           mime: "image/png",
-          width: 3000,
-          height: 3000,
+          width: targetEdge,
+          height: targetEdge,
         },
         provenance: { producer: "dot", model: null, generatedAt: null },
       },
@@ -185,6 +223,7 @@ export class CoverHandoff {
     requestId: string,
     kind: "manifest" | "image",
     generated?: { model: string; sha256: string },
+    beforeReceive?:()=>void,
   ) {
     assertPlanCoverWork(this.s,workId);
     const request = this.get(requestId);
@@ -205,6 +244,7 @@ export class CoverHandoff {
       if (
         manifest.workspaceRef !== request.workspaceRef ||
         manifest.workId !== workId ||
+        manifest.variant !== request.variant ||
         manifest.requestId !== requestId ||
         manifest.contextHash !== request.contextHash
       )
@@ -227,7 +267,8 @@ export class CoverHandoff {
     const size = fs.statSync(file).size;
     if (!size || size > COVER_IMAGE_POLICY.maxBytes)
       throw Error("FILE_SIZE_LIMIT");
-    const meta = await sharp(file, {
+    const imagePath = path.toNamespacedPath(file);
+    const meta = await sharp(imagePath, {
       limitInputPixels: COVER_IMAGE_POLICY.maxPixels,
     }).metadata();
     if (!COVER_IMAGE_POLICY.formats.includes(meta.format!))
@@ -241,7 +282,7 @@ export class CoverHandoff {
       (meta.pages ?? 1) > 1
     )
       throw Error("IMAGE_DIMENSIONS");
-    await sharp(file, {
+    await sharp(imagePath, {
       limitInputPixels: COVER_IMAGE_POLICY.maxPixels,
     }).stats();
     const sha256 = digest(file),
@@ -258,17 +299,22 @@ export class CoverHandoff {
       throw Error("SOURCE_CHANGED");
     if (generated && sha256 !== generated.sha256) throw Error("SOURCE_CHANGED");
     this.assertContext(request);
+    beforeReceive?.();
     if (old) {
       this.s.locate(old.receipt.assetId);
       return old.receipt;
     }
     assertPlanCoverWork(this.s,workId);
+    const role=coverAssetRole(request.variant);
+    const assertCover=()=>assertVersionCover(this.s,this.s.get('works',workId),role,sha256);
+    assertCover();
     const guarded=!!this.s.repo.all('settings').find(r=>r.id.startsWith('plan-cover-work:')&&r.value?.workId===workId);
-    const asset = await this.s.importFile(file, "cover",undefined,guarded?()=>{assertPlanCoverWork(this.s,workId);this.assertContext(request);}:undefined);
+    const assertCurrent=()=>{assertPlanCoverWork(this.s,workId);this.assertContext(request);beforeReceive?.();assertCover();};
+    const asset = await this.s.importFile(file, role,undefined,guarded||request.variant||beforeReceive?assertCurrent:undefined);
     if (asset.sha256 !== sha256) throw Error("SOURCE_CHANGED");
+    if (asset.kind !== 'image') throw Error('ASSET_ROLE');
     return this.s.repo.transaction(() => {
-      assertPlanCoverWork(this.s,workId);
-      this.assertContext(request);
+      assertCurrent();
       this.s.locate(asset.id);
       const concurrent = this.s.repo.maybe("settings", key);
       if (concurrent) {
@@ -280,12 +326,13 @@ export class CoverHandoff {
         id: randomUUID(),
         requestId,
         workId,
+        ...(request.variant ? { variant: request.variant } : {}),
         assetId: asset.id,
         receiptHash,
         resultId,
         state: "received",
         source: generated ? "image-api" : kind === "manifest" ? "external-manifest" : "user-import",
-        provenance: generated ? { producer: "openai_image", model: generated.model, generatedAt: null } : manifest?.provenance ?? {
+        provenance: generated ? { producer: request.provider, model: generated.model, generatedAt: null } : manifest?.provenance ?? {
           producer: "user-import",
           model: null,
           generatedAt: null,

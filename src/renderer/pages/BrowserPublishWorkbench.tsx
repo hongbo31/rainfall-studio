@@ -42,19 +42,19 @@ export default function BrowserPublishWorkbench(){
     if(!initialized.current){initialized.current=true;setSelection(result.value.publishSelection);}
   },[bridge]);
   useEffect(()=>{void refresh().catch(e=>setMessage(e.message));},[refresh]);
-  const call=async(method:string,input:unknown={})=>{
+  const call=useCallback(async(method:string,input:unknown={}, {refreshSnapshot=true}={})=>{
     const result=await bridge!.call(method,input);
-    if(!result.ok)throw Error(result.error.message);
-    await refresh().catch(()=>{});
+    if(!result.ok)throw Object.assign(Error(result.error.message),{code:result.error.code});
+    if(refreshSnapshot)await refresh().catch(()=>{});
     return result.value;
-  };
+  },[bridge,refresh]);
   return <main>
     {message&&<p role="status">{message}</p>}
     {data?<Context.Provider value={{
       data,runtime:{},call,refresh,notify:setMessage,selected:selection?.workIds??[],setSelected:()=>{},
       publishSelection:selection,setPublishSelection:next=>{setSelection(next);return writer.current.enqueue(next);},
       flushPublishSelection:()=>writer.current.flush(),
-      go:page=>setMessage(page==='accounts'?'请在 Rainfall Studio 配置账号。':'请在 Rainfall Studio 查看作品。'),
+      go:page=>setMessage(page==='platform-accounts'?'请打开 Rainfall Studio 的账号管理。':'请在 Rainfall Studio 查看作品。'),
       play:()=>{},importAsset:async()=>{},exportArtifact:async()=>{},
     }}><PublishCenter browser/></Context.Provider>:!message&&<p role="status">正在读取作品库…</p>}
   </main>;

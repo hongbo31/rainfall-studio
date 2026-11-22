@@ -32,7 +32,7 @@ export default function PublicationDiagnostics() {
           title="腾讯作品资料"
           action={
             <button onClick={() => setTmeView(false)}>
-              返回多平台发布中心
+              返回发布诊断
             </button>
           }
         />

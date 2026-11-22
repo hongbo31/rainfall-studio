@@ -1,0 +1,189 @@
+.platform-management > section + section {
+  margin-top: 24px;
+}
+.platform-management-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 16px;
+}
+.platform-management .platform-management-card {
+  margin-top: 0;
+}
+.platform-management-card {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+}
+.music-platform-card {
+  cursor: pointer;
+}
+.platform-management .platform-management-section-title {
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 14px;
+}
+.platform-management-card-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+}
+.platform-management-card-header h3 {
+  align-self: center;
+  overflow-wrap: anywhere;
+}
+.platform-management-card-status {
+  grid-column: 1 / -1;
+}
+.platform-management-card-status .badge {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.platform-management-card-header h3,
+.platform-management-card > label,
+.platform-management-card > label > select,
+.platform-management-card > .notice {
+  margin: 0;
+}
+.platform-management-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.platform-management-card-actions button {
+  white-space: nowrap;
+}
+.platform-automation-dialog {
+  position: fixed;
+  inset: 0 0 0 auto;
+  margin: 0;
+  width: min(620px, 100%);
+  max-width: 100%;
+  height: 100%;
+  max-height: 100%;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 12px 0 0 12px;
+}
+.platform-automation-dialog::backdrop {
+  background: var(--scrim);
+}
+.platform-automation-dialog form + section { margin-top: 16px; }
+.platform-automation-dialog form select { margin-top: 5px; }
+.platform-automation-dialog ul { padding-left: 20px; }
+.platform-automation-dialog :is(h2, p, li) { overflow-wrap: anywhere; }
+.platform-automation-dialog .simple-request-list { padding: 16px; }
+.fanqie-downloads { margin-block: 16px; }
+.fanqie-download-heading { flex-wrap: wrap; gap: 8px; }
+.fanqie-download-heading h3 { margin: 0; }
+.platform-automation-dialog .fanqie-download-list {
+  list-style: none;
+  max-height: 260px;
+  overflow: auto;
+  padding: 0 8px 0 0;
+  margin: 0 0 16px;
+}
+.fanqie-download-list li { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.fanqie-download-list li > span { margin-inline-start: 12px; }
+.fanqie-download-list small { display: block; margin-top: 3px; color: var(--muted); }
+.platform-text-test { display: grid; gap: 12px; }
+.platform-text-output { white-space: pre-wrap; }
+.platform-image-form { display: grid; gap: 14px; }
+.platform-image-form :is(label, select, textarea, p) { margin-bottom: 0; }
+.platform-image-resolution { margin-top: -6px; }
+.platform-image-resolution strong { color: var(--text); }
+.platform-image-actions { flex-wrap: wrap; }
+.platform-image-result { display: grid; justify-items: start; gap: 10px; }
+.platform-image-result img {
+  display: block;
+  max-width: 100%;
+  max-height: min(52vh, 460px);
+  border-radius: 8px;
+  object-fit: contain;
+}
+.platform-model-options {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.platform-model-settings :is(.api-create, .api-profile-fields) { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 640px) {
+  .platform-automation-dialog {
+    border-radius: 0;
+  }
+}
+.pule-browser form,
+.pule-browser-upload {
+  display: grid;
+  gap: 12px;
+}
+.pule-browser-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
+  gap: 12px 16px;
+}
+.pule-browser-fields label,
+.pule-browser .pule-browser-fields :is(input, textarea, select) {
+  margin: 0;
+}
+.pule-browser-fields label {
+  display: grid;
+  gap: 6px;
+}
+.pule-browser-account {
+  align-self: end;
+}
+.pule-browser-wide {
+  grid-column: 1 / -1;
+}
+.pule-browser-fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.pule-browser .pule-browser-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-self: start;
+}
+.pule-browser input[type="checkbox"] {
+  width: auto;
+}
+.pule-browser-footer,
+.pule-browser-job-header {
+  flex-wrap: wrap;
+}
+.pule-browser-footer-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.pule-browser-history::backdrop {
+  background: transparent;
+}
+.pule-browser .pule-browser-jobs,
+.pule-browser-jobs ul {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+}
+.pule-browser-jobs > li {
+  border-top: 1px solid var(--line);
+  padding: 12px 0;
+}
+.pule-browser-jobs small {
+  display: block;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+.pule-browser-jobs ul li + li {
+  margin-top: 8px;
+}

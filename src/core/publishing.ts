@@ -5,10 +5,22 @@ import {publicationPayload} from './publication-payload';
 import {resolveQuickPublish, type QuickPublishInput} from '../shared/quick-publish';
 export function quick(s: Studio, input: QuickPublishInput) {
   return s.repo.transaction(() => {
-    const resolved = resolveQuickPublish({mode:s.mode,works:s.all('works'),accounts:s.all('accounts'),bindings:s.all('bindings')},input);
+    const works = s.all('works');
+    const artistId = works.find(work => work.id === input.workIds[0])?.artistId;
+    const localArtistIds = s.all('artists').filter(artist => artist.accountLocalArtist).map(artist => artist.id);
+    const resolved = resolveQuickPublish({mode:s.mode,works,accounts:s.all('accounts'),bindings:s.all('bindings'),localArtistIds}, input);
     if (resolved.issues.length) throw Error(resolved.issues.join('\n'));
+    const destinations = resolved.destinations.map(destination => {
+      if (destination.bindingId) return destination;
+      // Keep the batch's local publication scope. Account authorization is still checked independently.
+      const binding = s.save('bindings', {
+        id: randomUUID(), artistId, accountId: destination.accountId, targets: [destination.target],
+        status: s.mode === 'simulation' ? 'simulation' : 'local_only', revision: 1, operations: ['prepare'],
+      });
+      return { ...destination, bindingId: binding.id };
+    });
     const previous = new Set(s.all('batches').map(b => b.id));
-    const batch = plan(s,{workIds:input.workIds,destinations:resolved.destinations,recordings:resolved.recordings});
+    const batch = plan(s,{workIds:input.workIds,destinations,recordings:resolved.recordings});
     const units = s.all('units').filter(u => u.batchId === batch.id);
     // A repeat click must never approve, resume or retry a prior/unknown submission.
     if (s.mode === 'simulation' && !previous.has(batch.id) && units.length && units.every(u => u.state === 'READY')) {

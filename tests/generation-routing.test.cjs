@@ -56,6 +56,27 @@ function plan(x, extra = {}) {
     ...extra,
   };
 }
+function runProviderPlan(x, { storyBeat, storyStage = "", styleTemplate = "", text }) {
+  const center = x.s.planCenterService();
+  const saved = center.save({
+    plan: plan(x, {
+      theme: storyBeat.trim().slice(0, 2000),
+      storyContext: { storyBeat: storyBeat.trim(), storyStage },
+      styleTemplate,
+      text: { ...text, threshold: 75, maxRewrites: 0, maxScoreRetries: 1 },
+      authorization: { text: text.consent, music: false, publish: false },
+    }),
+    expectedRevision: null,
+  });
+  const preview = center.preview({ id: saved.id });
+  return { run: center.run({
+    id: saved.id,
+    expectedRevision: saved.revision,
+    summaryHash: preview.summaryHash,
+    requestId: randomUUID(),
+    source: "manual",
+  }) };
+}
 test("three independent defaults preserve legacy profiles and reject cross-role or secret injection", async (t) => {
   const x = fixture(t),
     p = await profile(x, "text", "doubao", "ep-test"),
@@ -138,37 +159,6 @@ test("plan execution freezes independent routes and changing defaults never rewr
   );
   assert.equal(x.s.all("operations").length, 0);
 });
-test("manual generation uses the same real plan/provider route and keeps request replay pinned", async (t) => {
-  const x = fixture(t),
-    p = await profile(x, "text", "doubao", "ep-manual");
-  await defaults(x, "text", p.id);
-  const input = {
-    requestId: randomUUID(),
-    artistId: x.artist.id,
-    storyBeat: "A rainy street",
-    storyStage: "meeting",
-    styleTemplate: "华语流行、民谣、木吉他、轻鼓组",
-    outputs: { lyrics: true, cover: false, music: false },
-    text: { consent: false },
-    music: { consent: false },
-  };
-  const a = await x.call("manualCreation.prepare", input);
-  assert.equal(a.run.snapshot.text.profileId, p.id);
-  assert.equal(a.run.snapshot.routeSnapshot.text.modelId, "ep-manual");
-  assert.equal(a.run.snapshot.styleTemplate, input.styleTemplate);
-  tickPlanCenter(x.s);
-  assert.equal(x.s.all("operations").length, 0);
-  const other = await profile(x, "text", "deepseek", "deepseek-flash");
-  await defaults(x, "text", other.id);
-  assert.equal(
-    (await x.call("manualCreation.prepare", input)).run.id,
-    a.run.id,
-  );
-  await assert.rejects(
-    () => x.call("manualCreation.prepare", { ...input, storyBeat: "changed" }),
-    /IDEMPOTENCY_CONFLICT/,
-  );
-});
 test("cover requests use image defaults only, freeze external import routing and refuse unavailable image APIs", async (t) => {
   const x = fixture(t),
     text = await profile(x, "text", "doubao", "ep-text"),
@@ -233,16 +223,11 @@ test("artist revision and story are frozen into the actual provider prompt, late
     expectedRevision: revision,
   });
   await defaults(x, "text", p.id);
-  const input = {
-    requestId: randomUUID(),
-    artistId: x.artist.id,
+  const result = runProviderPlan(x, {
     storyBeat: "A rainy street",
     storyStage: "first meeting",
-    outputs: { lyrics: true, cover: false, music: false },
     text: { consent: true, budgetMicros: 1000000 },
-    music: { consent: false },
-  };
-  const result = await x.call("manualCreation.prepare", input);
+  });
   assert.equal(result.run.snapshot.artistSnapshot.revision, x.artist.revision);
   assert.equal(
     result.run.snapshot.artistSnapshot.defaults.instruments,
@@ -326,15 +311,11 @@ test("manual DeepSeek and Doubao execute the frozen route through Main broker fi
       expectedRevision: revision,
     });
     await defaults(x, "text", p.id);
-    const created = await x.call("manualCreation.prepare", {
-        requestId: randomUUID(),
-        artistId: x.artist.id,
+    const created = runProviderPlan(x, {
         storyBeat: "Original rainy street story",
         storyStage: "first meeting",
         styleTemplate: "华语流行、R&B、温暖、轻鼓组",
-        outputs: { lyrics: true, cover: false, music: false },
         text: { consent: true, budgetMicros: 1000000 },
-        music: { consent: false },
       }),
       text = new ProviderTextService(x.s.repo, { recover: false }),
       requests = [];
@@ -529,13 +510,9 @@ test("long manual stories remain intact and authorized music cannot silently swi
   await defaults(x, "text", text.id);
   await defaults(x, "music", music.id);
   const story = "original ".repeat(700);
-  const r = await x.call("manualCreation.prepare", {
-    requestId: randomUUID(),
-    artistId: x.artist.id,
+  const r = runProviderPlan(x, {
     storyBeat: story,
-    outputs: { lyrics: true, cover: false, music: false },
     text: { consent: false },
-    music: { consent: false },
   });
   assert.equal(r.run.snapshot.storyContext.storyBeat, story.trim());
   assert.throws(

@@ -1,7 +1,7 @@
 import {fanqieCapabilities} from '../shared/fanqie';
 import {AccountIdentityService,type AccountIdentityAdapter} from './account-identity';
 import {readGenerationConfig,saveGenerationConfig} from './generation-config';
-import {prepareManualCreation,listManualCreations} from './manual-creation';
+import { prepareCreationTask, startCreationTask } from './creation-tasks';
 import {unifiedPublicationService,savePublicationMetadata} from "./unified-publication-integration";
 import fs from "node:fs";
 import {DirectoryTaskController} from './directory-tasks';
@@ -14,6 +14,9 @@ import { DateTime } from "luxon";
 import {PlanCenterService,isLegacyOwned} from './plan-center';
 import {assertLegacyScheduleEditable} from './plan-center-ownership';
 import {createPlanCenterService,executePlanCenter,tickPlanCenter} from './plan-center-integration';
+import {callPublicationTasks,tickPublicationTasks} from './publication-task-integration';
+import {requestPlanPuleRecovery} from './plan-pule';
+import { readDownloadArchive, setDownloadAccount, setDownloadDirectory } from './download-archive';
 import { Repository, hash, type Row, type Table } from "./database";
 import type {PlanAlbumService} from './plan-albums';
 import {createPlanAlbumService,executePlanAlbums} from './plan-albums-integration';
@@ -25,6 +28,12 @@ import * as archives from "./backup";
 import * as publishing from "./publishing";
 import { parse } from "csv-parse/sync";
 import { listApiProfiles, saveApiProfile } from "./api-profiles";
+import { prepareImageCredentialProfile, setDefaultImageProfile } from "./platform-image";
+import { workflowNodesCatalog } from "../shared/platform-directory";
+import { deletePrompt, getPrompt, listPrompts, savePrompt } from "./prompt-library";
+import { LyricWritingService } from "./lyric-writing";
+import { deleteLocalArtist } from "./local-artists";
+import { assignAccountLocalArtist, copyAccountLocalArtist, deleteAccountLocalArtist, listAccountLocalArtists, saveAccountLocalArtist } from "./account-local-artists";
 import { CreationService } from "./workflow/creation";
 import { TextProviderRegistry } from "./workflow/text";
 import {
@@ -42,7 +51,8 @@ import { selectInboxMusicInput, selectedInboxMusicInput } from "./inbox/music-in
 import { parseTextProviderProfile } from "../shared/text-providers";
 import { TmeDraftService } from './tme-drafts';
 import { CoverHandoff } from './cover-handoff';
-import {watchCoverInbox,coverInboxStatus,scanCoverInbox} from './cover-inbox';
+import { isCoverAssetRole } from '../shared/cover-handoff';
+import {watchCoverInbox,coverInboxStatus,scanCoverInbox,requestImageCover,planCoverImage} from './cover-inbox';
 import {assertPlanCoverWork} from './plan-cover-work';
 import {LyricService,candidateLyricOrigin,type LyricOrigin} from './lyrics';
 import {publicationPayload} from './publication-payload';
@@ -51,24 +61,16 @@ import {externalTmeReceipts} from './external-tme-receipt';
 import type {MusicAdapter} from './workflow/yourmusic';
 import {liveMusicGrantKey} from '../shared/live-music';
 import { defaultFanqieAccountId } from "../shared/platform-accounts";
+import { deletePlatformAccount } from "./platform-accounts";
 import {LiveTextService} from './live-text';
 import {createProductionFlowService} from './production-integration';
 import type {ProductionFlowService} from './production-flow';
 import {createTmeAiPrepareService} from './tme-ai-prepare-integration';
 import type {TmeAiPrepareService} from './tme-ai-prepare';
 import {initializePlatformConfigurations,listPlatformConfigurations,savePlatformConfiguration,setPlatformDefaultAccount} from './platform-config';
-import {publishSelection,savePublishSelection,publishSimple,listSimplePublicationRequests,listPublicationPendingTerms} from './simple-publication';
-export const baseDefaults = {
-  genre: "流行 / 民谣",
-  voice: "female",
-  lyricTone: "克制、细腻的叙事",
-  bpmMin: 72,
-  bpmMax: 96,
-  coverStyle: "雨夜、暖紫色、电影感留白",
-  language: "中文",
-  mood: "温柔",
-  duration: 180,
-};
+import {publishSelection,savePublishSelection,previewPublication,publishSimple,listSimplePublicationRequests,listPublicationPendingTerms} from './simple-publication';
+import { artistNameFromSinger, baseArtistDefaults as baseDefaults } from "../shared/local-artist";
+export { baseDefaults };
 export class Studio {
   coverHandoff() { return new CoverHandoff(this); }
   lyricService() { return new LyricService(this); }
@@ -86,6 +88,11 @@ export class Studio {
   private inbox?: InboxController;
   private directory?: DirectoryTaskController;
   private providerText?: ProviderTextService;
+  private lyricWriting?: LyricWritingService;
+  lyricWritingService() {
+    if (this.lyricWriting?.repo !== this.repo) this.lyricWriting = new LyricWritingService(this.repo, this.now);
+    return this.lyricWriting;
+  }
   private materials?:MaterialWorkbenchService;
   private materialsRepo?:Repository;
   materialWorkbench(){
@@ -289,7 +296,7 @@ export class Studio {
     initializePlatformConfigurations(this.repo);
     const fanqieDirectory = path.join(root, "production", "fanqie");
     if (mode === "production" &&
-        !this.repo.maybe("accounts", defaultFanqieAccountId) &&
+        !this.repo.db.prepare("SELECT 1 FROM accounts WHERE id = ?").get(defaultFanqieAccountId) &&
         (fs.existsSync(path.join(root, "browser-sessions", "fanqie")) ||
           ["configuration.json", "profile.json", "catalog.json", "uploads"].some(file =>
             fs.existsSync(path.join(fanqieDirectory, file)),
@@ -396,6 +403,8 @@ export class Studio {
     if(method.startsWith('planAlbums.'))return executePlanAlbums(this,method.slice('planAlbums.'.length),input);
     if(method.startsWith('planCenter.'))return executePlanCenter(this,method,input);
     const v: any = validate(method, input);
+    if(method.startsWith('publicationTasks.'))return callPublicationTasks(this,method,v);
+    if (method.startsWith("lyricWriting.") && this.mode !== "production") throw Error("PRODUCTION_REQUIRED");
     if(method.startsWith('accountIdentity.'))return this.accountIdentityService().execute(method.slice('accountIdentity.'.length),v);
     if(method.startsWith('directoryTasks.')){
       const controller=this.directoryTasks(),action=method.slice('directoryTasks.'.length);
@@ -410,14 +419,40 @@ export class Studio {
     if(method.startsWith('publish.')&&v.id&&['batches','units'].some(table=>this.repo.maybe(table as 'batches'|'units',v.id)?.kind==='tme_uia'))throw Error('TME_SPECIALIZED_CHANNEL_REQUIRED');
     switch (method) {
       case 'generationConfig.read': return readGenerationConfig(this.repo);
+      case 'downloadArchive.read': return readDownloadArchive(this.repo);
+      case 'downloadArchive.setAccount': return setDownloadAccount(this.repo,v);
+      case 'downloadArchive.clearDirectory': return setDownloadDirectory(this.repo,{ ...v, root: null });
       case 'generationConfig.save': return saveGenerationConfig(this.repo,v);
-      case 'manualCreation.prepare': return prepareManualCreation(this,v);
-      case 'manualCreation.list': return listManualCreations(this);
+      case "promptLibrary.list": return listPrompts(this.repo, v.query);
+      case "promptLibrary.get": return getPrompt(this.repo, v.id);
+      case "promptLibrary.save": return savePrompt(this.repo, v, this.now());
+      case "promptLibrary.delete": return deletePrompt(this.repo, v);
+      case "lyricWriting.start": return this.lyricWritingService().start(v);
+      case "lyricWriting.startInspiration": return this.lyricWritingService().startInspiration(v);
+      case "lyricWriting.list": return this.lyricWritingService().list();
+      case "lyricWriting.read": return this.lyricWritingService().read(v.id);
+      case "lyricWriting.stop": return this.lyricWritingService().stop(v.id);
+      case "lyricWriting.suggest": return this.lyricWritingService().suggest(v);
+      case "accountLocalArtist.list": return listAccountLocalArtists(this.repo, v.accountId);
+      case "accountLocalArtist.save": return saveAccountLocalArtist(this.repo, v);
+      case "accountLocalArtist.assign": return assignAccountLocalArtist(this.repo, v);
+      case "accountLocalArtist.copy": return copyAccountLocalArtist(this.repo, v);
+      case "accountLocalArtist.delete": return deleteAccountLocalArtist(this.repo, v.id, v.expected);
+      case 'creationTasks.stage': return prepareCreationTask(this,v);
+      case 'creationTasks.start': {
+        const { plan } = startCreationTask(this,v);
+        const task = this.planCenterService().listCreationTasks().find(row => row.planId === plan.id);
+        if (!task) throw Error('NOT_FOUND');
+        return task;
+      }
+      case 'creationTasks.taskStatus': return this.planCenterService().listCreationTasks();
+      case 'creationTasks.checkReceipt': return requestPlanPuleRecovery(this,v.id);
       case 'platformConfig.list': return listPlatformConfigurations(this.repo);
       case 'platformConfig.save': return savePlatformConfiguration(this.repo,v.config,v.expectedRevision);
       case 'platformConfig.setAccount': return setPlatformDefaultAccount(this.repo,v.target,v.accountId,v.expectedRevision);
       case 'publish.selection.save': return savePublishSelection(this,v);
       case 'publish.metadata.save': return savePublicationMetadata(this,v);
+      case 'publish.preview': return previewPublication(this,v);
       case 'publish.simple': return publishSimple(this,v);
       case 'tme.observations.record': return recordTmeObservation(this,v);
       case 'tme.observations.list': return listTmeObservations(this,v);
@@ -425,9 +460,15 @@ export class Studio {
       case 'lyrics.confirm': return this.lyricService().confirm(v);
       case 'publication.payload': return publicationPayload(this,this.get('works',v.workId));
       case 'cover.request': return this.coverHandoff().request(v);
+      case 'cover.generate': return requestImageCover(this,v);
+      case 'cover.retryImage': return this.repo.transaction(()=>planCoverImage(this,'retryImage',v));
+      case 'cover.retryZhipu': return this.repo.transaction(()=>planCoverImage(this,'retryZhipu',v));
       case 'cover.list': return this.coverHandoff().list(v.workId);
       case 'cover.watch': return watchCoverInbox(this,v.requestId);
-      case 'cover.inboxStatus': return coverInboxStatus(this,v.workId);
+      case 'cover.inboxStatus': return coverInboxStatus(this,v.workId).map(entry=>{
+        const request=this.repo.maybe('settings','cover-request:'+entry.requestId)?.request;
+        return {...entry,provider:request?.provider,modelId:request?.generationRoute?.modelId};
+      });
       case 'tme.preview': return this.tmeDraftService().preview(v);
       case 'tme.prepare': return this.tmeDraftService().prepare(v);
       case 'tme.list': return this.tmeDraftService().list();
@@ -578,22 +619,37 @@ export class Studio {
         return listApiProfiles(this.repo);
       case "apiProfile.save":
         return saveApiProfile(this.repo, v);
+      case "platformImage.prepareCredential":
+        if (this.mode !== "production") throw Error("PRODUCTION_REQUIRED");
+        return prepareImageCredentialProfile(this.repo, v);
+      case "platformImage.setDefault":
+        if (this.mode !== "production") throw Error("PRODUCTION_REQUIRED");
+        return setDefaultImageProfile(this.repo, v);
       case "snapshot":
         return this.snapshot();
       case "metrics.read":
         return this.all("metrics");
-      case "artist.save": {
+      case "artist.save": return this.repo.transaction(() => {
         const old = v.id ? this.get("artists", v.id) : null;
+        if (old?.accountLocalArtist) throw Error("USE_ACCOUNT_LOCAL_ARTIST");
         if (old && v.expected !== old.revision)
           throw Error("REVISION_CONFLICT");
+        const name = v.name ?? old?.name ?? (v.profile ? artistNameFromSinger(v.profile.singer) : null);
+        if (!name) throw Error("ARTIST_NAME_REQUIRED");
+        if (v.promptTemplateId && !this.repo.maybe("promptTemplates", v.promptTemplateId))
+          throw Error("ARTIST_PROMPT_NOT_FOUND");
         const a = this.save("artists", {
+          ...old,
           ...v,
+          name,
           id: v.id || randomUUID(),
           revision: (old?.revision || 0) + 1,
         });
         this.repo.audit("artist.save", a.id);
         return a;
-      }
+      });
+      case "artist.delete":
+        return deleteLocalArtist(this.repo, v.id, v.expected);
       case "account.save": {
         const old = v.id ? this.get("accounts", v.id) : null;
         if (old && old.provider !== v.provider)
@@ -609,6 +665,8 @@ export class Studio {
           id: v.id || randomUUID(),
         });
       }
+      case "account.delete":
+        return deletePlatformAccount(this.repo, v.accountId);
       case "binding.save": {
         this.get("artists", v.artistId);
         const account = this.get("accounts", v.accountId);
@@ -691,7 +749,8 @@ export class Studio {
       }
       case "work.selectAsset": {
         return this.repo.transaction(()=>{
-        const coverBinding=v.role==='cover'?assertPlanCoverWork(this,v.workId):null;
+        const coverBinding=isCoverAssetRole(v.role)?assertPlanCoverWork(this,v.workId):null;
+        if(coverBinding&&v.role==='cover_B')throw Error('COVER_SCOPE_MISMATCH');
         if(coverBinding)this.coverHandoff().verifiedSelectedReceipt(v.workId,v.assetId);
         const w = this.get("works", v.workId);
         const a = this.get("assets", v.assetId);
@@ -700,10 +759,11 @@ export class Studio {
           throw Error("ASSET_OWNERSHIP");
         if (
           (v.role.startsWith("audio") && a.kind !== "audio") ||
-          (v.role === "cover" && a.kind !== "image") ||
+          (isCoverAssetRole(v.role) && a.kind !== "image") ||
           (v.role === "video" && a.kind !== "video")
         )
           throw Error("ASSET_ROLE");
+        if (isCoverAssetRole(v.role)) assets.assertVersionCover(this,w,v.role,a.sha256);
         w.assets[v.role] = v.assetId;
         if (v.role === 'audio_A') w.lyricsConfirmation = null;
         this.save("works", w);
@@ -721,8 +781,6 @@ export class Studio {
         }
         return row;
       }
-      case "creation.start":
-        return this.startCreation(v);
       case "run.confirm":
         return this.confirmRun(v.id, v.step);
       case "plan.save":
@@ -738,15 +796,7 @@ export class Studio {
         return this.preview(this.get("plans", v.id));
       case "plan.run": {
         if(isLegacyOwned(this.repo,'plans',v.id))throw Error('PLAN_CENTER_OWNS_SCHEDULE');
-        const p = this.get("plans", v.id);
-        return this.startCreation({
-          artistId: p.artistId,
-          title: p.title,
-          story: p.story,
-          overrides: p.overrides,
-          planId: p.id,
-          manual: true,
-        });
+        return this.startLegacyPlan(v.id);
       }
       case "budget.save":
         return this.save("settings", { id: "budget", ...v });
@@ -822,12 +872,14 @@ export class Studio {
     return {
       mode: this.mode,
       platformConfigurations: listPlatformConfigurations(this.repo),
+      platformWorkflow: { nodes: workflowNodesCatalog, profiles: listApiProfiles(this.repo), defaults: readGenerationConfig(this.repo).roles },
       fanqieCapabilities,
       publicationRequests: listSimplePublicationRequests(this),
       publicationPipelineJobs: this.mode === "production" ? unifiedPublicationService(this).list() : [],
       publicationPendingTerms: listPublicationPendingTerms(this),
       publishSelection: publishSelection(this),
       materialWorkbench:this.materialWorkbench().list(),
+      accountLocalArtists: listAccountLocalArtists(this.repo),
       artists: this.all("artists"),
       accounts: this.all("accounts"),
       bindings: this.all("bindings"),
@@ -924,50 +976,39 @@ export class Studio {
     this.get("accounts", accountId);
     return true;
   }
-  startCreation(v: any) {
-    const artist = this.get("artists", v.artistId),
-      p = v.planId ? this.get("plans", v.planId) : null;
-    if (p && p.artistId !== artist.id) throw Error("ARTIST_PLAN_MISMATCH");
-    const config = defaultsSchema.parse({
-      ...artist.defaults,
-      ...p?.overrides,
-      ...v.overrides,
-    });
-    const lyrics = `[主歌]\n${v.story.slice(0, 100) || "把今天的心事，轻轻写进晚风"}\n走过熟悉街角，记得你微笑\n\n[副歌]\n如果这一刻能慢一点\n让我把喜欢写成明天\n`;
-    const prompt = `本地模板 · ${config.genre}；${config.language}；${config.voice}；${config.mood}；BPM参考${config.bpmMin}–${config.bpmMax}；时长参考${config.duration}秒。故事：${v.story}`;
+  startLegacyPlan(planId: string, date?: string) {
+    const p = this.get("plans", planId);
+    const artist = this.get("artists", p.artistId);
+    const config = defaultsSchema.parse({ ...artist.defaults, ...p.overrides });
+    const lyrics = `[主歌]\n${p.story.slice(0, 100) || "把今天的心事，轻轻写进晚风"}\n走过熟悉街角，记得你微笑\n\n[副歌]\n如果这一刻能慢一点\n让我把喜欢写成明天\n`;
+    const prompt = `旧计划草稿 · ${config.genre}；${config.language}；${config.voice}；${config.mood}；BPM参考${config.bpmMin}–${config.bpmMax}；时长参考${config.duration}秒。故事：${p.story}`;
     const w = this.saveWork({
-      title: v.title,
+      title: p.title,
       artistId: artist.id,
-      story: v.story,
+      story: p.story,
       lyrics,
       prompt,
-      parameters: v.overrides || {},
+      parameters: p.overrides || {},
       rights: "待确认原创/生成来源与商用依据",
       ai: "unknown",
     });
     const run = this.save("runs", {
       id: randomUUID(),
-      planId: p?.id || null,
-      date: v.date || null,
-      slot: v.date ? "daily" : null,
-      planRevision: p?.revision,
+      planId: p.id,
+      date: date || null,
+      slot: date ? "daily" : null,
+      planRevision: p.revision,
       workId: w.id,
       artistId: artist.id,
       config,
       configHash: hash(config),
       defaultsRevision: artist.revision,
-      checkpoints: p?.checkpoints || {
-        lyrics: "automatic",
-        candidate: "manual",
-        cover: "manual",
-        finished: "manual",
-        publish: "manual",
-      },
+      checkpoints: p.checkpoints,
       state:
-        p?.checkpoints.lyrics === "manual"
+        p.checkpoints.lyrics === "manual"
           ? "waiting_confirmation"
           : "waiting_external",
-      step: p?.checkpoints.lyrics === "manual" ? "lyrics" : "generation",
+      step: p.checkpoints.lyrics === "manual" ? "lyrics" : "generation",
       createdAt: this.now().toISOString(),
     });
     for (const name of [
@@ -992,15 +1033,15 @@ export class Studio {
                 ? "waiting_external"
                 : "pending"
               : "pending",
-        inputHash: hash({ config, story: v.story }),
+        inputHash: hash({ config, story: p.story }),
         outputRefs: name === "lyrics" ? [w.id] : [],
         cost: 0,
         source: "local",
         operationKey: `${run.id}:${name}`,
       });
     this.exception("run", run.id, "GENERATION_MANUAL_IMPORT", "not_applicable");
-    this.repo.audit("creation.start", run.id, {
-      source: v.date ? "scheduled" : "manual",
+    this.repo.audit("plan.run", run.id, {
+      source: date ? "scheduled" : "manual",
     });
     return run;
   }
@@ -1195,8 +1236,8 @@ export class Studio {
     return list;
   }
   async tick() {
-    await this.directoryTasks().tick();
     tickPlanCenter(this);
+    tickPublicationTasks(this);
     if(this.mode==='production')this.productionFlowService().tick();
     if (Date.now() - this.inboxTickAt >= 5000) {
       this.inboxTickAt = Date.now();
@@ -1228,16 +1269,7 @@ export class Studio {
               !["succeeded", "cancelled"].includes(r.state),
           )
         )
-          this.repo.transaction(() =>
-            this.startCreation({
-              artistId: p.artistId,
-              title: p.title,
-              story: p.story,
-              overrides: p.overrides,
-              planId: p.id,
-              date,
-            }),
-          );
+          this.repo.transaction(() => this.startLegacyPlan(p.id, date));
       }
     }
     await publishing.tick(this);
@@ -1295,7 +1327,7 @@ export class Studio {
     return resources.rollover(this, op);
   }
   async importFile(source: string, role: string, workId?: string, beforePersist?:()=>void) {
-    if(workId&&role==='cover'&&assertPlanCoverWork(this,workId))throw Error('COVER_HANDOFF_REQUIRED');
+    if(workId&&isCoverAssetRole(role)&&assertPlanCoverWork(this,workId))throw Error('COVER_HANDOFF_REQUIRED');
     return assets.importFile(this, source, role, workId,beforePersist);
   }
   locate(id: string) {
@@ -1319,6 +1351,7 @@ export class Studio {
       this.inbox = undefined;
       this.directory = undefined;
       this.providerText = undefined;
+      this.lyricWriting = undefined;
     }
   }
   async importReport(source: string) {
