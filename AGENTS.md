@@ -4,6 +4,8 @@ The user has explicitly resumed development and desktop acceptance on their Wind
 
 # Rainfall Studio 项目约定
 
+新会话先读 [项目交接](handoff/PROJECT-HANDOFF.md)，核对 Git、桌面指针和当前任务后接手。
+
 - 日常源码和 Git 操作在当前 Rainfall Studio 检出中进行。项目路径以仓库根目录为基准，运行脚本以自身位置定位仓库，不依赖盘符或命令执行目录。
 - 程序、脚本和测试使用仓库或程序自身位置、系统目录和显式配置定位文件，不写死开发机用户名、盘符或工具安装位置。保留数据根和发布校验所需的运行时绝对路径及模拟边界测试。
 - AI 每次修改源码、配置、脚本或文档，都要同步更新 `handoff/`。记录改动原因、涉及文件、影响、验证结果、未验证事项和后续或回退方法，并在交付时给出位置。
