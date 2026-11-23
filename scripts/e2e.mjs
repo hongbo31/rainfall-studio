@@ -40,6 +40,7 @@ try {
     "undefined",
   );
   assert.equal(await page.getByRole("button", { name: "手动模板", exact: true }).count(), 0);
+  assert.equal(await page.getByRole("navigation").getByRole("button", { name: "封面工作室", exact: true }).count(), 0);
   results.push("restricted Electron window / retired template absent");
   await page.screenshot({
     path: path.join(
@@ -49,7 +50,6 @@ try {
   });
   for (const [nav, heading] of [
     ["创作中心", "创作中心"],
-    ["封面工作室", "封面工作室"],
     ["任务中心", "任务中心"],
     ["数据看板", "数据看板"],
     ["配置中心", "配置中心"],

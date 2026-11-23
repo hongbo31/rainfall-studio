@@ -23,7 +23,6 @@ const title = "雨停以后 · QA原创测试 " + Date.now();
 const audioA = path.join(root, "original-A.wav"),
   audioB = path.join(root, "original-B.wav"),
   cover = path.join(root, "original-cover.png"),
-  coverOut = path.join(root, "typeset-cover.png"),
   backup = path.join(root, "journey.rainfall-backup.zip");
 function wav(file, hz) {
   const rate = 16000,
@@ -198,35 +197,17 @@ try {
   await expect.poll(() => page.locator("#now").innerText()).toContain("B版");
   results.push("Fixture work edit/autosave, native import A/B, actual playback");
   await page.getByRole("button", { name: "保存版本", exact: true }).click();
-  await page.getByRole("button", { name: "封面工作室 →", exact: true }).click();
   await openFile(cover);
-  await page
-    .getByRole("button", { name: "＋ 导入本地封面", exact: true })
-    .click();
+  await page.getByRole("button", { name: "导入封面", exact: true }).click();
   await expect
     .poll(
       async () =>
         (await snapshot()).works.find((w) => w.id === workId).assets.cover,
     )
     .toBeTruthy();
-  await page
-    .getByRole("button", { name: "生成封面提示词 · 本地", exact: true })
-    .click();
-  assert.ok(
-    (await page.getByLabel("封面任务文本").inputValue()).includes(
-      "没有内置免费Codex图像API",
-    ),
-  );
-  await saveFile(coverOut);
-  await page
-    .getByRole("button", { name: "导出 PNG 并保存派生版本", exact: true })
-    .click();
-  await expect.poll(() => fs.existsSync(coverOut)).toBe(true);
-  assert.equal((await sharp(coverOut).metadata()).width, 3000);
-  await page.evaluate(() => window.scrollTo(0, 0));
-  await page.locator("#toast.show").waitFor({ state: "hidden" });
-  await page.screenshot({ path: path.join(shots, "cover-studio.png") });
-  results.push("cover task / native import / 3000px typeset export / versions");
+  await expect(page.getByRole("img", { name: title + " 封面", exact: true })).toBeVisible();
+  await page.screenshot({ path: path.join(shots, "work-cover.png") });
+  results.push("Cover imported and previewed in work details");
   await nav("账号设置");
   await page.getByLabel("平台", { exact: true }).selectOption("netease");
   await page.getByLabel("账号备注名").fill("QA发行账号 " + workId.slice(0, 6));
@@ -337,7 +318,7 @@ try {
     w.setContentSize(1440, 1000);
     w.webContents.setZoomFactor(1.5);
   });
-  await nav("封面工作室");
+  await track(workId);
   await page.evaluate(
     () =>
       new Promise((resolve) =>
@@ -354,7 +335,7 @@ try {
       const captured = await BrowserWindow.getAllWindows()[0].capturePage();
       process.getBuiltinModule("fs").writeFileSync(file, captured.toPNG());
     },
-    path.join(shots, "zoom150-cover.png"),
+    path.join(shots, "zoom150-work-details.png"),
   );
   await app.evaluate(({ BrowserWindow }) =>
     BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1),

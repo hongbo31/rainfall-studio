@@ -107,9 +107,6 @@ export default function Track({ id, slot }: { id: string; slot?: WorkVersionSlot
             >
               保存版本
             </button>
-            {!slot && <button onClick={() => go("cover", id)}>
-              封面工作室 →
-            </button>}
             {!slot && <button className="primary" onClick={()=>void prepare()}>准备发布材料 →</button>}
           </div>
         }
@@ -117,10 +114,13 @@ export default function Track({ id, slot }: { id: string; slot?: WorkVersionSlot
       <div className="detail-grid">
         <div>
           <Cover work={work} slot={slot} large />
-          {slot ? <div className="button-row">
-            <button type="button" onClick={() => void importAsset(coverRole, id)}>{workVersionCover(work, slot) ? "更换封面" : "导入封面"}</button>
-            <button type="button" onClick={() => void importAsset(slot, id)}>更换音频</button>
-          </div> : <div className="panel" id="track-audio" tabIndex={-1}>
+          <div className="button-row">
+            <button type="button" onClick={() => void importAsset(coverRole, id)}>
+              {workVersionCover(work, slot ?? "audio_A") ? "更换封面" : "导入封面"}
+            </button>
+            {slot && <button type="button" onClick={() => void importAsset(slot, id)}>更换音频</button>}
+          </div>
+          {!slot && <div className="panel" id="track-audio" tabIndex={-1}>
             <h2>A / B 试听 <HelpHint label="A/B 试听说明">此处可试听 A、B 两版。发布时使用作品标记的版本。</HelpHint></h2>
             {singerA && singerB && singerA !== singerB && <p>A 版 · {singerA} / B 版 · {singerB}</p>}
             <div className="button-row">

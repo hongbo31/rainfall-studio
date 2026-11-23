@@ -9,7 +9,7 @@ import { COVER_IMAGE_POLICY, coverResolutionSchema, recordingCoverPrompt } from 
 import type { ImageChoice, ImageSelection } from "../shared/platform-image";
 import {
   canRetrySunoCovers, puleAudioExtensions, puleAudioMaxBytes, puleBrowserSchemas, puleDownloadTimeoutMs, puleStartSchema,
-  sunoCnBrowserSchemas, type PuleAudioChoice, type PuleFile, type PuleJob, type PulePublication, type PuleScope,
+  sunoCnBrowserSchemas, sunoCnPreflightBlocked, type PuleAudioChoice, type PuleFile, type PuleJob, type PulePublication, type PuleScope,
   type PuleVersion, type SunoCoverScope,
 } from "../shared/pule-browser";
 import { safeWorkFilenameStem } from "../shared/work-analysis";
@@ -256,8 +256,9 @@ export function createPuleBrowserJobs(port: Ports) {
     const code = cause instanceof Error && taskErrorCode.test(cause.message) ? cause.message : "PULE_BROWSER_INTERRUPTED";
     const detail = cause instanceof Error ? cause.cause : undefined;
     const coverErrorCode = code === "PULE_COVER_HTTP_400" && typeof detail === "string" && /^\d{4}$/u.test(detail) ? detail : undefined;
-    const status = task.record.job.possibleCharge ? "needs_review" : signal.aborted ? "stopped" : "failed";
-    try { update(task, { status, code, coverErrorCode, quote: undefined }); }
+    const preflight = suno && !task.record.job.songIds?.length && sunoCnPreflightBlocked(code);
+    const status = task.record.job.possibleCharge && !preflight ? "needs_review" : signal.aborted ? "stopped" : "failed";
+    try { update(task, { status, code, coverErrorCode, quote: undefined, ...(preflight ? { possibleCharge: undefined } : {}) }); }
     catch { task.record.job = { ...task.record.job, status, code: "PULE_JOURNAL_UNAVAILABLE", quote: undefined }; }
   };
   const view = (record: Journal) => {

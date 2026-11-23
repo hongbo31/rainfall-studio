@@ -18,6 +18,7 @@ import {
   type FanqieDownloadPreview, type FanqieDownloadSong, type FanqieSignatureStage,
 } from "../../shared/fanqie-downloads";
 import { scopedDirectory } from "../browser-accounts";
+import { fanqieRosterNameKey } from "./artist-creation";
 import { authorizeFanqieRecords } from "./authorize-records";
 import { FanqieCatalogSession, fanqieCatalogError } from "./catalog-session";
 import { fanqieHomeUrl, fanqieUploadFormUrl as formUrl } from "./directory-page";
@@ -47,6 +48,7 @@ type Journal = FanqieDownloadBatch & {
   archiveRoot?:string; active?:Round; requireSecurityVerification?:true;
 };
 type CatalogAccount = Awaited<ReturnType<FanqieCatalogSession["inspect"]>>;
+type DirectorySingers = Awaited<ReturnType<FanqieCatalogSession["resolveDirectorySingers"]>>;
 type SignatureScope = {id:string;round:number};
 type WorkPage = {id:string;url:string;signing?:true};
 type SignatureWatch = SignatureScope & {
@@ -363,6 +365,7 @@ export class FanqieDirectoryRun {
     const prepareContracts=journal.prepareContracts||preferences.signContract;
     const guard=()=>this.options.guard(generation);
     const tracks=new Map(journal.tracks!.map(track=>[track.id,track]));
+    let singers:DirectorySingers|undefined;
     while(journal.items.some(item=>item.state==="queued")) {
       const number=(journal.round??0)+1,trace=this.log(journal,number);
       journal.round=number;
@@ -381,8 +384,8 @@ export class FanqieDirectoryRun {
         const snapshot=await this.snapshot(journal);
         await this.options.session.run(async(context,sessionGuard)=>{
           if(opened)this.rememberOpenedPage(journal,context);
-          const inspect=async(queries:readonly FanqieCatalogQuery[],artists=false)=>{
-            const account=await this.options.session.inspect(context,sessionGuard,artists,trace,queries);
+          const inspect=async(queries:readonly FanqieCatalogQuery[])=>{
+            const account=await this.options.session.inspect(context,sessionGuard,false,trace,queries);
             guard();this.checkCatalog(account,journal);
             return account;
           };
@@ -390,9 +393,18 @@ export class FanqieDirectoryRun {
           const queryCandidates=(start:number,end:number)=>queued.slice(start,end)
             .flatMap(({track})=>titleQueries(track.title,track.originalTitle));
           let checkedThrough=preferences.limit;
-          let observed=await inspect(queryCandidates(0,checkedThrough),true);
+          let observed=await inspect(queryCandidates(0,checkedThrough));
           const account=observed;
           journal.accountKey=account.report.accountKey;
+          if(!singers){
+            const names=[...new Set(queued.flatMap(({track})=>{
+              const duplicate=checkFanqieUploadTitle(observed.catalog,track.title,track.originalTitle);
+              return !duplicate.allowed&&duplicateReasons.has(duplicate.reason)?[]:[fanqieRosterNameKey(track.singer)];
+            }))];
+            singers=names.length?await this.options.session.resolveDirectorySingers(context,()=>{
+              sessionGuard();guard();
+            },journal.accountKey,names,trace):new Map();
+          }
           const staged:{item:FanqieDownloadBatchItem;track:FanqieDownloadTrack;input:FanqieDirectorySong;job:FanqieUploadJob}[]=[];
           const formTitles=new Set<string>();
           const existing=this.options.jobs();
@@ -413,8 +425,12 @@ export class FanqieDirectoryRun {
             try {
               const duplicate=checkFanqieUploadTitle(observed.catalog,track.title,track.originalTitle);
               if(!duplicate.allowed)throw Error(duplicate.reason);
+              const singer=singers.get(fanqieRosterNameKey(track.singer));
+              if(!singer)throw Error("FANQIE_ARTIST_SEARCH_UNVERIFIED");
+              if("issue" in singer)throw Error(singer.issue);
               this.verifyTrack(track,snapshot.get(track.id));
               const {input,audioSha256}=await this.prepare(track,config,account,journal,existing,sessionId,guard,context);
+              input.singerArtistId=singer.artistId;
               const id=hash({account:journal.accountKey,audio:input.assets.audio.sha256});
               const job:FanqieUploadJob={
                 id,title:track.title,phase:"uploading",pending:"opening-form",updatedAt:new Date().toISOString(),
@@ -473,6 +489,7 @@ export class FanqieDirectoryRun {
           step="directory:form";
           editor=await (this.options.executeDirectoryForm??executeFanqieDirectoryForm)(context,staged.map(entry=>entry.input),{
             guard:()=>{sessionGuard();guard();},
+            checkStopped:this.options.plan?()=>this.checkPlan(generation):undefined,
             intent:pending,trace:trace.trace,watch:trace.watch,
           });
           this.directoryEditor={id:journal.id,round:number,page:editor};
@@ -546,11 +563,6 @@ export class FanqieDirectoryRun {
       composer:saved?.composer||track.credits?.composer||config.authors.composer,
       singer:track.singer,
     };
-    const credits=Object.entries(authors).filter(([role])=>!track.instrumental||role!=="lyricist").map(([role,name])=>{
-      const candidates=account.artists.filter(artist=>artist.name===name);
-      if(candidates.length!==1)throw Error(candidates.length?"FANQIE_ARTIST_NAME_AMBIGUOUS":"FANQIE_ARTIST_NAME_NOT_FOUND");
-      return [role,candidates[0].artistId];
-    });
     let lyricText="";
     if(lyrics){
       try { lyricText=new TextDecoder("utf-8",{fatal:true}).decode(fs.readFileSync(lyrics.file)); }
@@ -565,8 +577,9 @@ export class FanqieDirectoryRun {
     const staged=(prior&&known(audioSha256,prior))??known(assets.audio.sha256,prior);
     if(staged)throw Error(staged.officialRecord?"FANQIE_OFFICIAL_RECORD_ALREADY_EXISTS":"FANQIE_RECONCILIATION_REQUIRED");
     const copyrightProof=proof?{file:proof.file,bytes:proof.bytes,sha256:digest(proof.file)}:undefined;
+    // The journal scopes the configured credits locally. The upload form verifies each live selection.
     const input:FanqieDirectorySong={
-      workId:"bundle:"+assets.audio.sha256,scope:{accountId:account.accountId,artistId:hash(credits),sessionId},
+      workId:"bundle:"+assets.audio.sha256,scope:{accountId:account.accountId,artistId:hash(authors),sessionId},
       title:formTitle,assets,authors,musicType:release.musicType,ai:release.ai,songAttribute:release.songAttribute,
       originalSinger:release.originalSinger,originalWorkId:release.originalWorkId,
       instrumental:track.instrumental,copyrightProof,rightsConfirmed:true,lyricsMatchConfirmed:true,

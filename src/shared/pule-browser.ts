@@ -12,6 +12,10 @@ export const puleAudioMaxBytes = 80 * 1024 * 1024;
 export const puleDownloadTimeoutMs = 10 * 60_000;
 export const puleDownloadRetryLimit = 3;
 
+export function sunoCnPreflightBlocked(code: string) {
+  return code === "SUNO_CN_VOCAL_STYLE_CONFLICT" || code === "SUNO_CN_INSUFFICIENT_CREDITS";
+}
+
 const pulePublicationSchema = z.strictObject({
   platform: PlatformTargetSchema,
   accountId: z.uuid(),

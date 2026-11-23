@@ -41,9 +41,12 @@ const popup = byId("menu");
 const waveDialog = byId("wave-dialog");
 const waveReady = byId("wave-ready");
 const waveAttempts = new Map();
+const menuAttempts = new Map();
 let activeSong, voice = "随机", timbre = "";
 if (scenario === "wav-label-variant") byId("wave-request").textContent = "下载 WAV 音频";
-if (scenario === "wav-menu-missing") byId("wave-request").textContent = "下载原始音频";
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape") popup.hidden = byId("rename-menu").hidden = byId("wave-menu").hidden = true;
+});
 if (scenario === "signed-out" || scenario === "login-hydration") {
   const login = document.createElement("button");
   login.textContent = "登录";
@@ -107,6 +110,15 @@ byId("choose").onclick = () => { byId("personas").hidden = false; };
 byId("voice-option").onclick = () => { timbre = "小川"; byId("personas").hidden = true; };
 
 byId("create").onclick = () => {
+  if (scenario === "vocal-conflict" || scenario === "insufficient-credits") {
+    const warning = document.createElement("div");
+    warning.className = "el-message-box";
+    warning.innerHTML = '<p class="el-message-box__title"></p>';
+    warning.firstChild.textContent = scenario === "vocal-conflict" ? "人声设定冲突" : "积分不足";
+    document.body.append(warning);
+    log("preflight");
+    return;
+  }
   const title = byId("title").value;
   log({ title, lyrics: byId("lyrics").value, style: byId("style").value, voice, timbre,
     instrumental: byId("pure").getAttribute("aria-checked") === "true",
@@ -125,7 +137,22 @@ byId("create").onclick = () => {
   }, 120);
 };
 byId("edit").onmouseenter = () => { byId("rename-menu").hidden = false; };
-byId("export").onmouseenter = () => { byId("wave-menu").hidden = false; };
+byId("export").onmouseenter = () => {
+  if (popup.hidden || !byId("wave-menu").hidden) return;
+  const id = activeSong.dataset.id, attempt = (menuAttempts.get(id) ?? 0) + 1;
+  menuAttempts.set(id, attempt);
+  if (scenario.startsWith("wav-menu-")) log(`menu:${id}:${attempt}`);
+  const missing = scenario === "wav-menu-missing" ||
+    scenario === "wav-menu-retry-b" && id === "B" && attempt <= 3 ||
+    ["wav-menu-replaced-b", "wav-menu-stop-b"].includes(scenario) && id === "B" ||
+    scenario === "wav-menu-shared-budget" && id === "A" && [1, 4].includes(attempt);
+  if (scenario.startsWith("wav-menu-")) byId("wave-request").textContent = missing ? "下载原始音频" : "下载wav音频";
+  if (scenario === "wav-menu-replaced-b" && id === "B" && attempt === 1) {
+    const previous = activeSong, title = previous.querySelector(".song-title").textContent;
+    setTimeout(() => previous.replaceWith(song("unverified-B", title)), 100);
+  }
+  byId("wave-menu").hidden = false;
+};
 byId("rename").onclick = () => {
   popup.hidden = byId("rename-menu").hidden = true;
   byId("new-title").value = activeSong.querySelector(".song-title").textContent;
@@ -143,14 +170,14 @@ byId("wave-request").onclick = () => {
   const songId = activeSong.dataset.id;
   const attempt = (waveAttempts.get(songId) ?? 0) + 1;
   waveAttempts.set(songId, attempt);
-  if (scenario === "wav-prepare-timeout" || scenario === "wav-prepare-rejected") {
+  if (scenario === "wav-prepare-timeout" || scenario === "wav-prepare-rejected" || scenario === "wav-menu-shared-budget") {
     log(`prepare:${songId}:${attempt}`);
     if (songId === "A" && attempt === 1) {
       setTimeout(() => {
         waveDialog.hidden = true;
         const notification = document.createElement("p");
         notification.setAttribute("role", "alert");
-        notification.textContent = scenario === "wav-prepare-timeout" ? "获取wav文件超时，请稍后重试" : "创建wav转换任务失败";
+        notification.textContent = scenario === "wav-prepare-rejected" ? "创建wav转换任务失败" : "获取wav文件超时，请稍后重试";
         document.body.append(notification);
       }, 150);
       return;
@@ -164,7 +191,7 @@ byId("wave").onclick = () => {
   const songId = activeSong.dataset.id;
   const clicks = (downloadClicks.get(songId) ?? 0) + 1;
   downloadClicks.set(songId, clicks);
-  if (scenario === "wav-download-not-started" && songId === "A" && clicks === 1) {
+  if (["wav-download-not-started", "wav-menu-shared-budget"].includes(scenario) && songId === "A" && clicks === 1) {
     waveDialog.hidden = true;
     return;
   }

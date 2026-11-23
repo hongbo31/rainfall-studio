@@ -19,6 +19,33 @@ export const planPuleReceipt=z.strictObject({
 ));
 export type PlanPuleTask=z.infer<typeof planPuleScope>;
 export type PlanPuleReceipt=z.infer<typeof planPuleReceipt>;
+export const planPuleAssetProgress=z.enum([
+  'MUSIC_ASSETS_CHECKING','MUSIC_ASSETS_PREPARING_A','MUSIC_ASSETS_PREPARING_B',
+  'MUSIC_ASSETS_DOWNLOADING_A','MUSIC_ASSETS_DOWNLOADING_B','MUSIC_ASSETS_ARCHIVING',
+]);
+export type PlanPuleAssetProgress=z.infer<typeof planPuleAssetProgress>;
+export function readSunoBrowserReceipt(raw: unknown) {
+  const result=planPuleReceipt.safeParse(raw);
+  if(!result.success)return;
+  const {trackingId,songIds}=result.data;
+  if(!trackingId?.startsWith('suno-cn:'))return;
+  const requestId=trackingId.slice('suno-cn:'.length);
+  if(z.uuid().safeParse(requestId).success&&songIds[0]===requestId+':A'&&songIds[1]===requestId+':B')
+    return {...result.data,trackingId};
+}
+
+export function sunoBrowserWavsComplete(receipt:PlanPuleReceipt|undefined, requirePair:boolean) {
+  const hashes=receipt?.sunoWavs?.sha256;
+  return !!hashes&&(requirePair?hashes.every(Boolean):hashes.some(Boolean));
+}
+
+const puleBrowserSongId=z.string().regex(/^[a-z0-9_-]{1,150}$/iu);
+export const puleBrowserBeforeSongIds=z.array(puleBrowserSongId).max(250)
+  .refine(ids=>new Set(ids).size===ids.length);
+export const puleBrowserSongPair=z.tuple([puleBrowserSongId,puleBrowserSongId]).refine(([a,b])=>a!==b);
+export const puleBrowserLookupStates=['not_found','ambiguous','unavailable','login_required'] as const;
+export type PuleBrowserReceiptMatch={title:string;beforeSongIds:readonly string[]};
+export type PuleBrowserReceiptLookup={state:'found';songIds:[string,string]}|{state:typeof puleBrowserLookupStates[number]};
 export type PlanPuleCustomDraft={title:string;alternateTitle?:string;lyrics:string;style:string;instrumental:boolean;duration:number;vocalGender?:'male'|'female'};
 export type PlanPuleRetention = { kind: 'single'; preferredIndex: 0 | 1 } | { kind: 'pair' };
 export const puleCustomLyricsLimit = 5_000;

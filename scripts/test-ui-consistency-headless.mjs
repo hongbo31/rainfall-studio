@@ -334,12 +334,12 @@ try {
   });
   await expect(page.getByRole("button", { name: "手动模板", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "作品库", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("navigation").getByRole("button", { name: "封面工作室", exact: true })).toHaveCount(0);
   await workDetails.getByRole("button", { name: "关闭详情", exact: true }).click();
   await expect(page.locator(".page-head h1")).toHaveText("创作中心");
   for (const [nav, title] of [
     ["总览", "总览"],
     ["创作中心", "创作中心"],
-    ["封面工作室", "封面工作室"],
     ["任务中心", "任务中心"],
     ["数据看板", "数据看板"],
     ["配置中心", "配置中心"],

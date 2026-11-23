@@ -37,7 +37,9 @@ const origin = 'https://www.novelfm.com';
 const catalogPath = '/creator/music/finished/ugc';
 const listPath = '/api/author/book/music/ugc_product_list/v0/';
 const cover = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aivsAAAAASUVORK5CYII=', 'base64');
-const artist = '目录歌手';
+const artist = '锤七叶';
+const singerArtistId = '9876543210123456781';
+const rosterListPath = '/api/author/home/get_owned_artist_list/v0/';
 const newTitle = '本批首次上传';
 const oldTitle = '已经提交的歌曲';
 const newId = '9876543210987654321';
@@ -64,15 +66,46 @@ test('a paused directory run uploads once and verifies its new ID without openin
   let submitted = false;
   const openedPages = [];
   context.on('page', page => openedPages.push(page));
+  const order = [];
+  context.on('request', request => {
+    if (new URL(request.url()).pathname === '/creator/music/finished/ugc/uploadProduct') order.push('open-form');
+  });
   const site = await installFanqieDirectorySite(context, {
     cover, account: () => '12345678', nestedCover: true,
     artistNames: [{lyricist_id_list: artist, composer_id_list: artist, singer_id_list: artist}],
+    singerOptions: {[artist]: [{id: '9876543210123456782'}, {id: singerArtistId}]},
     beforeEvent: event => { if (event.kind === 'confirm') submitted = true; },
   });
-  await context.route(origin + '/creator/music/account/artist', route => route.fulfill({
-    contentType: 'text/html; charset=utf-8',
-    body: `<input aria-label="请输入艺人名"><div class="artist-item"><div class="artist-name">${artist}</div><div>艺人ID：123456789</div></div>`,
-  }));
+  let rosterVisits = 0;
+  await context.route(origin + '/creator/music/account/artist', route => {
+    rosterVisits++;
+    return route.fulfill({contentType: 'text/html; charset=utf-8',
+      body: `<input placeholder="请输入艺人名">
+      <div class="pagination-container"><button class="arco-pagination-item-next">下一页</button></div><script>
+        const field = document.querySelector('input');
+        const search = page => {
+          const query = new URLSearchParams({
+            author_id: '12345678', page_no: page, page_size: '1', name_like: field.value, bind_types: '1,5,8',
+          });
+          void fetch('${rosterListPath}?' + query);
+        };
+        field.addEventListener('input', () => search('0'));
+        document.querySelector('button').addEventListener('click', () => search('1'));
+      </script>`});
+  });
+  const rosterRequests = [];
+  await context.route(url => url.origin === origin && url.pathname === rosterListPath, route => {
+    const params = new URL(route.request().url()).searchParams;
+    const request = {author: params.get('author_id'), page: params.get('page_no'), name: params.get('name_like')};
+    rosterRequests.push(request);
+    if (request.name === artist) order.push('roster-page-' + request.page);
+    const artists = request.name === artist ? [
+      request.page === '0' ? {author_id: '9876543210123456782', name: artist + '合作'} : {author_id: singerArtistId, name: artist},
+    ] : [];
+    const body = JSON.stringify({code: 0, data: {artist_list: artists, total_count: artists.length ? '2' : '0'}})
+      .replace(/("author_id":)"(\d+)"/gu, '$1$2');
+    return route.fulfill({contentType: 'application/json', body});
+  });
   let ignoringFilter = true, postReads = 0, released = false, catalogVisits = 0;
   const requests = [];
   const fuzz = Array.from({length: 10}, (_, index) => ({
@@ -131,6 +164,11 @@ test('a paused directory run uploads once and verifies its new ID without openin
   assert.equal(batch.state, 'awaiting_signature', batch.issue);
   assert.equal(batch.items.find(item => item.title === oldTitle).state, 'skipped');
   assert.equal(batch.items.find(item => item.title === newTitle).workId, newId);
+  assert.deepEqual(site.events.filter(event => event.kind === 'credit').map(({role, name}) => [role, name]), [
+    ['lyricist_id_list', '锤七叶'], ['composer_id_list', '锤七叶'], ['singer_id_list', '锤七叶'],
+  ]);
+  assert.deepEqual(site.events.filter(event => event.kind === 'credit' && event.role === 'singer_id_list')
+    .map(event => event.artistId), [singerArtistId]);
   assert.equal(site.events.filter(event => event.kind === 'confirm').length, 1);
   assert.equal(openedPages[0].isClosed(), false, 'pending authorization keeps the working tab open');
   assert(requests.some(request => request.title === oldTitle && request.index === 1), 'a filtered second result page still guards against duplicates');
@@ -142,8 +180,14 @@ test('a paused directory run uploads once and verifies its new ID without openin
   assert.equal(review.items.find(item => item.title === newTitle).officialStatus, '已上架');
   assert.deepEqual(requests.at(-1), {title: newTitle, id: newId, index: 0, submitted: true});
   assert.equal(catalogVisits, 0);
+  assert(rosterVisits > 0);
+  assert.deepEqual(rosterRequests.filter(request => request.name), [
+    {author: '12345678', page: '0', name: artist}, {author: '12345678', page: '1', name: artist},
+  ]);
+  assert(order.indexOf('open-form') > order.indexOf('roster-page-1'), 'both roster pages precede navigation to the upload form');
   assert.equal(fs.existsSync(path.join(root, 'production/fanqie/catalog.json')), false);
-  assert.equal(openedPages.length, 1, 'preflight, uploads and reconciliation share one browser tab');
+  assert.equal(openedPages.length, 2, 'the roster lookup uses a separate tab from the upload and reconciliation');
+  assert.equal(openedPages[1].isClosed(), true, 'the roster tab is closed after lookup');
   assert.equal(openedPages[0].isClosed(), true, 'verified completion closes the working tab');
   assert.equal(session.status().connected, false, 'an otherwise empty account window closes with it');
   assert.equal(site.events.some(event => event.kind === 'sign'), false);

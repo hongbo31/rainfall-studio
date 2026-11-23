@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import sharp from 'sharp';
+import {openCreationWork} from './lib/open-creation-work.mjs';
 const executablePath=path.resolve(process.argv[2]);
 const root=fs.mkdtempSync(path.join(os.tmpdir(),'rainfall-new-device-'));
 const out=path.resolve(import.meta.dirname,'../output/automation-desktop');fs.mkdirSync(out,{recursive:true});
@@ -15,13 +16,13 @@ const call=async(method,input={})=>{const r=await page.evaluate(({method,input})
 try{
  await launch();const snapshot=await call('snapshot');assert.equal(snapshot.works.length,0);
  const work=await call('work.save',{title:'独立设备收图验收',artistId:snapshot.artists[0].id,story:'雨后回家',lyrics:'[Verse]\n灯光照着回家的路\n[Chorus]\n为你留一盏灯',prompt:'温暖窗边，方形构图',parameters:{},rights:'Isolated fixture only',ai:'generated'});
- await page.reload();await page.getByRole('button',{name:/封面工作室/}).click();
- await page.getByRole('button',{name:'自动收图',exact:true}).click();
- const directory=await page.getByRole('textbox',{name:'图片保存目录'}).inputValue();
+ const request=await call('cover.request',{workId:work.id,requestId:crypto.randomUUID(),brief:''});
+ const {directory}=await call('cover.watch',{requestId:request.id});
  assert(directory.startsWith(root+path.sep));
  await sharp({create:{width:1440,height:1440,channels:3,background:'#7888ac'}}).png().toFile(path.join(directory,'cover.png'));
- await page.getByText('封面已匹配',{exact:true}).waitFor({timeout:20000});
- await page.waitForFunction(()=>[...document.images].some(i=>i.alt==='独立设备收图验收 封面'&&i.naturalWidth===1440));
+ await page.reload();
+ await openCreationWork(page,work.id);
+ await page.waitForFunction(()=>[...document.images].some(i=>i.alt==='独立设备收图验收 封面'&&i.naturalWidth===1440),null,{timeout:20000});
  await page.screenshot({path:path.join(out,'cover.png')});
  await call('runtime.configure',{backgroundEnabled:true,loginAtStartup:false});
  assert.deepEqual(await call('runtime.settings'),{backgroundEnabled:true,loginAtStartup:false});

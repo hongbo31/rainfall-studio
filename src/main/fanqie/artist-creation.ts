@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import type { Locator, Page, Response } from "playwright-core";
+import type { Locator, Page, Request, Response } from "playwright-core";
 import sharp from "sharp";
 import { z } from "zod";
 import { COVER_IMAGE_POLICY } from "../../shared/cover-handoff";
@@ -27,11 +27,17 @@ const roles = [
 ] as const;
 const serviceCode = z.union([z.number().int(), z.string().regex(/^[0-9]+$/).transform(Number)]);
 const artistReply = z.object({ code: serviceCode, data: z.object({
-  artist_list: z.array(z.object({ name: z.string().trim().min(1) })).optional(),
+  artist_list: z.array(z.object({ name: z.string().trim().min(1), author_id: z.unknown().optional() })).nullish(),
   total_count: serviceCode,
 }) });
-const nameKey = (name: string) => name.trim().normalize("NFC");
+export const fanqieRosterNameKey = (name: string) => name.trim().normalize("NFC");
+const nameKey = fanqieRosterNameKey;
+const rosterId = z.string().regex(/^[1-9]\d{4,24}$/u);
+const searchUnverified = "FANQIE_ARTIST_SEARCH_UNVERIFIED";
 const atArtistRoster = (url: URL) => url.origin + url.pathname === fanqieArtistUrl;
+export type FanqieDirectorySinger = { artistId: string } | {
+  issue: "FANQIE_ARTIST_NAME_NOT_FOUND" | "FANQIE_ARTIST_NAME_AMBIGUOUS" | typeof searchUnverified;
+};
 
 export type FanqieArtistPage = {
   page: Page;
@@ -104,40 +110,97 @@ function responseOnPage(response: Response, page: Page, method: string, pathname
   try { return request.frame() === page.mainFrame(); } catch { return false; }
 }
 
-async function findArtist(page: Page, name: string, guard: () => void) {
+async function scanArtistRoster(page: Page, name: string, guard: () => void, cooperative: boolean,
+  accept: (artists: NonNullable<z.infer<typeof artistReply>["data"]["artist_list"]>) => boolean) {
+  const assertRoster = () => {
+    if (!atArtistRoster(creatorPage(page, guard))) throw Error("FANQIE_PAGE_SCOPE_CHANGED");
+  };
+  assertRoster();
   const search = page.getByPlaceholder(searchPlaceholder, { exact: true });
-  await search.waitFor({ state: "visible", timeout: stageTimeout });
+  await search.waitFor({ state: "visible", timeout: stageTimeout }).catch(error => {
+    assertRoster();
+    throw Error(searchUnverified, { cause: error });
+  });
   // React may cache a previous name. Reload before requesting another read for the same filter.
   if (await search.inputValue() === name) {
     await page.reload({ waitUntil: "domcontentloaded", timeout: stageTimeout });
-    guard();
+    assertRoster();
   }
   let totalSeen = 0;
   let expectedTotal: number | undefined;
+  let bindTypes: string | undefined;
+  let pageSize: number | undefined;
   for (let pageNumber = 0; pageNumber < 100; pageNumber++) {
-    guard();
-    const [response] = await Promise.all([
+    assertRoster();
+    const requested = new WeakSet<Request>();
+    const rememberRequest = (request: Request) => { requested.add(request); };
+    page.on("request", rememberRequest);
+    const response = await Promise.all([
       page.waitForResponse(reply => {
-        if (!responseOnPage(reply, page, "GET", listPath)) return false;
+        if (!requested.has(reply.request()) || !responseOnPage(reply, page, "GET", listPath)) return false;
         const query = new URL(reply.url()).searchParams;
-        return query.get("name_like") === name && (query.get("page_no") ?? "0") === String(pageNumber);
+        if (query.get("name_like") !== name || (query.get("page_no") ?? "0") !== String(pageNumber)) return false;
+        // The fresh roster page starts on 合作艺人, whose three bind types differ from the single AI type.
+        const binding = query.get("bind_types")?.split(",");
+        return !cooperative || !!binding && binding.length === 3 && new Set(binding).size === 3 && binding.every(type => /^\d+$/u.test(type));
       }, { timeout: stageTimeout }),
       pageNumber === 0 ? search.fill(name, { timeout: stageTimeout }) :
         page.locator(".pagination-container .arco-pagination-item-next").click({ timeout: stageTimeout }),
-    ]).catch(() => { throw Error("FANQIE_ARTIST_SEARCH_UNVERIFIED"); });
-    guard();
-    const parsed = artistReply.safeParse(await response.json().catch(() => null));
-    if (!response.ok() || !parsed.success || parsed.data.code !== 0) throw Error("FANQIE_ARTIST_SEARCH_UNVERIFIED");
-    const { total_count: total, artist_list: names = [] } = parsed.data.data;
+    ]).then(([reply]) => reply).catch(error => {
+      assertRoster();
+      throw Error(searchUnverified, { cause: error });
+    }).finally(() => page.off("request", rememberRequest));
+    assertRoster();
+    const raw = await response.text().then(text => JSON.parse(text, (key, value: unknown, context?: { source: string }) =>
+      key === "author_id" && typeof value === "number" ? context?.source ?? "" : value)).catch(() => null);
+    assertRoster();
+    const parsed = artistReply.safeParse(raw);
+    if (!response.ok() || !parsed.success || parsed.data.code !== 0) throw Error(searchUnverified);
+    const { total_count: total, artist_list: artists } = parsed.data.data;
+    const names = artists ?? [];
     if (!Number.isSafeInteger(total) || total < totalSeen + names.length ||
       (expectedTotal !== undefined && total !== expectedTotal) || (!names.length && totalSeen < total))
-      throw Error("FANQIE_ARTIST_SEARCH_UNVERIFIED");
-    if (names.some(artist => nameKey(artist.name) === nameKey(name))) return true;
+      throw Error(searchUnverified);
+    if (cooperative) {
+      const query = new URL(response.url()).searchParams;
+      const size = Number(query.get("page_size"));
+      const binding = query.get("bind_types")!;
+      bindTypes ??= binding;
+      pageSize ??= size;
+      if (binding !== bindTypes || !Number.isSafeInteger(size) || size < 1 || size !== pageSize ||
+          names.length !== Math.min(size, total - totalSeen)) throw Error(searchUnverified);
+    }
+    if (accept(names)) return true;
     expectedTotal = total;
     totalSeen += names.length;
     if (totalSeen === total) return false;
   }
-  throw Error("FANQIE_ARTIST_SEARCH_UNVERIFIED");
+  throw Error(searchUnverified);
+}
+
+function findArtist(page: Page, name: string, guard: () => void) {
+  return scanArtistRoster(page, name, guard, false, names => names.some(artist => nameKey(artist.name) === nameKey(name)));
+}
+
+export async function searchFanqieDirectorySinger(page: Page, name: string, guard: () => void): Promise<FanqieDirectorySinger> {
+  const ids = new Set<string>();
+  try {
+    await scanArtistRoster(page, name, guard, true, artists => {
+      for (const artist of artists) {
+        if (nameKey(artist.name) !== name) continue;
+        const id = rosterId.safeParse(artist.author_id);
+        if (!id.success) throw Error(searchUnverified);
+        ids.add(id.data);
+      }
+      return false;
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === searchUnverified) return { issue: searchUnverified };
+    throw error;
+  }
+  if (!ids.size) return { issue: "FANQIE_ARTIST_NAME_NOT_FOUND" };
+  if (ids.size !== 1) return { issue: "FANQIE_ARTIST_NAME_AMBIGUOUS" };
+  return { artistId: [...ids][0] };
 }
 
 function pendingFile(directory: string, accountKey: string, name: string) {

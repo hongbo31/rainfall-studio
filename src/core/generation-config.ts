@@ -1,4 +1,4 @@
-import type { Repository } from "./database";
+import type { Repository, Row } from "./database";
 import {
   GenerationConfigSaveSchema,
   frozenRouteModelMatches,
@@ -223,14 +223,18 @@ export function freezeArtist(
   }
   const a = repo.maybe("artists", plan.artistId);
   if (!a) throw Error("ARTIST_REQUIRED");
-  const singers = artistRecordingSingers(a);
+  return withArtistSnapshot(plan, a);
+}
+
+export function withArtistSnapshot(plan: PlanCenterPlan, artist: Row): PlanCenterPlan {
+  const singers = artistRecordingSingers(artist);
   return {
     ...plan,
     artistSnapshot: {
-      id: a.id,
-      revision: a.revision,
-      name: a.name,
-      defaults: { ...JSON.parse(JSON.stringify(a.defaults)), ...(singers ? { recordingSingers: singers } : {}) },
+      id: artist.id,
+      revision: artist.revision,
+      name: artist.name,
+      defaults: { ...structuredClone(artist.defaults), ...(singers ? { recordingSingers: singers } : {}) },
     },
   };
 }

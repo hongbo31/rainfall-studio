@@ -60,8 +60,8 @@ export function launchAccountBrowser(profile: string, provider?: PlatformAccount
   });
 }
 
-const launchTaskMusicWindow: LaunchTaskMusicWindow = async (provider, storageState) => {
-  const browser = await chromium.launch({ ...installedBrowser(), headless: false, chromiumSandbox: true, timeout: 30_000 });
+const launchTaskMusicWindow: LaunchTaskMusicWindow = async (provider, storageState, headless = false) => {
+  const browser = await chromium.launch({ ...installedBrowser(), headless, chromiumSandbox: true, timeout: 30_000 });
   try {
     const context = await browser.newContext({ storageState, acceptDownloads: true, viewport: null,
       ...(provider === "yourmusic" ? { locale: "zh-CN" } : {}) });
@@ -103,10 +103,10 @@ export class PlatformBrowserSessions {
   private readonly loginReads = new Map<string, ReturnType<typeof capturePuleTaskLogin>>();
 
   constructor(private readonly root: string, private readonly launch = launchAccountBrowser,
-    launchTask: LaunchTaskMusicWindow = launchTaskMusicWindow) {
+    private readonly launchTask: LaunchTaskMusicWindow = launchTaskMusicWindow) {
     this.taskWindows = new TaskMusicWindows(async (scope, signal) => scope.provider === "suno_cn"
       ? this.openSunoTaskWindow(scope.accountId, signal)
-      : openIsolatedPuleTaskWindow(launchTask, signal, await this.puleTaskLogin(scope.accountId)));
+      : openIsolatedPuleTaskWindow(this.launchTask, signal, await this.puleTaskLogin(scope.accountId)));
   }
 
   private async openSunoTaskWindow(accountId: string, signal: AbortSignal) {
@@ -146,6 +146,23 @@ export class PlatformBrowserSessions {
   async withTaskMusicPage<T>(scope: TaskMusicWindowScope, signal: AbortSignal, run: (page: Page) => Promise<T>) {
     if (this.regularMusicTasks.has(scope.accountId)) throw Error("PULE_ACCOUNT_BUSY");
     return this.taskWindows.withPage(scope, signal, run);
+  }
+
+  async withPuleHistoryPage<T>(accountId: string, signal: AbortSignal, read: (page: Page) => Promise<T>) {
+    signal.throwIfAborted();
+    const login = await this.puleTaskLogin(accountId);
+    if (!login) throw Error("PULE_LOGIN_REQUIRED");
+    const history = await openIsolatedPuleTaskWindow((provider, state) => this.launchTask(provider, state, true), signal, login);
+    const close = () => history.close().catch(() => undefined);
+    const abort = () => { void close(); };
+    signal.addEventListener("abort", abort, { once: true });
+    try {
+      signal.throwIfAborted();
+      return await read(history.page);
+    } finally {
+      signal.removeEventListener("abort", abort);
+      await close();
+    }
   }
 
   closeTaskWindow(runId: string) { return this.taskWindows.closeWindow(runId); }

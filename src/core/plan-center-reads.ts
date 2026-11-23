@@ -10,6 +10,7 @@ import { planPublicationStatus } from './plan-center-publication';
 import { CenterStore } from './plan-center/storage';
 import { planFanqieJobsForRun } from './plan-fanqie';
 import { fanqieDirectoryCleanupStatus, fanqieDirectoryDiagnostics } from './plan-fanqie-directory';
+import { refreshPlanArtist } from './plan-workflow';
 import { listWorkflowPublications, readWorkflowPublication } from './plan-workflow-publication';
 import { providerTextService } from './provider-plan-text';
 import type { Studio } from './studio';
@@ -32,7 +33,9 @@ export function readPlanDashboard(store: CenterStore): PlanDashboardRow[] {
     publishAttempts: store.all('publish', scope),
     albumBindings: store.all('album', { field: 'createdByRunId', values: blocked }),
   };
-  const rows = new Map(plans.map(plan => [plan.id, { plan, deleteBlocked: false, stopsOnDelete: false } as PlanDashboardRow]));
+  const rows = new Map(plans.map(plan => [plan.id, {
+    plan: refreshPlanArtist(store.repo, plan), deleteBlocked: false, stopsOnDelete: false,
+  } as PlanDashboardRow]));
   for (const run of runs) {
     const row = rows.get(run.planId);
     if (!row) continue;

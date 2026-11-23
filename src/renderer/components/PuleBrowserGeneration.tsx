@@ -30,6 +30,8 @@ const errors: Record<string, string> = {
   SUNO_CN_FIRST_TITLE_UNCHANGED: "第一首歌名与创作前相同，请核对本次生成的歌曲。",
   SUNO_CN_RESULT_UNCLEAR: "未能确认本次创作的两首歌曲，请到官网核对。",
   SUNO_CN_PROVIDER_REVIEW_REQUIRED: "官网提示积分不足或人声与风格冲突，请到专属窗口核对。",
+  SUNO_CN_VOCAL_STYLE_CONFLICT: "官网在提交前拦截，请统一歌手性别和音乐风格中的主唱描述。",
+  SUNO_CN_INSUFFICIENT_CREDITS: "官网在提交前拦截，请核对苏诺之音账号积分。",
   SUNO_CN_RENAME_MENU_UNAVAILABLE: "官网未出现「修改歌曲名称」菜单，请核对第二首。",
   SUNO_CN_RENAME_UNCONFIRMED: "未能确认第二首歌名已保存，请到官网核对。",
   SUNO_CN_WAV_MENU_UNAVAILABLE: "官网未出现 WAV 下载菜单，请在专属窗口核对已生成歌曲。",

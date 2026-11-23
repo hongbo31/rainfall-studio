@@ -38,7 +38,8 @@ function songCard(index, nestedCover, showAttributes) {
 function renderEditor({artistNames, changeTitle, extraCard, mismatchedAudio, splitForms, nestedCover, wrongChooser, staleChooser,
   coverFailure, virtualized = false, extraVirtualCards = 0, tamperAfterNext = false, duplicateForm = false,
   noSongAttributes = false, duplicateOriginalWork = false, wrongResolvedWork = false, lazyRevisitedCovers = false,
-  validationFailures = [], repeatValidation = false, confirmError = false, earlyAudioFailure = false}) {
+  validationFailures = [], repeatValidation = false, confirmError = false, earlyAudioFailure = false,
+  singerOptions = {}, tamperSingerAfterNext, audioReceiptDelay = 100}) {
   const add = '<button type="button" id="add" class="add-song-section"><span>点击添加歌曲</span></button>';
   const list = virtualized ? `<div id="viewport" style="height:420px;overflow:auto;contain:strict;overflow-anchor:none">
     <div id="songs" style="height:0px;width:100%;position:relative"></div><div>${add}</div></div>` : `<div id="songs"></div>${add}`;
@@ -52,6 +53,7 @@ function renderEditor({artistNames, changeTitle, extraCard, mismatchedAudio, spl
   <template id="templates">${templates}</template>
   <script>
     const artistNames = ${JSON.stringify(artistNames)};
+    const singerOptions = ${JSON.stringify(singerOptions)};
     const events = event => window.fixtureDirectoryEvent(event);
     const editor = document.querySelector('#songs');
     const viewport = document.querySelector('#viewport');
@@ -260,6 +262,48 @@ function renderEditor({artistNames, changeTitle, extraCard, mismatchedAudio, spl
           const menu = document.createElement('div');
           menu.className = 'arco-select-popup-inner';
           const artist = artistNames.find(credits => credits[role] === field.value)?.[role] ?? artistNames[index]?.[role];
+          const candidates = role === 'singer_id_list' && singerOptions[field.value];
+          if (candidates) {
+            credit.append(menu);
+            for (const candidate of candidates) {
+              const addCandidate = () => {
+                const item = document.createElement('div');
+                item.setAttribute('role', 'option');
+                const label = document.createElement('div');
+                label.className = 'artist-autocomplete-item-left';
+                const artistName = document.createElement('span');
+                artistName.className = 'name';
+                artistName.textContent = artist;
+                label.append(artistName);
+                label.__reactFiber$fixture = {return: {memoizedProps: {artist: {id: candidate.id, name: artist}}}};
+                item.append(label);
+                label.onclick = () => {
+                  menu.remove();
+                  const details = dialog('艺人详情', '<p></p><button type="button">确认选择</button>');
+                  details.querySelector('p').textContent = artist;
+                  const detailId = candidate.detailId ?? candidate.id;
+                  if (detailId) void fetch('/api/author/home/get_song_list/v0/?page_no=0&artist_id=' + encodeURIComponent(detailId));
+                  details.querySelector('button').onclick = async () => {
+                    const artistId = candidate.selectedId ?? candidate.id;
+                    await events({kind: 'credit', index: Number(card.dataset.index), role, name: artist, artistId});
+                    const tag = document.createElement('span');
+                    tag.className = 'arco-tag';
+                    tag.__reactFiber$fixture = {return: {key: artistId + '-tag'}};
+                    tag.innerHTML = '<span class="arco-tag-content"><span class="name"></span></span>';
+                    tag.querySelector('.name').textContent = artist;
+                    credit.replaceChildren(tag);
+                    clearError(credit.closest('.arco-form-item'));
+                    details.remove();
+                  };
+                };
+                item.onclick = event => { if (event.target === item) label.click(); };
+                menu.append(item);
+              };
+              if (candidate.delayMs) setTimeout(addCandidate, candidate.delayMs);
+              else addCandidate();
+            }
+            return;
+          }
           for (const [name, exact, visible] of [[artist + '合作', false, true], [artist, false, false], [artist, true, true]]) {
             const item = document.createElement(index === 0 ? 'div' : 'label');
             if (index === 0) item.setAttribute('role', 'option');
@@ -346,7 +390,7 @@ function renderEditor({artistNames, changeTitle, extraCard, mismatchedAudio, spl
             }
             status.innerHTML = format + '<span class="success-message-LvAGEz">上传完成</span>｜' + file.size.toFixed(1) + 'B';
             clearError(region.closest('.arco-form-item'));
-          }, 100);
+          }, role === 'audio' ? ${JSON.stringify(audioReceiptDelay)} : 100);
         };
         region.firstElementChild.onclick = () => {
           if (${JSON.stringify(staleChooser)} && role === 'audio') return staleInput.click();
@@ -379,6 +423,14 @@ function renderEditor({artistNames, changeTitle, extraCard, mismatchedAudio, spl
         return;
       }
       if (${tamperAfterNext}) cards[0].querySelector('[data-title]').value = '被修改的第一首歌曲';
+      if (${JSON.stringify(tamperSingerAfterNext ?? null)}) {
+        const original = cards[0].querySelector('[data-credit="singer_id_list"] .arco-tag');
+        if (original) {
+          const another = original.cloneNode(true);
+          another.__reactFiber$fixture = {return: {key: ${JSON.stringify(tamperSingerAfterNext ?? null)} + '-tag'}};
+          original.replaceWith(another);
+        }
+      }
       const confirmation = dialog('是否确认上传成品', '<button type="button">确认上传</button>');
       confirmation.querySelector('button').onclick = async () => {
         await events({kind: 'confirm'});
@@ -423,6 +475,7 @@ export async function installFanqieDirectorySite(context, options) {
     }
     requests.push(url.pathname);
     if (url.pathname === '/fixture-cover.png') return route.fulfill({contentType: 'image/png', body: options.cover});
+    if (url.pathname === '/api/author/home/get_song_list/v0/') return route.fulfill({json: {code: 0, data: {song_list: []}}});
     let body;
     if (url.pathname === homePath) {
       body = `<div>发布作品</div><div>成品发行</div><div class="sidebar-menu"><div class="publish-works" id="sidebar"></div></div>

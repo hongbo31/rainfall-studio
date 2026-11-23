@@ -1,7 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { ElementHandle, Locator, Page } from "playwright-core";
 import { platformPageUrls, sunoCnOrigin } from "../shared/platform-directory";
-import type { PuleVersion } from "../shared/pule-browser";
+import { puleDownloadRetryLimit, type PuleVersion } from "../shared/pule-browser";
 import type { PulePageHooks, PulePageInput } from "./pule-browser-page";
 
 const timeouts = { control: 15_000, generation: 20 * 60_000, download: 5 * 60_000, downloadStart: 30_000, poll: 750 };
@@ -12,6 +12,7 @@ const moreSelector = '.icon-more, button[aria-label="更多操作"]';
 const pendingSelector = /^\s*(?:进行中|排队中|生成中|正在生成)[.。…]*\s*$/u;
 const createSelector = /^创作(?:\s*[·｜|（(].*)?$/u;
 const wavMenuLabel = /^\s*下载\s*WAV\s*音频\s*$/iu;
+const waveMenuUnavailable = "SUNO_CN_WAV_MENU_UNAVAILABLE";
 const visible = (locator: Locator) => locator.filter({ visible: true });
 
 async function keepWorkspaceInView(model: Locator) {
@@ -199,11 +200,16 @@ export async function runSunoCnBrowser(page: Page, input: PulePageInput, hooks: 
     const lyricChecks = [".lyrics-preflight-dialog", ".pronunciation-preview-dialog"]
       .map(selector => visible(page.locator(selector)).getByRole("button", { name: "提交原歌词", exact: true }));
     const approved = new Set<Locator>();
+    const preflightWarning = (title: string) => visible(page.getByRole("dialog", { name: title, exact: true }).or(
+      page.locator(".el-message-box__title").and(page.getByText(title, { exact: true })),
+    ));
+    const vocalConflict = preflightWarning("人声设定冲突");
+    const insufficientCredits = preflightWarning("积分不足");
     let pair: ElementHandle[] | undefined;
     while (Date.now() - started < generation) {
       await guard();
-      if (await visible(page.getByRole("dialog", { name: /^(积分不足|人声设定冲突)$/u })).count())
-        throw Error("SUNO_CN_PROVIDER_REVIEW_REQUIRED");
+      if (await vocalConflict.count()) throw Error("SUNO_CN_VOCAL_STYLE_CONFLICT");
+      if (await insufficientCredits.count()) throw Error("SUNO_CN_INSUFFICIENT_CREDITS");
       for (const original of lyricChecks) {
         if (!approved.has(original) && await visible(original).count() === 1) {
           approved.add(original);
@@ -226,23 +232,33 @@ export async function runSunoCnBrowser(page: Page, input: PulePageInput, hooks: 
       const ids = [input.requestId + ":A", input.requestId + ":B"];
       await hooks.identify(ids);
 
-      const menuItem = async (row: ElementHandle, expected: string, heading: string,
-        label: string | RegExp, failure: string) => {
+      const assertSong = async (row: ElementHandle, expected: string) => {
         await guard();
-        const matches = await row.evaluate((node, title) =>
-          node instanceof Element && node.isConnected && node.querySelector(".song-title")?.textContent?.trim() === title, expected);
+        const matches = await row.evaluate((node, { title, listSelector, itemSelector, titleSelector }) =>
+          node instanceof Element && node.isConnected && node.matches(itemSelector) && !!node.closest(listSelector) &&
+          node.querySelector(titleSelector)?.textContent?.trim() === title, { title: expected, listSelector, itemSelector, titleSelector });
         if (!matches) throw Error("SUNO_CN_RESULT_UNCLEAR");
+      };
+      const menuItem = async (row: ElementHandle, expected: string, heading: string,
+        label: string | RegExp, failure: string, timeout = () => control) => {
+        await assertSong(row, expected);
         const more = await row.$(moreSelector);
         if (!more) throw Error(failure);
         try {
-          await more.click({ timeout: control });
+          await more.click({ timeout: timeout() });
           const menu = visible(page.locator(".menu_popover:not(.menu_popover_sub)")).getByText(heading, { exact: true });
-          await visible(menu).hover({ timeout: control });
-          await click(page.locator(".menu_popover_sub").getByText(label, { exact: true }));
+          await visible(menu).hover({ timeout: timeout() });
         } catch (error) {
           await guard();
           throw Error(failure, { cause: error });
         } finally { await more.dispose(); }
+        await assertSong(row, expected);
+        try {
+          await visible(page.locator(".menu_popover_sub").getByText(label, { exact: true })).click({ timeout: timeout() });
+        } catch (error) {
+          await guard();
+          throw Error(failure, { cause: error });
+        }
       };
       if (titles[1] !== input.title) {
         hooks.step("rename");
@@ -262,41 +278,71 @@ export async function runSunoCnBrowser(page: Page, input: PulePageInput, hooks: 
       }));
       const wave = visible(dialog.locator(".download-dialog-ready").getByRole("button", { name: /^下载\s*WAV$/iu }));
       const timeoutNotice = visible(page.getByText(/^\s*获取\s*WAV\s*文件超时[，,]\s*请稍后重试\s*[。！!]?\s*$/iu));
-
-      const prepareWave = async (row: ElementHandle, title: string, deadline: number) => {
-        // The site checks the existing conversion when its download menu is reopened.
-        for (let attempt = 0; attempt < 2; attempt++) {
-          await guard();
-          if (await dialog.count()) throw Error("SUNO_CN_WAV_PREPARE_FAILED");
-          const priorNotices = await timeoutNotice.elementHandles();
-          try {
-            await menuItem(row, title, "下载导出", wavMenuLabel, "SUNO_CN_WAV_MENU_UNAVAILABLE");
-            await dialog.waitFor({ state: "visible", timeout: control }).catch(async error => {
-              await guard();
-              throw Error("SUNO_CN_WAV_PREPARE_FAILED", { cause: error });
-            });
-            while (performance.now() < deadline) {
-              await guard();
-              if (await wave.count() === 1) return;
-              if (!await dialog.count()) break;
-              await delay(poll);
-            }
-            if (performance.now() >= deadline) throw Error("SUNO_CN_WAV_UNAVAILABLE");
-            const retryable = await timeoutNotice.evaluateAll((notices, prior) =>
-              notices.some(notice => !prior.includes(notice)), priorNotices);
-            if (!retryable) throw Error("SUNO_CN_WAV_PREPARE_FAILED");
-          } finally { await Promise.all(priorNotices.map(notice => notice.dispose())); }
-        }
-        throw Error("SUNO_CN_WAV_UNAVAILABLE");
-      };
+      const openMenus = visible(page.locator(".menu_popover, .menu_popover_sub"));
 
       for (const [index, version] of (["A", "B"] as const).entries()) {
         if (options.versions && !options.versions.includes(version)) continue;
         hooks.step("download");
-        await prepareWave(pair[index], titles[index], performance.now() + download);
+        const row = pair[index], title = titles[index];
+        let remainingRetries = puleDownloadRetryLimit, retriedConversion = false;
+        const useRetry = () => {
+          if (remainingRetries <= 0) return false;
+          remainingRetries--;
+          return true;
+        };
+        const prepareWave = async (deadline: number) => {
+          const controlTime = () => Math.max(1, Math.min(control, Math.ceil(deadline - performance.now())));
+          for (;;) {
+            await assertSong(row, title);
+            if (await dialog.count()) throw Error("SUNO_CN_WAV_PREPARE_FAILED");
+            const priorNotices = await timeoutNotice.elementHandles();
+            try {
+              try {
+                await menuItem(row, title, "下载导出", wavMenuLabel, waveMenuUnavailable, controlTime);
+              } catch (error) {
+                if (!(error instanceof Error) || error.message !== waveMenuUnavailable || performance.now() >= deadline ||
+                    await dialog.count() || !useRetry()) throw error;
+                await assertSong(row, title);
+                await signedIn();
+                // The receipt identifies this in-page result. Reloading would lose its identity.
+                if (await openMenus.count()) {
+                  await page.keyboard.press("Escape");
+                  await assertSong(row, title);
+                  if (await openMenus.count()) {
+                    const more = await row.$(moreSelector);
+                    if (!more) throw error;
+                    try { await more.click({ timeout: controlTime() }); }
+                    catch { await guard(); throw error; }
+                    finally { await more.dispose(); }
+                    if (await openMenus.count()) throw error;
+                  }
+                }
+                if (performance.now() >= deadline) throw error;
+                continue;
+              }
+              await dialog.waitFor({ state: "visible", timeout: controlTime() }).catch(async error => {
+                await guard();
+                throw Error("SUNO_CN_WAV_PREPARE_FAILED", { cause: error });
+              });
+              while (performance.now() < deadline) {
+                await guard();
+                if (await wave.count() === 1) return;
+                if (!await dialog.count()) break;
+                await delay(poll);
+              }
+              if (performance.now() >= deadline) throw Error("SUNO_CN_WAV_UNAVAILABLE");
+              const retryable = await timeoutNotice.evaluateAll((notices, prior) =>
+                notices.some(notice => !prior.includes(notice)), priorNotices);
+              if (!retryable) throw Error("SUNO_CN_WAV_PREPARE_FAILED");
+              if (retriedConversion || !useRetry()) throw Error("SUNO_CN_WAV_UNAVAILABLE");
+              retriedConversion = true;
+            } finally { await Promise.all(priorNotices.map(notice => notice.dispose())); }
+          }
+        };
+        await prepareWave(performance.now() + download);
         const deadline = performance.now() + download;
         const receive = async (startWait: number) => {
-          await guard();
+          await assertSong(row, title);
           const remaining = Math.ceil(deadline - performance.now());
           if (remaining <= 0) throw Error("SUNO_CN_DOWNLOAD_NOT_STARTED");
           const [file] = await Promise.all([
@@ -312,9 +358,10 @@ export async function runSunoCnBrowser(page: Page, input: PulePageInput, hooks: 
           return file;
         };
         const file = await receive(downloadStart).catch(async error => {
-          if (!(error instanceof Error) || error.message !== "SUNO_CN_DOWNLOAD_NOT_STARTED" || performance.now() >= deadline) throw error;
+          if (!(error instanceof Error) || error.message !== "SUNO_CN_DOWNLOAD_NOT_STARTED" ||
+              performance.now() >= deadline || !useRetry()) throw error;
           await guard();
-          if (!await dialog.count()) await prepareWave(pair[index], titles[index], deadline);
+          if (!await dialog.count()) await prepareWave(deadline);
           return receive(download);
         });
         hooks.step("receive");

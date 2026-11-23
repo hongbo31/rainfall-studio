@@ -16,7 +16,7 @@ import {coverInboxStatus,preparePlanCoverInbox,versionBCoverRequired} from './co
 import type {CoverVariant} from '../shared/cover-handoff';
 import {tickProviderPlanText,stopProviderPlanText,materializeProviderTextFinal} from './provider-plan-text';
 import {materializeCreationTaskWork} from './creation-tasks';
-import {tickPlanLyrics} from './plan-workflow';
+import {refreshPlanArtist,tickPlanLyrics} from './plan-workflow';
 import {syncWorkflowPublications} from './plan-workflow-publication';
 import {requestPlanPuleRecovery} from './plan-pule';
 import {archivePlanWorkDownloads,preparePlanDownloads} from './download-archive';
@@ -75,7 +75,11 @@ export function stopPlanExecution(s:Studio,runId:string){
 export function executePlanCenter(s:Studio,method:string,raw:unknown){
  const service=s.planCenterService();
  switch(method){
-  case 'planCenter.list':empty.parse(raw);return service.list();
+  case 'planCenter.list':{
+   empty.parse(raw);
+   const rows=service.list();
+   return {...rows,plans:rows.plans.map(plan=>refreshPlanArtist(s.repo,plan))};
+  }
   case 'planCenter.dashboard':empty.parse(raw);return readPlanDashboard(new CenterStore(s.repo));
   case 'planCenter.history':return readPlanHistory(new CenterStore(s.repo),PlanCenterIdSchema.parse(raw).id);
   case 'planCenter.runDetail':return readPlanRunDetail(s,new CenterStore(s.repo),PlanCenterStopSchema.parse(raw).runId);

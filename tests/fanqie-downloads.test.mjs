@@ -179,6 +179,13 @@ function uploadFixture(f) {
       ui: async action => { assert.equal(action, "open"); opens++; },
       mark: () => {},
       run: async action => action({ pages: () => pages }, () => {}),
+      resolveDirectorySingers: async (_context, guard, accountKey, names) => {
+        await guard();
+        assert.equal(accountKey, report.accountKey);
+        return new Map(names.map((name, index) => [
+          name.trim().normalize("NFC"), {artistId: artists.find(artist => artist.name === name)?.artistId ?? String(60000 + index)},
+        ]));
+      },
       inspect: async () => ({ accountId: "10000", report, artists,
         catalog: { url: catalogUrl, source: "fixture", complete: true, total: rows.length, rows: structuredClone(rows) } }),
     },
@@ -365,6 +372,88 @@ test("the task signing choice overrides the directory default and a batch uses o
   assert.equal(complete.state, "complete");
   assert.deepEqual(fixture.forms, [["歌曲1", "歌曲2", "歌曲3"]]);
   assert.equal(fixture.contracts.length, 1);
+});
+
+test("a fresh directory batch sends singers outside the first roster page to the upload form", async t => {
+  const f = archiveFixture(t), run = uploadFixture(f);
+  f.song("素素_锤宝里_测试引擎", "门前小溪");
+  f.song("素素_锤七叶_测试引擎", "灯花落一寸");
+  f.song(folderA, "已投稿作品");
+  run.addRow("已投稿作品", "reviewing", "审核中");
+  const inspect = run.options.session.inspect;
+  run.options.session.inspect = async (...args) => {
+    const result = await inspect(...args);
+    return { ...result, artists: result.artists.slice(0, 1) };
+  };
+  await run.configure();
+
+  const before = await run.preview();
+  const oldId = randomUUID();
+  const state = path.join(f.root, "production", "fanqie");
+  fs.writeFileSync(path.join(state, "download-batch.json"), JSON.stringify({ id: oldId, state: "complete",
+    items: before.items.map(item => ({ ...item, state: "failed", issue: "FANQIE_ARTIST_NAME_NOT_FOUND" })) }));
+  const preview = await run.preview();
+  assert.equal(preview.batch.id, oldId);
+  assert.ok(preview.items.every(item => !item.issue));
+
+  const batch = await run.broker.ui("publishDownloads", { fingerprint: preview.fingerprint, consent: true });
+  assert.notEqual(batch.id, oldId);
+  assert.equal(batch.state, "awaiting_signature");
+  assert.deepEqual(Object.fromEntries(run.uploads.map(song => [song.title, song.authors.singer])), {
+    门前小溪: "锤宝里", 灯花落一寸: "锤七叶",
+  });
+  assert.deepEqual(batch.items.map(({state, issue}) => [state, issue]).sort(), [
+    ["skipped", "FANQIE_OFFICIAL_RECORD_ALREADY_EXISTS"], ["uploaded", undefined], ["uploaded", undefined],
+  ]);
+});
+
+test("directory resolves all new singers once before opening a form and isolates an ambiguous singer", async t => {
+  const f = archiveFixture(t), run = uploadFixture(f);
+  f.song("素素_锤宝里_测试引擎", "清风甲");
+  f.song("素素_锤宝里_测试引擎", "清风乙");
+  f.song("素素_锤七叶_测试引擎", "歧义作品");
+  f.song(folderA, "已投稿作品");
+  run.addRow("已投稿作品", "reviewing", "审核中");
+  const requests = [];
+  const singerId = "9876543210123456781";
+  run.options.session.resolveDirectorySingers = async (context, guard, accountKey, names) => {
+    await guard();
+    assert.deepEqual(context.pages(), []);
+    assert.equal(accountKey, "a".repeat(64));
+    assert.equal(run.forms.length, 0);
+    requests.push([...names].sort());
+    return new Map([
+      ["锤宝里", {artistId: singerId}],
+      ["锤七叶", {issue: "FANQIE_ARTIST_NAME_AMBIGUOUS"}],
+    ]);
+  };
+  await run.configure({limit: 100, signContract: false});
+  const {fingerprint} = await run.preview();
+  const batch = await run.broker.ui("publishDownloads", {fingerprint, consent: true});
+  assert.deepEqual(requests, [["锤七叶", "锤宝里"]]);
+  assert.deepEqual(run.uploads.map(({title, singerArtistId}) => [title, singerArtistId]).sort(), [
+    ["清风乙", singerId], ["清风甲", singerId],
+  ]);
+  assert.equal(batch.items.find(item => item.title === "歧义作品").issue, "FANQIE_ARTIST_NAME_AMBIGUOUS");
+  assert.equal(batch.items.find(item => item.title === "已投稿作品").state, "skipped");
+});
+
+test("directory opens no upload form when the singer lookup changes accounts", async t => {
+  const f = archiveFixture(t), run = uploadFixture(f);
+  f.song(folderA, "账号切换作品");
+  let lookups = 0;
+  run.options.session.resolveDirectorySingers = async (_context, guard, accountKey) => {
+    await guard();
+    assert.equal(accountKey, "a".repeat(64));
+    lookups++;
+    throw Error("FANQIE_CATALOG_SCOPE_CHANGED");
+  };
+  await run.configure({limit: 100, signContract: false});
+  const {fingerprint} = await run.preview();
+  const batch = await run.broker.ui("publishDownloads", {fingerprint, consent: true});
+  assert.equal(lookups, 1);
+  assert.deepEqual(run.forms, []);
+  assert.equal(batch.issue, "FANQIE_CATALOG_SCOPE_CHANGED");
 });
 
 test("verifies a consented directory batch, uses exact singers and prepares one contract from fresh official IDs", async t => {
@@ -887,6 +976,77 @@ test("continues signing while a held download waits for background recycling acr
   assert.deepEqual(fs.readdirSync(folder), []);
   assert.deepEqual(run.forms, [["歌曲1", "歌曲2"]]);
   assert.equal(run.contracts.length, 1);
+});
+
+test("stopping a task during audio readback stops its directory plan before any upload confirmation", async t => {
+  const f = archiveFixture(t), fixture = uploadFixture(f);
+  const root = path.join(f.root, "application");
+  const stateDirectory = path.join(root, "production", "fanqie", "accounts", f.accountId);
+  f.song(folderA, "音频等待停止");
+  const center = new PlanCenterService(f.repo, { prepareDownloads: () => assert.fail("local publication only") });
+  const studio = { ...f.studio, root, now: () => new Date(), planCenterService: () => center };
+  const plan = center.save({ expectedRevision: null, plan: {
+    id: randomUUID(), title: "目录上传", artistId: "", schedule: { kind: "daily", localTime: "09:00" },
+    material: { source: "workflow" }, outputs: { lyrics: false, cover: false, music: false },
+    text: {}, music: { route: "manual" },
+    workflow: { accountId: f.accountId, platform: "fanqie", graph: { nodes: ["publish:fanqie"], edges: [] },
+      publications: [{ platform: "fanqie", accountId: f.accountId }],
+      mode: "musician", inspiration: "", maxRewrites: 0 },
+  } });
+  const task = callPublicationTasks(studio, "publicationTasks.save", { expectedRevision: null, task: {
+    id: randomUUID(), title: "停止目录发布", execution: { kind: "manual" }, steps: [{ kind: "plans", planIds: [plan.id] }],
+    consent: true, prepareContract: false,
+  } });
+  const parentRun = callPublicationTasks(studio, "publicationTasks.start", {
+    id: task.id, requestId: randomUUID(), expectedRevision: task.revision,
+  });
+  const executeForm = fixture.options.executeDirectoryForm;
+  let audioIntents = 0, readbackError, stopped;
+  const broker = new FanqieUploadBroker({ ...fixture.options, root, stateDirectory,
+    async executeDirectoryForm(context, songs, callbacks) {
+      await callbacks.intent("upload:audio", 0);
+      audioIntents++;
+      stopped = callPublicationTasks(studio, "publicationTasks.stop", { id: parentRun.id });
+      try { await callbacks.checkStopped(); }
+      catch (error) { readbackError = error.message; throw error; }
+      return executeForm(context, songs, callbacks);
+    },
+  });
+  await fixture.configure(undefined, broker);
+  const rpcCalls = [];
+  const publisher = createPlanFanqieDirectoryPublisher({
+    available: () => true, generation: () => 1, forAccount: async () => broker,
+    async rpc(method, input) {
+      const name = method.split(".").at(-1);
+      rpcCalls.push(name);
+      try { return { ok: true, value: planFanqieDirectoryAction(studio, name, input) }; }
+      catch (error) { return { ok: false, error: { code: error.message } }; }
+    },
+  });
+  tickPublicationTasks(studio);
+  await publisher.pump();
+  assert.equal(audioIntents, 1);
+  assert.equal(readbackError, "STOP_REQUESTED");
+  assert.equal(stopped.state, "stopped");
+  const child = center.list().runs.find(row => row.id === stopped.linked[0].id);
+  assert.equal(child.state, "stopped");
+  assert.equal(child.stopRequested, true);
+  assert.deepEqual(fixture.uploads, []);
+  assert.deepEqual(fixture.rows, []);
+  assert.deepEqual(fixture.contracts, []);
+  const uploads = path.join(stateDirectory, "uploads");
+  const [file] = fs.readdirSync(uploads);
+  const journal = JSON.parse(fs.readFileSync(path.join(uploads, file), "utf8"));
+  assert.equal(journal.pending, "upload:audio");
+  assert.equal(journal.phase, "unknown");
+  assert.equal(journal.reason, "STOP_REQUESTED");
+  rpcCalls.length = 0;
+  tickPublicationTasks(studio);
+  await publisher.pump();
+  assert.deepEqual(rpcCalls, ["list"]);
+  assert.equal(audioIntents, 1);
+  const [history] = callPublicationTasks(studio, "publicationTasks.history", { id: task.id });
+  assert.equal(history.state, "stopped");
 });
 
 test("retries historical plan cleanup locally with exactly the original saved receipts", async t => {

@@ -92,71 +92,15 @@ try {
       },
       { method, input },
     );
-  await page.getByRole("button", { name: "封面工作室", exact: true }).click();
-  await page.getByText(/图片接口未配置/).waitFor();
-  await page
-    .getByRole("button", { name: "创建封面生成请求", exact: true })
-    .click();
-  await page
-    .getByRole("button", { name: "导出 dot 请求 JSON", exact: true })
-    .waitFor();
-  const requestId = await page.getByLabel("当前封面请求").inputValue();
-  assert(requestId);
-  const destination = path.join(run, "cover-request.json");
-  await app.evaluate(({ dialog }, destination) => {
-    dialog.showSaveDialog = async () => ({
-      canceled: false,
-      filePath: destination,
-    });
-  }, destination);
-  await page
-    .getByRole("button", { name: "导出 dot 请求 JSON", exact: true })
-    .click();
-  await page.waitForTimeout(150);
-  const request = JSON.parse(fs.readFileSync(destination, "utf8"));
-  assert.equal(request.workId, work.id);
-  assert.equal(request.id, requestId);
-  checks.push(
-    "UI creates and exports a song/context-bound awaiting-result request",
-  );
+  const details = await openCreationWork(page, work.id);
   await choose(cover);
-  await page
-    .getByRole("button", { name: "接收当前请求的真实图片", exact: true })
-    .click();
-  await page
-    .getByRole("button", { name: "选为歌曲封面", exact: true })
-    .waitFor();
-  let list = await rpc("cover.list", { workId: work.id });
-  assert.equal(list.receipts.length, 1);
-  assert.equal(list.receipts[0].generationVerified, false);
-  assert.equal((await rpc("snapshot", {})).works[0].assets.cover, undefined);
-  await page.getByRole("button", { name: "选为歌曲封面", exact: true }).click();
-  await page
-    .getByRole("button", { name: "已选为歌曲封面", exact: true })
-    .waitFor();
-  const selected = (await rpc("snapshot", {})).works[0].assets.cover;
-  assert(selected);
-  checks.push(
-    "Real image file passes Main/preload/Core ingress and selection is explicit",
-  );
-  await choose(cover);
-  await page
-    .getByRole("button", { name: "接收当前请求的真实图片", exact: true })
-    .click();
-  assert.equal(
-    (await rpc("cover.list", { workId: work.id })).receipts.length,
-    1,
-  );
-  await page
-    .getByRole("button", { name: "创建封面生成请求", exact: true })
-    .click();
-  assert.equal((await rpc("snapshot", {})).works[0].assets.cover, selected);
-  checks.push(
-    "Duplicate receive is idempotent and regeneration request preserves chosen cover",
-  );
-  await page.getByTestId("cover-handoff").scrollIntoViewIfNeeded();
-  await page.screenshot({ path: path.join(run, "cover-handoff.png") });
-  await openCreationWork(page, work.id);
+  await details.getByRole("button", { name: "导入封面", exact: true }).click();
+  await details.getByRole("img", { name: work.title + " 封面", exact: true }).waitFor();
+  const imported = await rpc("snapshot", {});
+  const selected = imported.works.find(row => row.id === work.id).assets.cover;
+  assert.equal(imported.assets.find(asset => asset.id === selected).sha256, originalHashes.cover);
+  checks.push("Native file selection imports the original cover and displays it in work details");
+  await page.screenshot({ path: path.join(run, "work-cover.png") });
   await choose(audio);
   await page.getByRole("button", { name: "导入音频 A", exact: true }).click();
   await page.getByText("本地音频已受管", { exact: true }).waitFor();

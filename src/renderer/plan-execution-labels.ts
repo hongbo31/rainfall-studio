@@ -3,7 +3,21 @@ import {fanqieDownloadIssues} from '../shared/fanqie-downloads';
 const states:Record<string,string>={running:'执行中',waiting:'等待素材或外部结果',blocked:'已阻塞',stopping:'正在停止后续步骤',stopped:'已停止本次',completed:'本次已完成',failed:'失败',dispatching:'已发送请求',submitted:'已提交',reviewing:'审核中',published:'已上架',rejected:'已驳回',unknown:'结果未知，待对账',succeeded:'阶段完成',waiting_external_dot:'等待 dot 素材',model_pending:'等待模型评估',model_blocked:'评估已阻塞',model_passed:'模型评估达标',model_failed:'未达质量阈值',not_found:'未找到结果'};
 const reasons:Record<string,string>={COVER_REQUIRED:'等待专属封面',TEXT_BATCH_DUPLICATE:'本首与同批歌曲重复，改写次数已用完',INSTRUMENTAL_MUSIC_REQUIRED:'纯音乐需要开启谱乐生成',THEME_REQUIRED:'请先填写创作主题',FANQIE_UPLOAD_PENDING:'等待上传番茄',FANQIE_MATERIALS_CHANGED:'作品材料已变化，请核对',RESTART_RECONCILE_REQUIRED:'上传结果待核对',ACTIVE_RUN:'该计划已有未结束的执行',SUMMARY_CONFLICT:'确认摘要已变化，请重新确认',TEXT_GRANT_REQUIRED:'请先配置文本模型价格并授权本次额度',LEGACY_CONFIGURATION_REQUIRED:'旧计划需要在统一中心补全配置',LEGACY_CONFIGURATION_REVIEW_REQUIRED:'请核对并补全迁移计划',COVER_REFRESH_REQUIRED:'歌词已改写，等待与新版本匹配的封面',MANUAL_MUSIC_IMPORT_INTEGRATION_UNAVAILABLE:'计划中的手动音频关联待接入',DOT_EXTERNAL_TRIGGER_UNAVAILABLE:'dot 暂无客户端触发接口，等待已配置渠道交付',MODEL_EVALUATION_CONFIGURATION_REQUIRED:'请配置文本模型和授权额度',TEXT_AUTHORIZATION_REQUIRED:'文本模型额度尚未授权',ALBUM_CATALOG_INTEGRATION_UNAVAILABLE:'真实专辑目录待接入',ALBUM_CREATE_INTEGRATION_UNAVAILABLE:'新建专辑待接入',ALBUM_APPEND_INTEGRATION_UNVERIFIED:'追加专辑能力未验证',LIVE_MODEL_CATALOG_REQUIRED:'供应商实时可用模型尚未核实',SUNO_OFFICIAL_API_UNVERIFIED:'Suno 官方生成接口未核实',PULE_URL_REQUIRED:'等待谱乐 AI 的准确网址',PUBLICATION_EXECUTOR_UNAVAILABLE:'平台提交能力待接入',VIDEO_PUBLISH_INTEGRATION_UNAVAILABLE:'抖音视频发布待接入',PLAN_RUN_ACTIVE:'该计划已有未结束的执行',REVISION_CONFLICT:'计划已修改，请刷新后重新确认',PLAN_CONFIRMATION_STALE:'配置已变化，请重新确认',MATERIALS_REQUIRED:'等待完整发布材料'};
 Object.assign(reasons,{ROUTE_DEFAULT_CHANGED:'默认配置已变化，请编辑计划并重新核对授权',ROUTE_PROFILE_CHANGED:'配置版本已变化，请重新核对',TEXT_ROUTE_REQUIRED:'请选择默认歌词与提示词配置',IMAGE_ROUTE_REQUIRED:'请选择封面图片方式',MUSIC_ROUTE_REQUIRED:'请选择音乐生成配置',IMAGE_ADAPTER_UNAVAILABLE:'图片 API 待接入，请选择外部导入',EXISTING_AUDIO_ROUTE_REQUIRED:'此计划使用生成路线，绑定已有作品请新建“绑定已有音频”计划',EXISTING_AUDIO_BINDING_REQUIRED:'请选择并绑定已有作品音频',MANAGED_MUSIC_WORK_SCOPE:'作品归属或内容已变化，请核对原作品',LYRICS_MISMATCH:'作品歌词与本项最终稿不一致',TITLE_MISMATCH:'作品标题与本项最终稿不一致',ARTIST_MISMATCH:'作品作者不一致',MATERIALS_LOCKED:'材料已进入发布队列，当前版本已锁定',RIGHTS_ATTESTATION_REQUIRED:'请确认本版材料和授权依据',MUSIC_GRANT_REQUIRED:'请选择音乐账号、模型、预算并明确授权',MUSIC_OUTCOME_UNKNOWN:'原生成任务结果未知，等待核对',STOPPED_BEFORE_MUSIC_DISPATCH:'已在音乐请求派发前停止'});
-export const planExecutionMessage=(s?:string)=>s?(reasons[s]??fanqieDownloadIssues[s]??states[s]??s):'';
+const musicAssetProgress:Record<string,string>={
+ ORIGINAL_ASSETS_PENDING:'正在获取原曲',
+ MUSIC_ASSETS_CHECKING:'正在核对原曲',
+ MUSIC_ORIGINAL_PENDING:'等待平台返回原曲',
+ MUSIC_ORIGINAL_QUERY_RETRY:'查询原曲失败，正在重试',
+ MUSIC_ORIGINAL_QUERY_FAILED:'无法查询原曲，请核对后重试',
+ MUSIC_ORIGINAL_WAIT_EXPIRED:'等待原曲超时，请核对后重试',
+ MUSIC_ASSETS_PREPARING_A:'正在准备 A 版下载',
+ MUSIC_ASSETS_PREPARING_B:'正在准备 B 版下载',
+ MUSIC_ASSETS_DOWNLOADING_A:'正在下载 A 版',
+ MUSIC_ASSETS_DOWNLOADING_B:'正在下载 B 版',
+ MUSIC_ASSETS_ARCHIVING:'正在归档原曲',
+};
+export const musicAssetProgressLabel=(reason?:string)=>reason?musicAssetProgress[reason]:undefined;
+export const planExecutionMessage=(s?:string)=>s?(musicAssetProgressLabel(s)??reasons[s]??fanqieDownloadIssues[s]??states[s]??s):'';
 export const planStageLabels:Record<string,string>={dot:'获取素材',text_generate:'生成文本',text_score:'文本评分',lyric_write:'AI作词',music_submit:'提交音乐生成',music_assets:'下载歌曲',cover:'封面图片',materials:'归档作品'};
 Object.assign(states,{ready:'待执行',waiting_workflow:'待上一轮完成'});
 Object.assign(reasons, {
@@ -34,8 +48,14 @@ Object.assign(reasons, {
  WORKFLOW_IMAGE_SELECTION_REQUIRED:'请在音乐节点选择图像渠道和型号',
  WORKFLOW_IMAGE_SELECTION_INVALID:'音乐节点的图像配置不可用，请重新选择',
  WORKFLOW_COVER_KEY_REQUIRED:'请保存音乐节点所选图像渠道的 API Key',
- WORKFLOW_SUNO_CN_BROWSER_RECEIPT_UNKNOWN:'请到苏诺之音核对已提交的歌曲和下载结果',
+ WORKFLOW_SUNO_CN_BROWSER_RECEIPT_UNKNOWN:'苏诺之音原提交缺少回执',
  SUNO_CN_LOGIN_REQUIRED:'请在账号管理打开所选苏诺之音账号的专属窗口并登录',
+ SUNO_CN_VOCAL_STYLE_CONFLICT:'苏诺之音提交前拦截，主唱和音乐风格的人声冲突',
+ SUNO_CN_INSUFFICIENT_CREDITS:'苏诺之音提交前拦截，账号积分不足',
+ SUNO_CN_SUBMIT_UNCONFIRMED:'苏诺之音网页未确认提交结果',
+ SUNO_CN_RESULT_UNCLEAR:'未能从苏诺之音确认本轮的两首作品',
+ SUNO_CN_FIRST_TITLE_UNCHANGED:'苏诺之音榜首同名，无法确认本轮作品',
+ SUNO_CN_BROWSER_INTERRUPTED:'苏诺之音网页操作中断',
  WORKFLOW_SUNO_CN_WAV_RECOVERY_REQUIRED:'苏诺之音已生成歌曲，原 WAV 未归档，请核对原歌曲',
  SUNO_CN_RENAME_MENU_UNAVAILABLE:'苏诺之音歌曲已生成，无法打开 B 版改名菜单',
  SUNO_CN_RENAME_UNCONFIRMED:'苏诺之音歌曲已生成，B 版改名未确认',
@@ -51,7 +71,17 @@ Object.assign(reasons, {
  SUNO_CN_WAV_STAGING_INVALID:'找不到与苏诺之音回执匹配的原始 WAV，请核对下载文件',
  WORKFLOW_PULE_INPUTS_REQUIRED:'请在谱乐 AI 节点确认上游字段',
  WORKFLOW_PULE_INPUT_VALUE_INVALID:'上游结果不符合谱乐字段要求，请核对字段映射',
- WORKFLOW_PULE_BROWSER_RECEIPT_UNKNOWN:'谱乐提交结果待核对，请打开对应账号查看歌曲记录',
+ WORKFLOW_PULE_BROWSER_RECEIPT_UNKNOWN:'谱乐原提交待核对',
+ PULE_BROWSER_HISTORY_CHECKING:'正在核对谱乐歌曲记录',
+ PULE_BROWSER_HISTORY_NOT_FOUND:'未找到可确认的谱乐回执，请在对应账号核对',
+ PULE_BROWSER_HISTORY_AMBIGUOUS:'谱乐有多组相似歌曲，请在对应账号核对',
+ PULE_BROWSER_HISTORY_UNAVAILABLE:'暂时无法读取谱乐歌曲记录，请在对应账号核对',
+ PULE_BROWSER_HISTORY_LOGIN_REQUIRED:'请登录对应谱乐账号并核对歌曲记录',
+ PULE_BROWSER_HISTORY_BASELINE_MISSING:'这次执行缺少提交前的歌曲记录，请在对应谱乐账号核对',
+ PULE_BROWSER_CONTROL_TIMEOUT:'等待谱乐网页响应超时',
+ PULE_BROWSER_INTERRUPTED:'谱乐网页操作中断',
+ PULE_RESULT_UNCLEAR:'谱乐网页未能确认本次生成的两首歌曲',
+ PULE_RESULT_BASELINE_UNAVAILABLE:'提交前未能读取谱乐歌曲列表',
  PULE_SAVED_SONGS_UNAVAILABLE:'当前谱乐歌曲列表未找到原回执的歌曲，待核对后重试下载',
  PULE_SAVED_SONG_TITLE_CHANGED:'谱乐原歌曲的名称已经变化，请核对后重试下载',
  PULE_DOWNLOAD_RETRIES_EXHAUSTED:'谱乐下载重试 3 次仍失败，可重试原歌曲下载',
@@ -113,6 +143,7 @@ Object.assign(reasons, {
  LYRIC_REWRITE_UNCHANGED:'改写返回了已有歌词，请重试当前阶段',
  MUSIC_SUBMISSION_TIMEOUT:'等待谱乐回执超时，正在查找原任务',
  MUSIC_RECEIPT_INVALID:'回执缺少可用的歌曲 ID',
+ PROFILE_REVISION_CHANGED:'执行使用的配置已变更，请核对',
  MUSIC_HISTORY_NOT_FOUND:'谱乐历史暂无匹配',
  MUSIC_HISTORY_AMBIGUOUS:'多条历史结果可能对应同一次提交',
  MUSIC_HISTORY_UNAVAILABLE:'暂时无法读取谱乐历史',

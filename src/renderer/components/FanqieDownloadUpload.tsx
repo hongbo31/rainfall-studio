@@ -177,7 +177,7 @@ export default function FanqieDownloadUpload({ accountId, onBusy }: { accountId:
         </li>)}
       </ul>}
     </section>
-    {batch && <section aria-label="最近一批投稿">
+    {!busy && batch && <section aria-label="最近一批投稿">
       <div className="section-title fanqie-download-heading">
         <h3>最近一批投稿</h3>
         {batch.hasDiagnostics && <button type="button" disabled={running} onClick={() => void showDiagnostics()}>打开执行日志</button>}

@@ -14,13 +14,13 @@ const buildRoot = path.resolve(repo, process.env.RAINFALL_BUILD_ROOT || path.joi
 const cover = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aivsAAAAASUVORK5CYII=', 'base64');
 const scope = {accountId: '12345678', artistId: '123456789', sessionId: 'directory-fixture'};
 
-async function loadDirectoryForm() {
+async function loadDirectoryForm(clock = performance) {
   const entry = path.join(repo, 'src/main/fanqie/directory-form.ts');
   assert.ok(fs.existsSync(entry), 'The native multi-song form component is available');
   const result = await build({entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', packages: 'external', write: false});
   const module = {exports: {}};
-  const load = new Function('require', 'module', '__dirname', result.outputFiles[0].text);
-  load(createRequire(import.meta.url), module, path.dirname(entry));
+  const load = new Function('require', 'module', '__dirname', 'performance', result.outputFiles[0].text);
+  load(createRequire(import.meta.url), module, path.dirname(entry), clock);
   return module.exports.executeFanqieDirectoryForm;
 }
 
@@ -171,6 +171,44 @@ test('native directory form uses four scoped temporary file choosers for each of
   assert.deepEqual(site.refused, []);
 });
 
+test('directory form logs a missing live credit at its song and field before confirmation', {timeout: 40_000}, async t => {
+  const {context, first, site, timeline, callbacks} = await setup(t);
+  first.authors.singer = '搜不到的歌手';
+  await assert.rejects(execute(context, [first], callbacks), /FANQIE_AUTHOR_NOT_FOUND/u);
+  assert.ok(timeline.some(event => event.step === 'credit:singer:search' && event.songIndex === 0 && event.phase === 'error'));
+  assert.equal(site.events.some(event => event.kind === 'next' || event.kind === 'confirm' || event.name === '目录歌手一' && event.role === 'singer_id_list'), false);
+});
+
+test('directory form selects the preflight singer ID even if another same-name option appears first', {timeout: 40_000}, async t => {
+  const otherId = '9876543210123456781', ownedId = '9876543210123456782';
+  const {context, second, site, callbacks} = await setup(t, {
+    singerOptions: {'目录歌手二': [{id: otherId}, {id: ownedId, delayMs: 400}]},
+  });
+  await execute(context, [{...second, singerArtistId: ownedId}], callbacks);
+  assert.deepEqual(site.events.filter(event => event.role === 'singer_id_list').map(event => event.artistId), [ownedId]);
+  assert.deepEqual(site.events.filter(event => ['next', 'confirm', 'sign'].includes(event.kind)).map(event => event.kind), ['next', 'confirm']);
+  assert.ok(site.requests.includes('/api/author/home/get_song_list/v0/'));
+  assert.deepEqual(site.refused, []);
+});
+
+test('directory form checks the singer details and selected ID before submitting', {timeout: 55_000}, async t => {
+  const otherId = '9876543210123456781', ownedId = '9876543210123456782';
+  for (const {name, candidate, afterNext, selected} of [
+    {name: 'artist details refer to a different ID', candidate: {id: ownedId, detailId: otherId}, selected: false},
+    {name: 'the selected tag has a different ID', candidate: {id: ownedId, selectedId: otherId}, selected: true},
+    {name: 'the tag changes to a different same-name ID after Next', candidate: {id: ownedId}, selected: true, afterNext: true},
+  ]) await t.test(name, async t => {
+    const {context, second, site, callbacks, timeline} = await setup(t, {
+      singerOptions: {'目录歌手二': [candidate]}, tamperSingerAfterNext: afterNext ? otherId : undefined,
+    });
+    await assert.rejects(execute(context, [{...second, singerArtistId: ownedId}], callbacks), /FANQIE_SINGER_ID_UNVERIFIED/);
+    assert.equal(site.events.some(event => event.role === 'singer_id_list'), selected);
+    assert.equal(site.events.some(event => event.kind === 'next'), !!afterNext);
+    assert.equal(site.events.some(event => event.kind === 'confirm' || event.kind === 'sign'), false);
+    assert.equal(timeline.some(event => event.kind === 'intent' && event.step === 'first-step:confirm-upload'), false);
+  });
+});
+
 test('native directory form stops when the added card count jumps unexpectedly', {timeout: 30_000}, async t => {
   const {context, first, second, timeline, site, callbacks} = await setup(t, {extraCard: true});
   await assert.rejects(execute(context, [first, second], callbacks), /FANQIE_SONG_COUNT_UNVERIFIED/);
@@ -295,6 +333,78 @@ test('directory upload replaces a draft rejected before its other fields are fil
   assert.deepEqual(await page.locator('.auth-rights-list .song-name').allTextContents(), [first.title]);
   assert.deepEqual(site.events.filter(event => ['file', 'delete', 'next', 'confirm'].includes(event.kind)).map(event => event.role ?? event.kind),
     ['audio', 'delete', 'audio', 'lyrics', 'cover', 'proof', 'next', 'confirm']);
+});
+
+test('directory audio accepts a verified receipt after the former two-minute deadline', {timeout: 30_000}, async t => {
+  let offset = 0;
+  let clockJump;
+  t.after(() => clearTimeout(clockJump));
+  const executeWithClock = await loadDirectoryForm({now: () => performance.now() + offset});
+  const {context, first, site, callbacks} = await setup(t, {
+    audioReceiptDelay: 2_000,
+    beforeEvent(event) {
+      if (event.kind === 'file' && event.role === 'audio') {
+        clockJump = setTimeout(() => { offset = 130_000; }, 600);
+      }
+      if (event.kind === 'receipt' && event.role === 'audio') assert.equal(offset, 130_000);
+    },
+  });
+  await executeWithClock(context, [first], callbacks);
+  assert.deepEqual(site.events.filter(event => event.role === 'audio').map(event => event.kind), ['file', 'receipt']);
+  assert.deepEqual(site.events.filter(event => ['next', 'confirm'].includes(event.kind)).map(event => event.kind), ['next', 'confirm']);
+});
+
+test('directory audio cancels promptly while its receipt is still pending', {timeout: 15_000}, async t => {
+  let stopped = false;
+  const {context, first, site, callbacks, timeline} = await setup(t, {
+    audioReceiptDelay: 10_000,
+    beforeEvent(event) {
+      if (event.kind === 'file' && event.role === 'audio') stopped = true;
+    },
+  });
+  await assert.rejects(execute(context, [first], {...callbacks, guard() {
+    if (stopped) throw Error('STOP_REQUESTED');
+  }}), /STOP_REQUESTED/);
+  assert.deepEqual(site.events.filter(event => ['file', 'receipt', 'next', 'confirm'].includes(event.kind)).map(event => event.kind), ['file']);
+  assert.ok(timeline.some(event => event.step === 'upload:audio' && event.phase === 'error'));
+});
+
+test('directory audio times out at the ten-minute limit if its receipt never arrives', {timeout: 15_000}, async t => {
+  let offset = 0;
+  const jumps = [];
+  t.after(() => jumps.forEach(clearTimeout));
+  const executeWithClock = await loadDirectoryForm({now: () => performance.now() + offset});
+  const {context, first, site, callbacks} = await setup(t, {
+    audioReceiptDelay: 10_000,
+    beforeEvent(event) {
+      if (event.kind !== 'file' || event.role !== 'audio') return;
+      jumps.push(setTimeout(() => { offset = 590_000; }, 600));
+      jumps.push(setTimeout(() => { offset = 600_000; }, 1_300));
+    },
+  });
+  await assert.rejects(executeWithClock(context, [first], callbacks), /FANQIE_UPLOAD_READBACK_TIMEOUT/);
+  assert.equal(offset, 600_000, 'the waiter survives the first jump and stops only at its ten-minute limit');
+  assert.deepEqual(site.events.filter(event => ['file', 'receipt', 'next', 'confirm'].includes(event.kind)).map(event => event.kind), ['file']);
+});
+
+test('directory audio polls the plan stop state before a pending receipt arrives', {timeout: 15_000}, async t => {
+  let fileSent = false;
+  const checks = [];
+  const {context, first, site, callbacks, timeline} = await setup(t, {
+    audioReceiptDelay: 5_000,
+    beforeEvent(event) {
+      if (event.kind === 'file' && event.role === 'audio') fileSent = true;
+    },
+  });
+  await assert.rejects(execute(context, [first], {...callbacks, async checkStopped() {
+    if (!fileSent) return;
+    checks.push(performance.now());
+    if (checks.length === 2) throw Error('STOP_REQUESTED');
+  }}), /STOP_REQUESTED/);
+  assert.equal(checks.length, 2);
+  assert.ok(checks[1] - checks[0] >= 1_900, 'stop lookups are spaced instead of running every receipt poll');
+  assert.deepEqual(site.events.filter(event => ['file', 'receipt', 'next', 'confirm'].includes(event.kind)).map(event => event.kind), ['file']);
+  assert.ok(timeline.some(event => event.step === 'upload:audio' && event.phase === 'error'));
 });
 
 test('native directory form refuses extra virtual slots outside the mounted window', {timeout: 30_000}, async t => {

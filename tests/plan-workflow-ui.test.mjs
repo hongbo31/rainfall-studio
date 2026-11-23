@@ -17,6 +17,87 @@ const artist = {
   secondSinger: { name: "乙歌手", gender: "male", voicePersona: "低沉" },
 };
 
+test("center queries isolate selections and pause hidden polling", async t => {
+  const { outputFiles } = await build({
+    stdin: { resolveDir: project, loader: "tsx", contents: `
+      import React, { useMemo, useState } from 'react';
+      import { createRoot } from 'react-dom/client';
+      import { useCenterQuery } from './src/renderer/use-center-query';
+      window.reads = [];
+      let release;
+      window.releaseA = () => release('late A');
+      function Fixture() {
+        const [id, select] = useState('A');
+        const load = useMemo(() => () => {
+          window.reads.push(id);
+          if (id === 'A') return new Promise(resolve => { release = resolve; });
+          if (window.blockB) {
+            window.blockB = false;
+            return new Promise(resolve => { window.releaseB = (value = id) => resolve(value); });
+          }
+          return window.failB ? Promise.reject(Error('暂时无法读取')) : Promise.resolve(id);
+        }, [id]);
+        const query = useCenterQuery(load);
+        return <><button onClick={() => select('B')}>切换 B</button>
+          <button onClick={query.refresh}>刷新</button><p>{query.value}</p>
+          {query.error && <div role="alert">{query.error.message}</div>}</>;
+      }
+      createRoot(document.body).render(<Fixture />);
+    ` }, bundle: true, write: false,
+  });
+  const browser = await launchHeadlessChromium(chromium);
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.clock.install();
+  await page.addScriptTag({ content: outputFiles[0].text });
+  const reads = () => page.evaluate(() => window.reads);
+  await expect.poll(reads).toEqual(["A"]);
+  await page.getByRole("button", { name: "切换 B" }).click();
+  await expect(page.getByText("B", { exact: true })).toBeVisible({ timeout: 1500 });
+  await page.evaluate(() => window.releaseA());
+  await expect(page.getByText("late A", { exact: true })).toHaveCount(0);
+  assert.deepEqual(await reads(), ["A", "B"]);
+
+  const visibility = state => page.evaluate(state => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: state });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }, state);
+  await visibility("hidden");
+  await page.clock.runFor(12_000);
+  assert.deepEqual(await reads(), ["A", "B"]);
+  await page.evaluate(() => { window.failB = true; });
+  await page.getByRole("button", { name: "刷新" }).click();
+  await expect(page.getByRole("alert")).toHaveText("暂时无法读取");
+  await expect(page.getByText("B", { exact: true })).toBeVisible();
+  assert.deepEqual(await reads(), ["A", "B", "B"]);
+  await page.evaluate(() => { window.failB = false; });
+  await visibility("visible");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  assert.deepEqual(await reads(), ["A", "B", "B", "B"]);
+
+  await page.evaluate(() => { window.blockB = true; });
+  const refresh = page.getByRole("button", { name: "刷新" });
+  await refresh.click();
+  await expect.poll(async () => (await reads()).length).toBe(5);
+  await refresh.evaluate(button => { button.click(); button.click(); });
+  assert.equal((await reads()).length, 5);
+  await page.evaluate(() => window.releaseB());
+  await expect.poll(async () => (await reads()).length).toBe(6);
+
+  await page.evaluate(() => { window.blockB = true; });
+  await refresh.click();
+  await expect.poll(async () => (await reads()).length).toBe(7);
+  await visibility("hidden");
+  await visibility("visible");
+  await visibility("hidden");
+  await page.evaluate(() => window.releaseB("B 已收到"));
+  await page.clock.runFor(12_000);
+  assert.equal((await reads()).length, 7);
+  await expect(page.getByText("B 已收到", { exact: true })).toBeVisible();
+  await visibility("visible");
+  await expect.poll(async () => (await reads()).length).toBe(8);
+});
+
 test("the workflow editor exposes a count and a canvas", async () => {
   const { outputFiles } = await build({
     stdin: { resolveDir: project, loader: "tsx", contents: `
@@ -55,7 +136,7 @@ test("plan center saves a linked graph, starts it directly, and confirms deletio
   });
   const calls = { overview: [], runDetail: [], legacyReads: [], read: [], save: [], run: [], stop: [], remove: [], archive: [], directoryTasks: [], lyricRead: [], retry: [], fanqieCatalog: [] };
   const firstLoad = Promise.withResolvers();
-  let saving, snapshotGate, fanqieCleanup;
+  let saving, snapshotGate, fanqieCleanup, mode = "simulation";
   const createdAt = "2026-11-20T08:12:00Z";
   const downloadRoot = path.join(project, "download-fixture");
   let archive = { revision: 1, root: null, accountId: account.id };
@@ -71,7 +152,16 @@ test("plan center saves a linked graph, starts it directly, and confirms deletio
     defaults: { ...fanqieArtist.defaults, voice: "instrumental" } };
   const otherArtist = { ...artist, id: "other-artist", name: "另一个账号的艺人", accountId: otherFanqie.id };
   const accounts = [account, qishui, otherQishui, fanqie, otherFanqie, sunoAccount];
-  const artists = [artist, fanqieArtist, instrumental, otherArtist];
+  const artists = [artist, fanqieArtist, instrumental, otherArtist].map(row => ({ ...row, revision: 1 }));
+  const withCurrentArtist = plan => {
+    const current = artists.find(row => row.id === plan?.artistId && row.accountId === plan?.workflow?.accountId);
+    return current ? {
+      ...plan,
+      artistSnapshot: { id: current.id, revision: current.revision, name: current.name, defaults: current.defaults },
+      workflowSnapshot: { accountName: accounts.find(row => row.id === current.accountId)?.name,
+        artist: current.profile, secondSinger: current.secondSinger },
+    } : plan;
+  };
   let platformWorkflow;
   const ok = value => ({ ok: true, value });
   const failed = code => ({ ok: false, error: { code, message: code } });
@@ -87,10 +177,18 @@ test("plan center saves a linked graph, starts it directly, and confirms deletio
       case "runtime.settings": return ok({ backgroundEnabled: false, loginAtStartup: false });
       case "snapshot":
         await snapshotGate?.promise;
-        return ok({ mode: "simulation", accounts, artists, accountLocalArtists: artists,
+        return ok({ mode, accounts, artists, accountLocalArtists: artists,
           platformWorkflow, platformConfigurations: [{ target: "qishui", accountId: qishui.id }],
           works: [], series: [], exceptions: [], resources: { finished: 0, cost: { available: 0, reserved: 0 },
             candidate: { available: 0, reserved: 0, spent: 0 } } });
+      case "accountLocalArtist.save": {
+        const index = artists.findIndex(row => row.id === input.id && row.accountId === input.accountId);
+        if (index < 0 || input.expected !== artists[index].revision) return failed("REVISION_CONFLICT");
+        const saved = { ...artists[index], revision: input.expected + 1, name: input.profile.singer,
+          defaults: input.defaults, profile: input.profile, secondSinger: input.secondSinger };
+        artists[index] = saved;
+        return ok(saved);
+      }
       case "planCenter.list":
         calls.legacyReads.push(method);
         return ok({ plans, runs, items, stageAttempts, publishAttempts: [], occurrences: [], albumBindings: [], migration: null });
@@ -100,7 +198,7 @@ test("plan center saves a linked graph, starts it directly, and confirms deletio
         return ok(plans.map(plan => {
           const history = runs.filter(run => run.planId === plan.id).reverse();
           const standalone = history.filter(run => run.source !== "publication_task");
-          return { plan, latest: standalone[0], active: standalone.find(run => !["completed", "stopped", "failed"].includes(run.state)),
+          return { plan: withCurrentArtist(plan), latest: standalone[0], active: standalone.find(run => !["completed", "stopped", "failed"].includes(run.state)),
             deleteBlocked: history.some(run => ["running", "waiting", "stopping"].includes(run.state) ||
               run.state === "blocked" && stageAttempts.some(attempt => attempt.runId === run.id &&
                 ["dispatching", "waiting", "unknown"].includes(attempt.state) && !["music_assets", "cover", "materials"].includes(attempt.stage))),
@@ -127,18 +225,23 @@ test("plan center saves a linked graph, starts it directly, and confirms deletio
         assert.deepEqual(input, { runId: "task-owned-run" });
         return ok(null);
       case "publicationTasks.list": {
+        const references = plans.map(row => ({ id: row.id, title: row.title, revision: row.revision,
+          artistName: withCurrentArtist(row).artistSnapshot?.name }));
         const linked = runs.find(run => run.id === "task-owned-run");
-        if (!linked) return ok({ tasks: [], plans: [] });
+        if (!linked) return ok({ tasks: [], plans: references });
         const plan = plans.find(row => row.id === linked.planId);
-        if (!plan) return ok({ tasks: [], plans: [] });
+        if (!plan) return ok({ tasks: [], plans: references });
         const planRef = { id: plan.id, title: plan.title, revision: plan.revision };
         const task = { id: "linked-task", title: "关联任务测试", revision: 1, enabled: true,
           execution: { kind: "manual" }, steps: [{ kind: "plans", planIds: [plan.id] }] };
-        return ok({ plans: [planRef], tasks: [{ task,
+        return ok({ plans: references, tasks: [{ task,
           run: { id: "linked-task-run", state: "waiting", detail: "执行计划 " + plan.title, startedAt: createdAt, plans: [planRef],
             linked: [{ id: linked.id, planId: plan.id, owned: true }] },
           planProgress: input.expandedTaskId ? [{ title: plan.title, planId: plan.id,
-            runId: linked.id, state: linked.state, owned: true, items: [] }] : undefined,
+            runId: linked.id, state: linked.state, reason: linked.reason, owned: true,
+            items: items.filter(item => item.runId === linked.id).map(item => ({
+              ...item, stages: stageAttempts.filter(stage => stage.itemId === item.id),
+            })) }] : undefined,
         }] });
       }
       case "lyricWriting.read": {
@@ -192,13 +295,13 @@ test("plan center saves a linked graph, starts it directly, and confirms deletio
       case "planCenter.save": {
         calls.save.push(input);
         await saving?.promise;
-        const plan = { ...input.plan, revision: plans.length ? plans[0].revision + 1 : 1, createdAt, needsConfiguration: [], publishTargets: [] };
+        const plan = withCurrentArtist({ ...input.plan, revision: plans.length ? plans[0].revision + 1 : 1, createdAt, needsConfiguration: [], publishTargets: [] });
         plans[0] = plan;
         return ok(plan);
       }
       case "planCenter.read": {
         calls.read.push(input);
-        return ok(plans.find(plan => plan.id === input.id));
+        return ok(withCurrentArtist(plans.find(plan => plan.id === input.id)));
       }
       case "planCenter.preview": return ok({ planRevision: plans[0].revision, summaryHash: "preview-hash", summary: {} });
       case "planCenter.run": {
@@ -354,6 +457,16 @@ test("plan center saves a linked graph, starts it directly, and confirms deletio
   await query.fill(" 周末 ");
   await expect(row).toBeVisible();
 
+  await row.getByRole("button", { name: "详情", exact: true }).click();
+  const artistDetails = page.getByRole("dialog", { name: "计划详情" });
+  await expect(artistDetails.getByText(artist.name, { exact: true })).toBeVisible();
+  artists[0] = { ...artists[0], revision: 2, name: "同步后的艺人",
+    profile: { ...artists[0].profile, singer: "同步后的歌手" } };
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(artistDetails.getByText("同步后的艺人", { exact: true })).toBeVisible();
+  await expect(artistDetails.getByText("同步后的歌手", { exact: true })).toBeVisible();
+  await artistDetails.getByRole("button", { name: "关闭", exact: true }).click();
+
   await row.getByRole("button", { name: "编辑", exact: true }).click();
   const editor = page.getByRole("dialog", { name: "编辑计划" });
   await expect(editor.getByRole("button", { name: "断开连接" })).toBeVisible();
@@ -364,6 +477,22 @@ test("plan center saves a linked graph, starts it directly, and confirms deletio
     .getByRole("checkbox", { name: "生成封面", exact: true })).toBeChecked();
   await editor.getByRole("checkbox", { name: "生成封面", exact: true }).uncheck();
   await editor.getByLabel("歌曲生成次数").fill("3");
+  artists[0] = { ...artists[0], revision: 3, profile: { ...artists[0].profile, singer: "新歌手名" } };
+  await expect(editor.getByText("新歌手名", { exact: true }).first()).toBeVisible();
+  await expect(editor.getByLabel("歌曲生成次数")).toHaveValue("3");
+  artists[0] = { ...artists[0], revision: 4, accountId: otherFanqie.id };
+  await expect(editor.getByText("原艺人已关联到其他账号，请重新选择。", { exact: true })).toBeVisible();
+  await expect(editor.getByRole("button", { name: "保存计划", exact: true })).toBeDisabled();
+  await expect(editor.getByLabel("歌曲生成次数")).toHaveValue("3");
+  const artistChoice = editor.getByLabel("艺人信息", { exact: true });
+  await artistChoice.selectOption("");
+  await artistChoice.selectOption(artist.id);
+  await expect(editor.getByText(otherFanqie.name, { exact: true })).toBeVisible();
+  await expect(editor.getByRole("button", { name: "保存计划", exact: true })).toBeEnabled();
+  artists[0] = { ...artists[0], revision: 5, accountId: account.id };
+  await expect(editor.getByRole("button", { name: "保存计划", exact: true })).toBeDisabled();
+  await artistChoice.selectOption("");
+  await artistChoice.selectOption(artist.id);
   saving = Promise.withResolvers();
   await editor.getByRole("button", { name: "保存计划", exact: true }).click();
   await expect(editor.getByRole("button", { name: "正在保存…", exact: true }).locator(".loading-spinner")).toBeVisible();
@@ -373,6 +502,10 @@ test("plan center saves a linked graph, starts it directly, and confirms deletio
   assert.equal(calls.save[1].expectedRevision, 1);
   assert.equal(calls.save[1].plan.count, 3);
   assert.equal(calls.save[1].plan.outputs.cover, false);
+  assert.equal(calls.save[1].plan.artistId, artist.id);
+  assert.equal(calls.save[1].plan.workflow.accountId, account.id);
+  assert.equal("artistSnapshot" in calls.save[1].plan, false);
+  assert.equal("workflowSnapshot" in calls.save[1].plan, false);
 
   const run = row.getByRole("button", { name: "立刻执行", exact: true });
   const confirmation = page.getByRole("dialog", { name: "立刻执行此计划？" });
@@ -419,11 +552,24 @@ test("plan center saves a linked graph, starts it directly, and confirms deletio
   const taskRun = { id: "task-owned-run", planId: plan.id, state: "running", source: "publication_task",
     planRevision: 2, snapshot: plans[0], createdAt: "2026-11-20T08:19:00Z" };
   runs.push(taskRun);
+  const taskItem = { id: "task-song", runId: taskRun.id, ordinal: 1, state: "waiting", versions: [] };
+  const musicAssets = { id: "task-download", runId: taskRun.id, itemId: taskItem.id, ordinal: 1,
+    stage: "music_assets", state: "waiting", reason: "ORIGINAL_ASSETS_PENDING" };
+  items.push(taskItem);
+  stageAttempts.push(musicAssets);
   await page.getByRole("button", { name: "任务中心", exact: true }).click();
   await page.getByRole("button", { name: "关联任务测试", exact: true }).click();
+  const taskPanel = page.getByRole("region", { name: "关联任务测试的关联计划" });
+  await expect(taskPanel.getByText("下载歌曲 · 正在获取原曲", { exact: true })).toBeVisible();
+  await expect(taskPanel.getByText("ORIGINAL_ASSETS_PENDING")).toHaveCount(0);
+  musicAssets.reason = "MUSIC_ASSETS_DOWNLOADING_B";
+  await expect(taskPanel.getByText("下载歌曲 · 正在下载 B 版", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "查看执行", exact: true }).click();
   const details = page.getByRole("dialog", { name: "计划详情", exact: true });
   await expect(details.getByRole("heading", { name: "任务执行记录" })).toBeVisible();
+  await expect(details.getByText("下载歌曲 · 正在下载 B 版", { exact: true })).toBeVisible();
+  stageAttempts.pop();
+  items.pop();
   await details.getByRole("button", { name: "打开执行日志", exact: true }).click();
   await expect(details.getByRole("button", { name: "停止后续步骤" })).toHaveCount(0);
   await details.getByRole("button", { name: "返回任务中心", exact: true }).click();
@@ -662,12 +808,13 @@ test("plan center saves a linked graph, starts it directly, and confirms deletio
   await titleMapping.selectOption("alternateTitle");
   await generation.getByLabel("B 版歌名（可选）", { exact: true }).selectOption("title");
   await generation.getByLabel("音乐风格", { exact: true }).selectOption("style");
-  await generation.getByLabel("歌词", { exact: true }).selectOption("lyrics");
+  await generation.getByLabel("歌词", { exact: true }).selectOption("alternateTitle");
   await artistPicker.selectOption(instrumental.id);
   await expect(generation.getByRole("group", { name: "艺人资料", exact: true })).toContainText("纯音乐");
   await expect(generation.getByLabel("歌词", { exact: true })).toHaveCount(0);
   await expect(titleMapping.locator("option")).toHaveText(["选择上游字段", "歌名一", "歌名二", "风格描述"]);
   await expect(titleMapping).toHaveValue("alternateTitle");
+  await generation.getByLabel("B 版歌名（可选）", { exact: true }).selectOption("style");
   await canvas.getByRole("button", { name: "配置DeepSeek" }).click();
   await expect(dialog.getByRole("spinbutton", { name: "目标评分" })).toHaveCount(0);
   await canvas.getByRole("button", { name: "配置汽水音乐" }).click();
@@ -687,7 +834,7 @@ test("plan center saves a linked graph, starts it directly, and confirms deletio
   assert.equal(graphPlan.workflow.targetScore, undefined);
   assert.deepEqual(graphPlan.workflow.browserMusic, { provider: "yourmusic", accountId: account.id,
     coverImage: { providerId: "doubao_image", profileId: "ark-cover", modelId: "doubao-seedream-5-0-pro-260628" },
-    inputs: { title: "alternateTitle", alternateTitle: "title", style: "style" } });
+    inputs: { title: "alternateTitle", alternateTitle: "style", style: "style", lyrics: "alternateTitle" } });
   assert.equal(graphPlan.songType, "instrumental");
   assert.deepEqual(graphPlan.workflow.publications, [
     { platform: "fanqie", accountId: fanqie.id, fanqieBatch: { limit: 1, signContract: false } },
@@ -703,6 +850,10 @@ test("plan center saves a linked graph, starts it directly, and confirms deletio
   await editor.getByRole("button", { name: "配置谱乐 AI" }).click();
   await expect(editor.getByLabel("歌名", { exact: true })).toHaveValue("alternateTitle");
   await expect(editor.getByRole("group", { name: "艺人资料", exact: true })).toContainText("纯音乐");
+  await expect(editor.getByLabel("歌词", { exact: true })).toHaveCount(0);
+  await editor.getByLabel("艺人信息", { exact: true }).selectOption(fanqieArtist.id);
+  await expect(editor.getByLabel("歌词", { exact: true })).toHaveValue("alternateTitle");
+  await editor.getByLabel("艺人信息", { exact: true }).selectOption(instrumental.id);
   await expect(editor.getByLabel("提供商 / 渠道", { exact: true })).toHaveValue("doubao_image");
   await expect(editor.getByLabel("图像模型", { exact: true })).toHaveValue("doubao-seedream-5-0-pro-260628");
   await editor.getByRole("button", { name: "配置汽水音乐" }).click();
@@ -802,5 +953,40 @@ test("plan center saves a linked graph, starts it directly, and confirms deletio
   await expect(editor.getByLabel("歌名", { exact: true })).toHaveValue("alternateTitle");
   await expect(editor.getByLabel("提供商 / 渠道", { exact: true })).toHaveValue("doubao_image");
   await expect(editor.getByLabel("图像模型", { exact: true })).toHaveValue("doubao-seedream-5-5-261028");
+  await editor.getByRole("button", { name: "关闭", exact: true }).click();
+
+  await navigation.getByRole("button", { name: "账号管理", exact: true }).click();
+  await page.getByRole("button", { name: `编辑 ${instrumental.name}`, exact: true }).click();
+  const artistEditor = page.getByRole("form", { name: `编辑艺人信息 · ${instrumental.name}` });
+  const updatedSinger = "账号管理刚保存的艺人";
+  await artistEditor.getByRole("textbox", { name: "A 版歌手", exact: true }).fill(updatedSinger);
+  await artistEditor.getByRole("button", { name: "保存艺人信息", exact: true }).click();
+  await expect(artistEditor).toHaveCount(0);
+  await planCenter.click();
+  await legacyRow.getByRole("button", { name: "详情", exact: true }).click();
+  await expect(artistDetails.getByText(updatedSinger, { exact: true })).toBeVisible();
+  await artistDetails.getByRole("button", { name: "关闭", exact: true }).click();
+
+  // Exercise the task editor's write-enabled UI against the same isolated RPC fixture.
+  mode = "production";
+  await expect(page.getByRole("combobox", { name: "工作区模式" })).toHaveValue("production");
+  await navigation.getByRole("button", { name: "任务中心", exact: true }).click();
+  await page.getByRole("button", { name: "＋ 新建任务", exact: true }).click();
+  await page.getByRole("button", { name: "选择关联计划", exact: true }).click();
+  const planPicker = page.getByRole("dialog", { name: "选择关联计划", exact: true });
+  const planSearch = planPicker.getByRole("searchbox", { name: "搜索计划" });
+  await planSearch.fill(updatedSinger);
+  const matchingPlan = planPicker.getByRole("checkbox", { name: /旧谱乐计划/u });
+  await expect(matchingPlan).toBeVisible();
+  await expect(planPicker.getByText(updatedSinger, { exact: true })).toBeVisible();
+  await matchingPlan.check();
+  const index = artists.findIndex(row => row.id === instrumental.id);
+  const newerName = "另一窗口保存的艺人";
+  artists[index] = { ...artists[index], name: newerName, revision: artists[index].revision + 1 };
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(planPicker.getByRole("region", { name: "执行顺序" }).getByText(newerName, { exact: true })).toBeVisible();
+  await expect(planSearch).toHaveValue(updatedSinger);
+  await planSearch.clear();
+  await expect(matchingPlan).toBeChecked();
   assert.deepEqual(pageErrors, []);
 });

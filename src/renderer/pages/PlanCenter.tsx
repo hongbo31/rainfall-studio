@@ -15,7 +15,7 @@ import QishuiPublisher from '../components/QishuiPublisher';
 import LoadingIndicator from '../components/LoadingIndicator';
 import {usePlanCenterData} from '../use-plan-center-data';
 import type {PlanWorkflowPublicationStatus} from '../../shared/plan-workflow-publication';
-import {planExecutionMessage as message,planStageLabels as stageLabels} from '../plan-execution-labels';
+import {musicAssetProgressLabel,planExecutionMessage as message,planStageLabels as stageLabels} from '../plan-execution-labels';
 import {isLocalPublicationWorkflow,workflowPublicationPlatforms} from '../../shared/plan-workflow-graph';
 import {browserMusicProviders,workflowBrowserMusic} from '../../shared/plan-workflow-fields';
 import {planRunActive} from '../../shared/plan-center';
@@ -138,7 +138,8 @@ export default function PlanCenter({initialRunId=""}:{initialRunId?:string}){
  };
  const runItems=runDetail?.items??[];
  const savePlan=(plan:PlanCenterPlanInput,expectedRevision:number|null,close:()=>void)=>act(async()=>{
-  await call('planCenter.save',{plan:{...plan,enabled:false,needsConfiguration:[]},expectedRevision});
+  const {artistSnapshot: _artistSnapshot,workflowSnapshot: _workflowSnapshot,...draft}=plan;
+  await call('planCenter.save',{plan:{...draft,enabled:false,needsConfiguration:[]},expectedRevision});
   await dashboard.refresh();
   close();notify('计划已保存');
  },{pending:{kind:'save'},reload:false});
@@ -196,7 +197,9 @@ export default function PlanCenter({initialRunId=""}:{initialRunId?:string}){
   .sort((a,b)=>Date.parse(b.plan.createdAt??'1970-01-01')-Date.parse(a.plan.createdAt??'1970-01-01'))??[];
  const detailRow=dashboard.value?.find(({plan})=>plan.id===detail?.id);
  const listedDetail=detailRow?.plan;
- const detailPlan=detail&&listedDetail&&listedDetail.revision>detail.revision?listedDetail:detail;
+ const useListedDetail=detail&&listedDetail&&(listedDetail.revision>detail.revision||
+  (listedDetail.revision===detail.revision&&(listedDetail.artistSnapshot?.revision??0)>(detail.artistSnapshot?.revision??0)));
+ const detailPlan=useListedDetail?listedDetail:detail;
  const detailRuns=history.value?.runs??[];
  const runIndex=detailRuns.findIndex(run=>run.id===selected);
  const detailActive=detailRow?.active;
@@ -386,9 +389,10 @@ export default function PlanCenter({initialRunId=""}:{initialRunId?:string}){
      const reviewAvailable=a.stage==='lyric_write'&&currentRun.snapshot.songType!=='instrumental'&&
       (reviewFailure||lyricScoreFailure(a)||a.state==='succeeded'||a.state==='unknown'||a.reason==='TEXT_CONTENT_FILTERED');
        const mayRetry=!currentRun.stopRequested&&isLatestFailedStage(a,runDetail.stageAttempts);
+       const assetProgress=a.stage==='music_assets'&&a.state==='waiting'&&musicAssetProgressLabel(a.reason);
        return <React.Fragment key={a.id}>
         <div className="plan-stage-row">
-         <span>{stageLabels[a.stage]??a.stage} · {message(a.state)} {message(a.reason)}
+         <span>{stageLabels[a.stage]??a.stage} · {assetProgress||[message(a.state),message(a.reason)].filter(Boolean).join(' ')}
           {a.externalTaskId&&` · ${a.stage==='lyric_write'?'作词任务':'外部任务'} ${a.externalTaskId}`}</span>
          {mayRetry&&(providerTextNeedsNewRun(currentRun,a)
           ? <HelpNote label="重新执行">停止本次计划后重新执行。文本阶段暂不支持单独重试，新执行需重新核对额度。</HelpNote>
@@ -404,6 +408,7 @@ export default function PlanCenter({initialRunId=""}:{initialRunId?:string}){
            : <button disabled={busy} onClick={()=>void act(()=>call('planCenter.checkMusicReceipt',{attemptId:a.id}))}>核对生成回执</button>
           : <HelpNote label="等待对账">结果未知，请核对原供应商任务。</HelpNote>)}
         </div>
+        {typeof a.result?.browserError==='string'&&<p className="muted">谱乐网页诊断 · {message(a.result.browserError)}</p>}
       {reviewAvailable&&a.externalTaskId&&<PlanLyricReview jobId={a.externalTaskId}/>}
        </React.Fragment>;
       })}{runDetail?.publishAttempts.filter(a=>a.itemId===item.id).map(a=><p key={a.id}>{a.platform} / {a.accountId} · {message(a.state)} {message(a.reason)}</p>)}<ProviderPlanStatus status={execution?.providerText?.find((job:any)=>job.itemId===item.id)}/><PlanRunAssets item={item} run={currentRun} catalog={runDetail?.catalog} status={execution} busy={busy} act={act}/></div>)}

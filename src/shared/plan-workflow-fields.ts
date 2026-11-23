@@ -43,3 +43,9 @@ export function workflowPuleInputsComplete(inputs: WorkflowPule["inputs"], instr
   if (!inputs.title || !inputs.style) return false;
   return instrumental ? !inputs.lyrics && !Object.values(inputs).includes("lyrics") : !!inputs.lyrics;
 }
+
+export function withoutWorkflowLyrics(inputs: WorkflowPule["inputs"]): WorkflowPule["inputs"] {
+  const entries = Object.entries(inputs);
+  const instrumental = entries.filter(([field, source]) => field !== "lyrics" && source !== "lyrics");
+  return instrumental.length === entries.length ? inputs : Object.fromEntries(instrumental);
+}

@@ -18,7 +18,7 @@ const output = path.resolve("output/pule-browser-test/automation.cjs");
 await build({
   stdin: { resolveDir: process.cwd(), contents: [
     'export { createPuleBrowserJobs, readPlanPuleWave } from "./src/main/pule-browser";',
-    'export { runPuleBrowser } from "./src/main/pule-browser-page";',
+    'export { runPuleBrowser, readPuleBrowserReceipt } from "./src/main/pule-browser-page";',
     'export { PlatformBrowserSessions, accountBrowserDirectory } from "./src/main/browser-accounts";',
     'export { ApiCredentials } from "./src/main/api-credentials";',
     'export { puleCreateUrl } from "./src/shared/pule-browser";',
@@ -26,7 +26,7 @@ await build({
   ].join("\n") },
   outfile: output, bundle: true, platform: "node", format: "cjs", packages: "external",
 });
-const { createPuleBrowserJobs, readPlanPuleWave, runPuleBrowser, puleCreateUrl, PlatformBrowserSessions, accountBrowserDirectory,
+const { createPuleBrowserJobs, readPlanPuleWave, runPuleBrowser, readPuleBrowserReceipt, puleCreateUrl, PlatformBrowserSessions, accountBrowserDirectory,
   ApiCredentials, platformAccountLoginUrl, platformPageUrls }
   = createRequire(import.meta.url)(output);
 const html = await fs.readFile(new URL("./fixtures/pule-browser.html", import.meta.url), "utf8");
@@ -507,23 +507,51 @@ test("a stalled WAV transfer times out after ten minutes even if cancellation ne
   await waitFor(() => !filesystem.existsSync(temporary), "late temporary download to be removed");
 });
 
+test("谱乐网页核对只读歌曲列表，并用提交前榜首确认新增的原始 A/B 顺序", async t => {
+  const browser = await launchHeadlessChromium(chromium);
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const title = "同名歌曲";
+  const row = (id, title) => ({ id, title });
+  const pair = [row("new-a", title), row("new-b", title)];
+  const before = row("before-a", title);
+  let savedSongs = [row("another-a", "并行任务"), ...pair, before];
+  const requests = [], events = [];
+  await page.route("**/*", route => {
+    requests.push({ method: route.request().method(), url: route.request().url() });
+    return route.request().url() === puleCreateUrl
+      ? route.fulfill({ contentType: "text/html; charset=utf-8",
+          body: html.replace("__TEST_OPTIONS__", JSON.stringify({ emptyHistory: true, savedSongs })) })
+      : route.abort();
+  });
+  page.on("console", message => { if (message.text().startsWith("fixture:")) events.push(message.text()); });
+  const read = () => readPuleBrowserReceipt(page, { title, beforeSongIds: ["before-a"] }, () => {}, { timeout: 550, poll: 25 });
+  assert.deepEqual(await read(), { state: "found", songIds: ["new-a", "new-b"] });
+  savedSongs = [row("duplicate-a", title), row("duplicate-b", title), ...pair, before];
+  assert.deepEqual(await read(), { state: "ambiguous" });
+  savedSongs = pair;
+  assert.deepEqual(await read(), { state: "unavailable" });
+  assert.ok(requests.every(({ method, url }) => method === "GET" && url === puleCreateUrl));
+  assert.equal(events.some(event => /generate:|more:|pair-confirmed/u.test(event)), false);
+});
+
 test("谱乐 AI Playwright control and task recovery", async t => {
   const browser = await launchHeadlessChromium(chromium);
   t.after(() => browser.close());
 
-  await t.test("plan phases submit pure music once and download the saved B recording by ID", async t => {
+  await t.test("plan phases submit once and recover the selected B recording when the other is absent", async t => {
     const input = { requestId: randomUUID(), accountId: randomUUID(), artistId: randomUUID(), mode: "custom",
       title: "器乐计划 A", alternateTitle: "器乐计划 B", lyrics: "", style: "木吉他器乐", instrumental: true };
     const context = await browser.newContext({ acceptDownloads: true });
     t.after(() => context.close());
-    const events = [], requests = [], charges = [], downloads = [];
+    const events = [], requests = [], charges = [], downloads = [], downloadSteps = [];
     let songIds = [];
     await context.route("**/*", async route => {
       const url = new URL(route.request().url());
       if (url.href === puleCreateUrl) {
-        const savedSongs = songIds.slice().reverse().map(id => ({ id, title: input.title }));
+        const savedSongs = songIds[1] ? [{ id: songIds[1], title: input.title }] : [];
         return route.fulfill({ contentType: "text/html; charset=utf-8",
-          body: html.replace("__TEST_OPTIONS__", JSON.stringify({ savedSongs })) });
+          body: html.replace("__TEST_OPTIONS__", JSON.stringify({ savedSongs, previousTitle: input.title })) });
       }
       if (url.origin !== new URL(puleCreateUrl).origin || url.pathname !== "/fixture-new-b.wav") return route.abort();
       requests.push(url.pathname);
@@ -533,22 +561,32 @@ test("谱乐 AI Playwright control and task recovery", async t => {
     page.on("console", message => { if (message.text().startsWith("fixture:")) events.push(message.text().slice(8)); });
     const hooks = { guard: async () => {}, validateAudio: () => assert.fail("unexpected audio upload"), step: () => {},
       approveCover: async () => assert.fail("unexpected cover request"),
-      beforeCharge: async kind => { charges.push(kind); assert.equal(await page.getByRole("switch", { name: "纯音乐" }).isChecked(), true); },
+      beforeCharge: async (kind, _credits, beforeSongIds) => {
+        charges.push(kind);
+        assert.deepEqual(beforeSongIds, ["old"]);
+        assert.equal(events.some(event => event.startsWith("generate:")), false);
+        assert.equal(await page.getByRole("switch", { name: "纯音乐" }).isChecked(), true);
+      },
       identify: async ids => { songIds = ids; },
+      audioProgress: async (phase, version) => { downloadSteps.push([phase, version]); },
       saveWave: async (version, id, download, title) => {
         assert.equal(await download.failure(), null);
         downloads.push([version, id, title]);
+        downloadSteps.push(["saved", version]);
       },
       generateCover: async () => assert.fail("the plan uses its own cover stage"),
     };
     const fast = { control: 2_000, form: 2_000, generation: 2_000, inputSettle: 25, afterSubmit: 30, poll: 25, afterWavClick: 130 };
     await runPuleBrowser(page, input, hooks, fast, { kind: "submit" });
     assert.deepEqual(songIds, ["new-a", "new-b"]);
+    await assert.rejects(runPuleBrowser(page, input, hooks, fast,
+      { kind: "download", songIds, versions: ["A", "B"] }), /PULE_SAVED_SONGS_UNAVAILABLE/);
     assert.deepEqual(requests, []);
     await runPuleBrowser(page, input, hooks, fast, { kind: "download", songIds, versions: ["B"] });
     assert.deepEqual(charges, ["generation"]);
     assert.deepEqual(requests, ["/fixture-new-b.wav"]);
     assert.deepEqual(downloads, [["B", "new-b", "器乐计划 B"]]);
+    assert.deepEqual(downloadSteps, [["preparing", "B"], ["downloading", "B"], ["saved", "B"]]);
     assert.ok(events.includes("generate:器乐计划 A||木吉他器乐|instrumental"));
     assert.ok(events.includes("name-applied:new-b:器乐计划 B"));
   });
@@ -1215,13 +1253,14 @@ test("task windows on the same music account inherit login and isolate storage a
   const route = context => context.route("**/*", request => new URL(request.request().url()).origin === origin
     ? request.fulfill({ contentType: "text/html; charset=utf-8", body: fixturePage }) : request.abort());
   let loginContext;
-  const headlessLoginReads = [];
+  const headlessLoginReads = [], headlessTaskReads = [];
   const sessions = new PlatformBrowserSessions(root, async (profile, _provider, headless) => {
     headlessLoginReads.push(headless === true);
     loginContext = await chromium.launchPersistentContext(profile, headlessChromiumOptions(chromium));
     await route(loginContext);
     return loginContext;
-  }, async (_provider, storageState) => {
+  }, async (_provider, storageState, headless) => {
+    headlessTaskReads.push(headless === true);
     const browser = await launchHeadlessChromium(chromium);
     const context = await browser.newContext({ storageState });
     await route(context);
@@ -1271,6 +1310,17 @@ test("task windows on the same music account inherit login and isolate storage a
   await first;
   assert.equal(pageB.isClosed(), false);
   assert.equal(loginPage.isClosed(), false);
+  const historyPage = await sessions.withPuleHistoryPage(account.id, b.signal, async page => {
+    assert.notEqual(page.context().browser(), pageB.context().browser());
+    await page.goto(puleCreateUrl);
+    assert.deepEqual(await page.evaluate(() => [localStorage.getItem("account-fixture"), sessionStorage.getItem("login-fixture"), document.cookie]),
+      ["account", "session", "signed-in=fixture"]);
+    assert.deepEqual(await page.context().cookies("https://fixture.invalid/"), []);
+    return page;
+  });
+  assert.ok(historyPage.isClosed());
+  assert.equal(pageB.isClosed(), false);
+  assert.deepEqual(headlessTaskReads, [false, false, true]);
   holdSecond.resolve();
   await second;
   await sessions.withTaskMusicPage(scopes[1], b.signal, async page => assert.equal(page, pageB));

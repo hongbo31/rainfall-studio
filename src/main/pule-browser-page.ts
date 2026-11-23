@@ -3,6 +3,7 @@ import {
   puleCreateUrl, puleDownloadRetryLimit, puleDownloadTimeoutMs, puleOrigin,
   type PuleCharge, type PuleScope, type PuleSessionState, type PuleStart, type PuleStep, type PuleVersion,
 } from "../shared/pule-browser";
+import type { PuleBrowserReceiptLookup, PuleBrowserReceiptMatch } from "../shared/plan-pule";
 import { inspectPuleSession, puleSignInControl, puleSignInDialog } from "./pule-session";
 import { preparePuleWave, receivePuleWave } from "./pule-wav-transfer";
 
@@ -16,10 +17,11 @@ export type PulePageHooks = {
   validateAudio: () => void;
   step: (step: PuleStep) => void;
   approveCover: (credits: number) => Promise<void>;
-  beforeCharge: (kind: PuleCharge, credits?: number) => void | Promise<void>;
+  beforeCharge: (kind: PuleCharge, credits?: number, beforeSongIds?: string[]) => void | Promise<void>;
   beforeGeneration?: () => Promise<void>;
   identify: (ids: string[]) => void | Promise<void>;
   useDownloadRetry?: UseDownloadRetry;
+  audioProgress?: (phase: "preparing" | "downloading", version: PuleVersion) => Promise<void>;
   saveWave: (version: PuleVersion, songId: string, download: Download, title: string, deadline?: number) => Promise<void>;
   generateCover: (version: PuleVersion, songId: string, title: string) => Promise<void>;
 };
@@ -87,6 +89,68 @@ async function withSongRows<T>(page: Page, use: (songs: SongRow[], elements: Ele
   }
 }
 const readSongs = (page: Page) => withSongRows(page, songs => songs);
+
+function findBrowserReceipt(rows: SongRow[], { title, beforeSongIds }: PuleBrowserReceiptMatch): PuleBrowserReceiptLookup {
+  const anchor = beforeSongIds.length ? rows.findIndex(row => row.id === beforeSongIds[0]) : rows.length;
+  if (anchor < 0) return { state: "unavailable" };
+  const known = new Set(beforeSongIds);
+  const newer = rows.slice(0, anchor);
+  if (newer.some(row => row.id && known.has(row.id))) return { state: "unavailable" };
+  const matches = newer.flatMap((row, index) => row.title === title ? [{ ...row, index }] : []);
+  if (matches.length < 2) return { state: "not_found" };
+  const [a, b] = matches;
+  if (matches.length !== 2 || b.index !== a.index + 1) return { state: "ambiguous" };
+  if (!a.id || !b.id) return { state: "not_found" };
+  if (a.id === b.id || rows.filter(row => row.id === a.id || row.id === b.id).length !== 2)
+    return { state: "ambiguous" };
+  return { state: "found", songIds: [a.id, b.id] };
+}
+
+/** Read the creation history using the account session. This path never presses a generation control. */
+export async function readPuleBrowserReceipt(page: Page, match: PuleBrowserReceiptMatch, guard: () => void,
+  { timeout = 12_000, poll = 800 } = {}): Promise<PuleBrowserReceiptLookup> {
+  guard();
+  const deadline = performance.now() + timeout;
+  await page.goto(puleCreateUrl, { waitUntil: "domcontentloaded", timeout });
+  const results = songList(page);
+  const tab = visible(page.getByRole("tab", { name: "自定义模式", exact: true }));
+  const busy = visible(page.locator("span").filter({ hasText: generating }));
+  let opened = false;
+  let lastPair: [string, string] | undefined;
+  let last: PuleBrowserReceiptLookup = { state: "unavailable" };
+  do {
+    guard();
+    const state = await inspectPuleSession(page);
+    if (state === "signed_in") {
+      if (!opened && !await results.isVisible() && await tab.count() === 1) {
+        guard();
+        await tab.click({ timeout: Math.max(1, deadline - performance.now()) });
+        opened = true;
+      }
+      if (await results.isVisible() && !await busy.count()) {
+        const result = findBrowserReceipt(await readSongs(page), match);
+        guard();
+        if (new URL(page.url()).pathname !== createPath || await inspectPuleSession(page) !== "signed_in")
+          return { state: "unavailable" };
+        if (result.state === "found") {
+          if (lastPair?.[0] === result.songIds[0] && lastPair[1] === result.songIds[1]) return result;
+          lastPair = result.songIds;
+          last = { state: "not_found" };
+        } else {
+          lastPair = undefined;
+          last = result;
+        }
+      } else lastPair = undefined;
+    } else {
+      lastPair = undefined;
+      last = { state: state === "login_required" ? "login_required" : "unavailable" };
+    }
+    await page.waitForTimeout(Math.max(0, Math.min(poll, deadline - performance.now())));
+  } while (performance.now() < deadline);
+  guard();
+  return last;
+}
+
 const coverCredits = (text: string) => {
   const match = text.match(/(\d+)\s*积分/u)?.[1];
   const value = match === undefined ? NaN : Number(match);
@@ -266,7 +330,7 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
       time.form, changedCode);
   };
 
-  const submit = async (kind: PuleCharge, action: Locator, prepare: () => Promise<void>) => {
+  const submit = async (kind: PuleCharge, action: Locator, prepare: () => Promise<void | string[]>) => {
     const timeout = kind === "generation" ? time.form : time.control;
     const selected = await one(action, undefined, timeout);
     const credits = kind === "processing" ? coverCredits(await selected.innerText()) : undefined;
@@ -275,12 +339,12 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
     const control = await selected.elementHandle({ timeout });
     try {
       await control.click({ trial: true, timeout });
-      await prepare();
+      const beforeSongIds = await prepare();
       await check();
       if (credits !== undefined && coverCredits(await control.innerText()) !== credits)
         throw Error("PULE_PRICE_CHANGED");
       await hooks.guard();
-      await hooks.beforeCharge(kind, credits);
+      await hooks.beforeCharge(kind, credits, beforeSongIds || undefined);
       await control.click({ timeout });
     } finally {
       await control.dispose();
@@ -402,16 +466,20 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
     const emptyList = visible(results.getByText(/^(?:在左侧开始你的第一首歌|暂无(?:歌曲|音乐))$/u));
     const before = new Set<string>();
     let previousFirstTitle: string | undefined;
+    let planBeforeSongIds: string[] | undefined;
     // Capture the first displayed title and existing song IDs immediately before submission.
     hooks.step("generation");
     await hooks.beforeGeneration?.();
     await submit("generation", makeSong, async () => {
       const snapshot = await until(async () => {
         const current = await readSongs(page);
-        if (current[0]?.title || (!current.length && await emptyList.count())) return current;
+        const first = current[0];
+        if ((first?.title && (phase?.kind !== "submit" || first.id)) ||
+            (!current.length && await emptyList.count())) return current;
       }, time.form, "PULE_RESULT_BASELINE_UNAVAILABLE");
       previousFirstTitle = snapshot[0]?.title;
       for (const row of snapshot) if (row.id) before.add(row.id);
+      if (phase?.kind === "submit") return planBeforeSongIds = [...before].slice(0, 250);
     });
 
     // Confirm the official two-song prompt once, then wait eight seconds from the final submit action.
@@ -432,6 +500,15 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
       }
       if (performance.now() < resultsNotBefore || await busy.count()) return;
       const rows = await readSongs(page);
+      if (planBeforeSongIds) {
+        if (await busy.count()) return;
+        const receipt = findBrowserReceipt(rows, { title: input.title, beforeSongIds: planBeforeSongIds });
+        if (receipt.state === "ambiguous") throw Error("PULE_RESULT_UNCLEAR");
+        if (receipt.state === "found") return [
+          { id: receipt.songIds[0], title: input.title }, { id: receipt.songIds[1], title: input.title },
+        ];
+        return;
+      }
       const [firstRow, secondRow] = rows;
       if (!firstRow?.id || !secondRow?.id ||
           firstRow.title !== input.title || secondRow.title !== input.title ||
@@ -445,20 +522,32 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
     }, time.generation + time.afterSubmit, "PULE_RESULT_UNCLEAR");
   };
 
-  const readKnownSongs = (songIds: readonly string[]) => until(async (): Promise<[VerifiedSong, VerifiedSong] | undefined> => {
+  type Take = [PuleVersion, VerifiedSong];
+  const readKnownSongs = ({ songIds, versions }: PuleDownloadPhase) => until(async (): Promise<Take[] | undefined> => {
     const rows = await readSongs(page);
-    const a = rows.filter(row => row.id === songIds[0]);
-    const b = rows.filter(row => row.id === songIds[1]);
-    if (a.length > 1 || b.length > 1) throw Error("PULE_RESULT_UNCLEAR");
-    if (!a[0]?.id || !b[0]?.id) return;
-    if (a[0].title !== input.title || b[0].title !== input.title && b[0].title !== input.alternateTitle)
-      throw Error("PULE_SAVED_SONG_TITLE_CHANGED");
-    return [{ id: a[0].id, title: a[0].title }, { id: b[0].id, title: b[0].title }];
+    const takes: Take[] = [];
+    for (const version of (["A", "B"] as const).filter(version => versions.includes(version))) {
+      const songId = songIds[version === "A" ? 0 : 1];
+      const matches = rows.filter(row => row.id === songId);
+      if (matches.length > 1) throw Error("PULE_RESULT_UNCLEAR");
+      const song = matches[0];
+      if (!song?.id) return;
+      if (song.title !== input.title && (version !== "B" || song.title !== input.alternateTitle))
+        throw Error("PULE_SAVED_SONG_TITLE_CHANGED");
+      takes.push([version, { id: song.id, title: song.title }]);
+    }
+    return takes;
   }, time.form, "PULE_SAVED_SONGS_UNAVAILABLE");
 
-  const [first, second] = phase?.kind === "download" ? await readKnownSongs(phase.songIds) : await createSongs();
-  if (phase?.kind !== "download") await hooks.identify([first.id, second.id]);
-  if (phase?.kind === "submit") return;
+  let takes: Take[];
+  if (phase?.kind === "download") {
+    takes = await readKnownSongs(phase);
+  } else {
+    const [first, second] = await createSongs();
+    await hooks.identify([first.id, second.id]);
+    if (phase?.kind === "submit") return;
+    takes = [["A", first], ["B", second]];
+  }
 
   const renameAction = visible(page.getByText("修改歌名", { exact: true }).and(page.locator("span")));
   const wavAction = visible(page.getByText(waveDownload));
@@ -503,8 +592,9 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
     await until(async () => !(await overlay.count()) ? true : undefined, time.control, code);
   };
 
-  let versionB = second;
-  if (input.alternateTitle && input.alternateTitle !== second.title) {
+  const takeB = takes.find(([version]) => version === "B");
+  if (takeB && input.alternateTitle && input.alternateTitle !== takeB[1].title) {
+    const second = takeB[1];
     // Scroll the second song's menu to Rename, then confirm the same song shows the saved title.
     hooks.step("rename");
     const rename = await openSongAction(second, renameAction, "PULE_RENAME_UNAVAILABLE");
@@ -517,7 +607,7 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
       time.form, "PULE_RENAME_UNAVAILABLE");
     await fill(newName, input.alternateTitle, "PULE_RENAME_UNCONFIRMED");
     await click(button("保存", editor), "PULE_RENAME_UNAVAILABLE", time.form);
-    versionB = await until(async () => {
+    takeB[1] = await until(async () => {
       if (await editor.count()) return;
       const matches = (await readSongs(page)).filter(row => row.id === second.id);
       if (matches.length === 1 && matches[0].title === input.alternateTitle) return { id: second.id, title: matches[0].title };
@@ -569,10 +659,9 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
 
   let coverFailure: Error | undefined;
   const downloadOwners = new Map<string, string>();
-  const takes = [["A", first], ["B", versionB]] as const;
-  const selectedTakes = phase?.kind === "download" ? takes.filter(([version]) => phase.versions.includes(version)) : takes;
-  for (const [index, [version, song]] of selectedTakes.entries()) {
+  for (const [index, [version, song]] of takes.entries()) {
     hooks.step("download");
+    await hooks.audioProgress?.("preparing", version);
     if (await downloadDialog.count()) throw Error("PULE_DOWNLOAD_CONFIRM_UNAVAILABLE");
     const selected = await openSongAction(song, wavAction, "PULE_DOWNLOAD_UNAVAILABLE");
     const { control: { confirm, deadline }, preparedSongId } = await preparePuleWave(page, () => prepareDownload(selected, version));
@@ -583,6 +672,7 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
       downloadOwners.set(preparedSongId, song.id);
     }
     await hooks.guard();
+    await hooks.audioProgress?.("downloading", version);
     await receivePuleWave(page, {
       songId: song.id, preparedSongId, deadline, poll: time.poll,
       guard: hooks.guard, receiving: () => hooks.step("receive"),
@@ -606,7 +696,7 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
         coverFailure ??= error;
       }
     }
-    if (index + 1 < selectedTakes.length) {
+    if (index + 1 < takes.length) {
       await closeOverlay(downloadDialog, "PULE_DOWNLOAD_CONFIRM_UNAVAILABLE", downloadClose);
       await closeOverlay(menuActions, "PULE_DOWNLOAD_UNAVAILABLE");
     }

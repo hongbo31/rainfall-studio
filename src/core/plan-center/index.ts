@@ -15,9 +15,10 @@ import { CenterStore, digest, isLegacyOwned } from './storage';
 import { dueTimes } from './schedule';
 import {providerPlanProof} from '../provider-plan-text';
 import {ProviderTextJobSchema} from '../../shared/provider-text';
-import {authorizeGraphPlanExecution,freezePlanWorkflow,planWorkflowIssue,planWorkflowMusicIssue,verifiedPlanLyrics} from '../plan-workflow';
+import {authorizeGraphPlanExecution,freezePlanWorkflow,planWorkflowIssue,planWorkflowMusicIssue,refreshPlanArtist,verifiedPlanLyrics,withWorkflowMusicInputs} from '../plan-workflow';
 import {isLocalPublicationWorkflow,workflowPublicationPlatforms} from '../../shared/plan-workflow-graph';
 import {workflowBrowserMusic} from '../../shared/plan-workflow-fields';
+import {readSunoBrowserReceipt,sunoBrowserWavsComplete} from '../../shared/plan-pule';
 import {readWorkflowPublication} from '../plan-workflow-publication';
 export { isLegacyOwned } from './storage';
 
@@ -118,7 +119,8 @@ export class PlanCenterService {
         }}),
       }:typedPlan;
       const local=isLocalPublicationWorkflow(planInput.workflow?.graph);
-      let inputPlan=freezePlanWorkflow(this.repo,local?planInput:freezePlanIdentities(this.repo,freezeArtist(this.repo,freezePlanRoutes(this.repo,planInput))));
+      const routed=local?planInput:freezePlanIdentities(this.repo,freezePlanRoutes(this.repo,planInput));
+      let inputPlan=routed.workflow?freezePlanWorkflow(this.repo,routed):freezeArtist(this.repo,routed);
       this.checkWorkflowSchedule(inputPlan);
       if(!inputPlan.workflow&&old?.routeSnapshot&&digest(old.routeSnapshot)!==digest(inputPlan.routeSnapshot)){inputPlan={...inputPlan,text:{...inputPlan.text,consent:false},music:{...inputPlan.music,consent:false},authorization:{...inputPlan.authorization,text:false,music:false}};}
       if(inputPlan.material.source==='provider'&&!instrumental&&inputPlan.text.profileId){
@@ -136,7 +138,7 @@ export class PlanCenterService {
   read(input:z.input<typeof PlanCenterIdSchema>) {
     const {id}=PlanCenterIdSchema.parse(input),plan=this.store.get('plan',id);
     if(!plan)throw Error('NOT_FOUND');
-    return plan;
+    return refreshPlanArtist(this.repo,plan);
   }
   delete(input:z.input<typeof PlanCenterDeleteSchema>, onStopped?:(run:PlanCenterRun)=>void) {
     const {id,expectedRevision}=PlanCenterDeleteSchema.parse(input);
@@ -158,12 +160,25 @@ export class PlanCenterService {
   }
   toggle(input:z.input<typeof PlanCenterToggleSchema>) {
     const p=PlanCenterToggleSchema.parse(input);
-    return this.repo.transaction(()=>{const old=this.store.get('plan',p.id);if(!old)throw Error('NOT_FOUND');if(old.revision!==p.expectedRevision)throw Error('REVISION_CONFLICT');if(p.enabled&&missingTheme(old))throw Error('THEME_REQUIRED');this.checkCreationSchedule({...old,enabled:p.enabled});this.checkWorkflowSchedule({...old,enabled:p.enabled});const now=this.now();const plan=this.store.put('plan',{...old,enabled:p.enabled,revision:old.revision+1,updatedAt:now});this.store.put('cursor',{id:plan.id,lastAt:now});return plan;});
+    return this.repo.transaction(()=>{
+      const old=this.store.get('plan',p.id);
+      if(!old)throw Error('NOT_FOUND');
+      if(old.revision!==p.expectedRevision)throw Error('REVISION_CONFLICT');
+      if(p.enabled&&missingTheme(old))throw Error('THEME_REQUIRED');
+      const now=this.now();
+      const change={enabled:p.enabled,revision:old.revision+1,updatedAt:now};
+      const plan={...refreshPlanArtist(this.repo,old),...change};
+      this.checkCreationSchedule(plan);
+      this.checkWorkflowSchedule(plan);
+      this.store.put('plan',{...old,...change});
+      this.store.put('cursor',{id:plan.id,lastAt:now});
+      return plan;
+    });
   }
   private checkWorkflowSchedule(plan:PlanCenterPlan) {
     if(plan.enabled&&workflowPublicationPlatforms(plan.workflow?.graph).length){
       if(!plan.authorization.publish)throw Error('WORKFLOW_PUBLICATION_CONFIRMATION_REQUIRED');
-      const issue=planWorkflowIssue(this.repo,plan);
+      const issue=planWorkflowIssue(this.repo,withWorkflowMusicInputs(plan));
       if(issue)throw Error(issue);
     }
   }
@@ -183,7 +198,9 @@ export class PlanCenterService {
     });
   }
   preview(input:z.input<typeof PlanCenterIdSchema>) {
-    const {id}=PlanCenterIdSchema.parse(input),plan=this.store.get('plan',id);if(!plan)throw Error('NOT_FOUND');
+    return this.previewPlan(withWorkflowMusicInputs(this.read(input)));
+  }
+  private previewPlan(plan:PlanCenterPlan) {
     const summary={title:plan.title,artistId:plan.artistId,count:plan.count,outputs:plan.outputs,theme:plan.theme,styleTemplate:plan.styleTemplate,artistSnapshot:plan.artistSnapshot,storyContext:plan.storyContext,material:plan.material,text:plan.text,music:plan.music,routing:plan.routing,routeSnapshot:plan.routeSnapshot,routeIssue:planWorkflowIssue(this.repo,plan)??planRouteIssue(this.repo,plan),publishTargets:plan.publishTargets.filter(t=>t.enabled),fanqie:plan.fanqie,authorization:plan.authorization,...(plan.songType?{songType:plan.songType}:{})};
     return {planRevision:plan.revision,summaryHash:digest({plan,summary}),summary};
   }
@@ -205,9 +222,9 @@ export class PlanCenterService {
       const existing=this.store.all('run').find(r=>r.requestId===p.requestId);
       if(existing) {if(existing.planId!==p.id||existing.source!==p.source||existing.summaryHash!==p.summaryHash||existing.planRevision!==p.expectedRevision||
         (existing.prepareContract??true)!==(prepareContract??true))throw Error('REQUEST_ID_CONFLICT');return existing;}
-      const plan=this.store.get('plan',p.id);if(!plan)throw Error('NOT_FOUND');
+      const plan=withWorkflowMusicInputs(this.read({id:p.id}));
       if(plan.revision!==p.expectedRevision)throw Error('REVISION_CONFLICT');
-      if(this.preview({id:p.id}).summaryHash!==p.summaryHash)throw Error('SUMMARY_CONFLICT');
+      if(this.previewPlan(plan).summaryHash!==p.summaryHash)throw Error('SUMMARY_CONFLICT');
       const publishes=workflowPublicationPlatforms(plan.workflow?.graph).length>0;
       const local=isLocalPublicationWorkflow(plan.workflow?.graph);
       if(plan.workflow?.graph&&(p.source==='manual'||p.source==='debug')){
@@ -279,7 +296,11 @@ export class PlanCenterService {
         if(!this.store.get('occurrence',key)) {
           const base={id:key,planId:plan.id,occurrenceKey:key,intendedAt:selected,localDate:DateTime.fromISO(selected).setZone('Asia/Shanghai').toISODate()!,createdAt:now};
           if(plan.catchUp.mode==='skip'&&Date.parse(now)-Date.parse(selected)>60_000)this.store.put('occurrence',{...base,status:'skipped',reason:'CATCH_UP_SKIP'});
-          else {const run=this.createRun(plan,'scheduled',key,this.preview({id:plan.id}).summaryHash,key);this.store.put('occurrence',{...base,status:'claimed',runId:run.id});}
+          else {
+            const current=withWorkflowMusicInputs(refreshPlanArtist(this.repo,plan));
+            const run=this.createRun(current,'scheduled',key,this.previewPlan(current).summaryHash,key);
+            this.store.put('occurrence',{...base,status:'claimed',runId:run.id});
+          }
         }
         if(plan.material.source==='creation'||plan.workflow&&plan.schedule.kind==='once')this.store.put('plan',{...plan,enabled:false,revision:plan.revision+1,updatedAt:now});
         this.store.put('cursor',{id:plan.id,lastAt:plan.catchUp.mode==='bounded'?selected:now});
@@ -332,7 +353,7 @@ export class PlanCenterService {
     if(stage==='dot'&&(!run.snapshot.material.channel||!run.snapshot.material.identity))return {state:'waiting_external_dot',reason:'DOT_IDENTITY_REQUIRED'};
     if(['text_generate','text_score'].includes(stage)&&(!run.snapshot.authorization.text||!run.snapshot.text.consent||!run.snapshot.text.profileId||!run.snapshot.text.profileRevision||!run.snapshot.text.modelId||!run.snapshot.text.budgetMicros))return {state:'blocked',reason:'TEXT_GRANT_REQUIRED'};
     if(stage==='lyric_write'){
-      const plan=run.snapshot, issue=planWorkflowIssue(this.repo,plan);
+      const plan=run.snapshot, issue=planWorkflowIssue(this.repo,plan,'run');
       if(issue)return {state:'blocked',reason:issue};
       if(plan.workflow?.graph&&item.ordinal>1&&this.store.all('item').some(previous=>previous.runId===run.id&&
         previous.ordinal<item.ordinal&&!['completed','waiting_publication'].includes(previous.state)))
@@ -355,16 +376,27 @@ export class PlanCenterService {
   }
   next(input:{runId?:string;itemId?:string}={}) {
     const parsed=z.strictObject({runId:safeId.optional(),itemId:safeId.optional()}).parse(input);
-    for(const run of this.store.all('run').filter(r=>!terminalRuns.has(r.state)&&!r.stopRequested&&(!parsed.runId||r.id===parsed.runId)))
-      for(const item of this.store.all('item').filter(i=>i.runId===run.id&&(!parsed.itemId||i.id===parsed.itemId))) {
-        const attempts=this.store.all('stage').filter(a=>a.itemId===item.id);
-        for(const stage of this.stages(run.snapshot)) {
+    const selectedItem=parsed.itemId?this.store.get('item',parsed.itemId):undefined;
+    if(parsed.itemId&&!selectedItem||selectedItem&&parsed.runId&&selectedItem.runId!==parsed.runId)return null;
+    const runId=parsed.runId??selectedItem?.runId;
+    const selectedRun=runId?this.store.get('run',runId):undefined;
+    const runs=runId?(selectedRun?[selectedRun]:[]):this.store.all('run');
+    for(const run of runs) {
+      if(terminalRuns.has(run.state)||run.stopRequested)continue;
+      const scope={field:'runId' as const,values:[run.id]};
+      const items=selectedItem?[selectedItem]:this.store.all('item',scope);
+      if(!items.length)continue;
+      const stages=this.store.all('stage',scope),required=this.stages(run.snapshot);
+      for(const item of items) {
+        const attempts=stages.filter(a=>a.itemId===item.id);
+        for(const stage of required) {
           if(attempts.some(a=>a.stage===stage&&a.state==='succeeded'))continue;
           const last=attempts.filter(a=>a.stage===stage).at(-1);
           if(last)return {runId:run.id,itemId:item.id,stage,state:last.state,reason:last.reason,attemptId:last.id};
           return {runId:run.id,itemId:item.id,stage,...this.stageGate(run,item,stage)};
         }
       }
+    }
     return null;
   }
   claim(input:z.input<typeof PlanCenterClaimSchema>):PlanCenterStageAttempt|{state:string;reason?:string} {
@@ -372,12 +404,13 @@ export class PlanCenterService {
     return this.repo.transaction(()=>{
       const run=this.store.get('run',p.runId),item=this.store.get('item',p.itemId);if(!run||!item||item.runId!==run.id)throw Error('NOT_FOUND');
       if(run.stopRequested)throw Error('STOP_REQUESTED');if(terminalRuns.has(run.state))throw Error('RUN_TERMINAL');
-      const attempts=this.store.all('stage').filter(a=>a.itemId===p.itemId&&a.stage===p.stage),success=attempts.find(a=>a.state==='succeeded');
+      const itemAttempts=this.store.all('stage',{field:'runId',values:[run.id]}).filter(a=>a.itemId===item.id);
+      const attempts=itemAttempts.filter(a=>a.stage===p.stage),success=attempts.find(a=>a.state==='succeeded');
       if(p.requestHash&&attempts.length&&p.requestHash!==attempts.at(-1)!.requestHash)throw Error('REQUEST_HASH_CONFLICT');
       if(success)return success;
       if(attempts.length) {const last=attempts.at(-1)!;if(last.state==='unknown')throw Error('RECONCILE_REQUIRED');return last;}
       const required=this.stages(run.snapshot),stageIndex=required.indexOf(p.stage);if(stageIndex<0)throw Error('STAGE_NOT_CONFIGURED');
-      for(const prev of required.slice(0,stageIndex))if(!this.store.all('stage').some(a=>a.itemId===item.id&&a.stage===prev&&a.state==='succeeded'))throw Error('STAGE_PREREQUISITE');
+      for(const prev of required.slice(0,stageIndex))if(!itemAttempts.some(a=>a.stage===prev&&a.state==='succeeded'))throw Error('STAGE_PREREQUISITE');
       const gate=this.stageGate(run,item,p.stage);if(gate.state!=='ready'){this.store.put('item',{...item,...gate,updatedAt:this.now()});this.refresh(run.id);return gate;}
       return this.newAttempt(run,item,p.stage,1,p.requestHash);
     });
@@ -618,7 +651,8 @@ export class PlanCenterService {
   refreshPublication(runId:string){this.refresh(runId);}
   private refresh(runId:string) {
     const run=this.store.get('run',runId)!;if(terminalRuns.has(run.state)&&!(run.state==='stopped'&&run.stopRequested))return;
-    const stages=this.store.all('stage').filter(a=>a.runId===run.id),publish=this.store.all('publish').filter(a=>a.runId===run.id),items=this.store.all('item').filter(i=>i.runId===run.id),now=this.now();
+    const scope={field:'runId' as const,values:[run.id]};
+    const stages=this.store.all('stage',scope),publish=this.store.all('publish',scope),items=this.store.all('item',scope),now=this.now();
     if(run.stopRequested) {
       for(const attempt of stages.filter(a=>planStageCancelsOnStop(run,a))){
         const reason=attempt.stage==='music_assets'?'WORKFLOW_DOWNLOAD_STOPPED':'WORKFLOW_STAGE_STOPPED';
@@ -635,9 +669,10 @@ export class PlanCenterService {
     if(isLocalPublicationWorkflow(run.snapshot.workflow?.graph))return;
     const workflowPublishes=run.snapshot.authorization.publish&&workflowPublicationPlatforms(run.snapshot.workflow?.graph).length>0;
     const workflowPublication=workflowPublishes?readWorkflowPublication(this.repo,run.id):undefined;
+    const required=this.stages(run.snapshot);
     let complete=0,blocked=false,waiting=false;
     for(const item of items) {
-      const required=this.stages(run.snapshot),next=required.find(s=>!stages.some(a=>a.itemId===item.id&&a.stage===s&&a.state==='succeeded'));
+      const next=required.find(s=>!stages.some(a=>a.itemId===item.id&&a.stage===s&&a.state==='succeeded'));
       if(!next) {
         if(workflowPublishes&&workflowPublication?.state!=='completed'){
           waiting=true;
@@ -673,9 +708,16 @@ export class PlanCenterService {
         const graph=graphs.get(a.runId);
         if(graph&&(a.stage==='materials'||a.stage==='cover'))continue;
         const localDownload=graph&&a.stage==='music_assets';
-        this.store.put('stage',localDownload
-          ?{...a,state:'waiting',reason:'ORIGINAL_ASSETS_PENDING',updatedAt:this.now()}
-          :{...a,state:'unknown',reason:'RESTART_RECONCILE_REQUIRED',updatedAt:this.now()});
+        const receipt=a.stage==='music_submit'&&graph&&!graph.stopRequested&&!terminalRuns.has(graph.state)&&
+          workflowBrowserMusic(graph.snapshot.workflow)?.provider==='suno_cn'?readSunoBrowserReceipt(a.result):undefined;
+        if(receipt&&sunoBrowserWavsComplete(receipt,!!graph?.snapshot.workflowSnapshot?.secondSinger)){
+          this.store.put('stage',{...a,state:'succeeded',reason:undefined,externalTaskId:receipt.trackingId,
+            evidenceId:receipt.trackingId,updatedAt:this.now()});
+        }else{
+          this.store.put('stage',localDownload
+            ?{...a,state:'waiting',reason:'MUSIC_ASSETS_CHECKING',updatedAt:this.now()}
+            :{...a,state:'unknown',reason:'RESTART_RECONCILE_REQUIRED',updatedAt:this.now()});
+        }
         ids.add(a.runId);
       }
       for(const a of this.store.all('publish'))if(a.state==='dispatching'){this.store.put('publish',{...a,state:'unknown',reason:'RESTART_RECONCILE_REQUIRED',updatedAt:this.now()});ids.add(a.runId);}

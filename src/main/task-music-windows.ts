@@ -8,7 +8,7 @@ export type TaskMusicWindowScope = z.infer<typeof scopeSchema>;
 export type MusicWindowProvider = TaskMusicWindowScope["provider"];
 export type BrowserLoginState = Awaited<ReturnType<BrowserContext["storageState"]>>;
 type TaskLogin = { storageState: BrowserLoginState; sessionStorage: [string, string][] };
-export type LaunchTaskMusicWindow = (provider: MusicWindowProvider, state?: BrowserLoginState) =>
+export type LaunchTaskMusicWindow = (provider: MusicWindowProvider, state?: BrowserLoginState, headless?: boolean) =>
   Promise<{ context: BrowserContext; close: () => Promise<void> }>;
 type TaskWindow = { page: Page; close: () => Promise<void> };
 type Opening = {

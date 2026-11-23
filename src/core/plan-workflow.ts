@@ -5,12 +5,26 @@ import { bestLyricVersion, canResumeLyricResponse, lyricResultVersion, meetsLyri
 import { accountSupportsTarget } from "../shared/platform-accounts";
 import { publicationWorkflowHandler, workflowNodesCatalog } from "../shared/platform-directory";
 import { isLocalPublicationWorkflow, workflowProvider, workflowPublicationPlatforms } from "../shared/plan-workflow-graph";
-import { workflowBrowserMusic, workflowPuleInputsComplete } from "../shared/plan-workflow-fields";
+import { withoutWorkflowLyrics, workflowBrowserMusic, workflowPuleInputsComplete } from "../shared/plan-workflow-fields";
 import { puleSongFields } from "../shared/pule-browser";
 import { z } from "zod";
-import type { PlanCenterItem, PlanCenterPlan, PlanCenterRun } from "../shared/plan-center";
-import type { Repository } from "./database";
+import { isPlanCenterDefinition, type PlanCenterItem, type PlanCenterPlan, type PlanCenterRun } from "../shared/plan-center";
+import type { Repository, Row } from "./database";
+import { withArtistSnapshot } from "./generation-config";
 import type { Studio } from "./studio";
+
+const workflowArtistDetails = z.object({ profile: artistProfileSchema, secondSinger: secondSingerSchema.nullish() });
+
+function withWorkflowArtist(repo: Repository, plan: PlanCenterPlan, artist: Row, accountName: string,
+  { profile, secondSinger }: z.infer<typeof workflowArtistDetails>): PlanCenterPlan {
+  const songType = artistSongType(artist.defaults);
+  const template = artist.promptTemplateId ? repo.maybe("promptTemplates", artist.promptTemplateId) : null;
+  return { ...withArtistSnapshot(plan, { ...artist, profile, secondSinger, accountLocalArtist: true }),
+    songType, outputs: { ...plan.outputs, lyrics: songType === "vocal" },
+    workflowSnapshot: { accountName, artist: profile, secondSinger: secondSinger ?? undefined,
+      template: template ? { id: template.id, name: template.name, revision: template.revision } : null },
+  };
+}
 
 export function freezePlanWorkflow(repo: Repository, plan: PlanCenterPlan): PlanCenterPlan {
   const workflow = plan.workflow;
@@ -22,14 +36,35 @@ export function freezePlanWorkflow(repo: Repository, plan: PlanCenterPlan): Plan
   if (isLocalPublicationWorkflow(workflow.graph)) return plan;
   const artist = repo.get("accountLocalArtists", plan.artistId);
   if (artist.accountId && artist.accountId !== account.id) throw Error("ARTIST_ACCOUNT_MISMATCH");
-  const songType = artistSongType(artist.defaults);
-  const template = artist.promptTemplateId ? repo.maybe("promptTemplates", artist.promptTemplateId) : null;
-  if (!workflow.graph && workflow.mode === "musician" && !template) throw Error("WORKFLOW_TEMPLATE_REQUIRED");
-  return { ...plan, songType, outputs: { ...plan.outputs, lyrics: songType === "vocal" },
-    workflowSnapshot: { accountName: account.name, artist: artistProfileSchema.parse(artist.profile),
-      secondSinger: secondSingerSchema.optional().parse(artist.secondSinger ?? undefined),
-      template: template ? { id: template.id, name: template.name, revision: template.revision } : null },
-  };
+  const saved = withWorkflowArtist(repo, plan, artist, account.name, workflowArtistDetails.parse(artist));
+  if (!workflow.graph && workflow.mode === "musician" && !saved.workflowSnapshot?.template) throw Error("WORKFLOW_TEMPLATE_REQUIRED");
+  return saved;
+}
+
+/** Resolve artist data for a definition before showing it or starting an execution. */
+export function refreshPlanArtist(repo: Repository, plan: PlanCenterPlan): PlanCenterPlan {
+  if (!plan.artistId || !plan.routing || !isPlanCenterDefinition(plan)) return plan;
+  const artist = repo.maybe("accountLocalArtists", plan.artistId);
+  const saved = plan.artistSnapshot;
+  if (!artist || saved && saved.id === artist.id && saved.revision === artist.revision) return plan;
+  if (!plan.workflow) return withArtistSnapshot(plan, { ...artist, accountLocalArtist: true });
+  if (!plan.workflowSnapshot || artist.accountId && artist.accountId !== plan.workflow.accountId) return plan;
+  const details = workflowArtistDetails.safeParse(artist);
+  return details.success ? withWorkflowArtist(repo, plan, artist, plan.workflowSnapshot.accountName, details.data) : plan;
+}
+
+/** Resolve inputs for the run's song type while preserving the saved mappings. */
+export function withWorkflowMusicInputs(plan: PlanCenterPlan): PlanCenterPlan {
+  const { workflow } = plan;
+  if (!workflow) return plan;
+  const music = workflow.browserMusic ?? workflow.pule;
+  if (!music) return plan;
+  const inputs = plan.songType === "instrumental" ? withoutWorkflowLyrics(music.inputs) :
+    music.inputs.lyrics ? music.inputs : { ...music.inputs, lyrics: "lyrics" as const };
+  if (inputs === music.inputs) return plan;
+  if (workflow.browserMusic)
+    return { ...plan, workflow: { ...workflow, browserMusic: { ...workflow.browserMusic, inputs } } };
+  return { ...plan, workflow: { ...workflow, pule: { ...music, inputs } } };
 }
 
 export function planWorkflowMusicIssue(repo: Repository, plan: PlanCenterPlan) {
@@ -50,15 +85,18 @@ export function authorizeGraphPlanExecution(plan: PlanCenterPlan, publish = fals
   };
 }
 
-export function planWorkflowIssue(repo: Repository, plan: PlanCenterPlan) {
+export function planWorkflowIssue(repo: Repository, plan: PlanCenterPlan, source: "definition" | "run" = "definition") {
   if (!plan.workflow) return;
   if (isLocalPublicationWorkflow(plan.workflow.graph)) return planWorkflowPublicationIssue(repo, plan);
   const account = repo.maybe("accounts", plan.workflow.accountId);
   if (!account || (plan.workflow.platform && !accountSupportsTarget(account.provider, plan.workflow.platform)) || account.name !== plan.workflowSnapshot?.accountName)
     return "WORKFLOW_ACCOUNT_CHANGED";
   const artist = repo.maybe("accountLocalArtists", plan.artistId);
-  if (!artist || artist.revision !== plan.artistSnapshot?.revision || (artist.accountId && artist.accountId !== account.id)) return "WORKFLOW_ARTIST_CHANGED";
+  const snapshot = plan.artistSnapshot;
+  if (!artist || !snapshot || snapshot.id !== artist.id || (artist.accountId && artist.accountId !== account.id) ||
+      (source === "definition" && artist.revision !== snapshot.revision)) return "WORKFLOW_ARTIST_CHANGED";
   const template = plan.workflowSnapshot?.template;
+  if (!plan.workflow.graph && plan.workflow.mode === "musician" && !template) return "WORKFLOW_TEMPLATE_REQUIRED";
   if (template && repo.maybe("promptTemplates", template.id)?.revision !== template.revision) return "WORKFLOW_TEMPLATE_CHANGED";
   const graph = plan.workflow.graph;
   if (graph?.nodes.some(id => !workflowNodesCatalog.some(node => node.id === id && node.available))) return "WORKFLOW_NODE_UNAVAILABLE";
@@ -116,6 +154,18 @@ function mappedMusicDraft(plan: PlanCenterPlan, inputs: NonNullable<ReturnType<t
   return draft.data;
 }
 
+function alignBrowserVocalStyle(style: string, gender: "male" | "female") {
+  const differentVoice = gender === "male" ? /女(?=声|[高中低]音|主唱|歌手|性人声)/gu : /男(?=声|[高中低]音|主唱|歌手|性人声)/gu;
+  const differentEnglishVoice = gender === "male"
+    ? /\bfemale[\s_-]*(?=(?:vocals?|voice|lead|singer|soprano|mezzo|alto)\b)/giu
+    : /\bmale[\s_-]*(?=(?:vocals?|voice|lead|singer|rap|rapper|tenor|baritone|bass)\b)/giu;
+  return style.split(/([,，;；\n]+)/u).map(part => {
+    // Keep exclusions as written. The selected lead vocal is sent separately from these tags.
+    if (/^\s*(?:-|(?:no|avoid|without)\b|不使用|不要|避免|排除|禁止)/iu.test(part)) return part;
+    return part.replace(differentVoice, gender === "male" ? "男" : "女").replace(differentEnglishVoice, "");
+  }).join("");
+}
+
 export function workflowCreationDraft(run: PlanCenterRun, item: PlanCenterItem) {
   if (run.snapshot.material.source !== "workflow") return run.snapshot.creationDraft;
   const material = item.material;
@@ -127,9 +177,11 @@ export function workflowCreationDraft(run: PlanCenterRun, item: PlanCenterItem) 
     title: material.title, lyrics: run.snapshot.songType === "instrumental" ? "" : material.lyrics, style: material.musicPrompt,
     ...(material.alternateTitle ? { alternateTitle: material.alternateTitle } : {}),
   };
+  const vocalGender = run.snapshot.songType === "vocal" && (gender === "male" || gender === "female") ? gender : undefined;
   return CreationTaskDraftSchema.parse({
     ...fields,
-    ...(run.snapshot.songType === "vocal" && (gender === "male" || gender === "female") ? { vocalGender: gender } : {}),
+    ...(vocalGender ? { vocalGender } : {}),
+    ...(music && vocalGender && typeof fields.style === "string" ? { style: alignBrowserVocalStyle(fields.style, vocalGender) } : {}),
   });
 }
 
@@ -172,9 +224,10 @@ export function tickPlanLyrics(s: Studio, run: PlanCenterRun, item: PlanCenterIt
         typeof attempt.ordinal !== "number" || attempt.state !== "dispatching") return;
     const { id: attemptId, ordinal } = attempt;
     try {
-      const issue = planWorkflowIssue(s.repo, run.snapshot);
+      const issue = planWorkflowIssue(s.repo, run.snapshot, "run");
       if (issue) throw Error(issue);
-      const text = run.snapshot.routeSnapshot!.text;
+      const { artistSnapshot, workflowSnapshot, routeSnapshot } = run.snapshot;
+      const text = routeSnapshot!.text;
       const previous = ordinal > 1
         ? center.list().stageAttempts.findLast(row => row.runId === run.id && row.itemId === item.id &&
           row.stage === "lyric_write" && row.ordinal < ordinal && row.externalTaskId)
@@ -188,7 +241,10 @@ export function tickPlanLyrics(s: Studio, run: PlanCenterRun, item: PlanCenterIt
           id: randomUUID(), mode: workflow.mode, inspiration: workflow.inspiration, artistId: run.snapshot.artistId,
           expectedSongType: run.snapshot.songType, profileId: text.profileId, profileRevision: text.profileRevision,
           maxRewrites: workflow.maxRewrites, targetScore: workflow.targetScore, consent: true,
-        }, attemptId, retrySource);
+        }, attemptId, retrySource, {
+          ...artistSnapshot!, profile: workflowSnapshot!.artist,
+          promptTemplateId: workflowSnapshot!.template?.id,
+        });
         center.record({ attemptId, status: "waiting", externalTaskId: job.id });
       });
     } catch (error) {

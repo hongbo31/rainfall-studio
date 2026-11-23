@@ -5,13 +5,14 @@ import {
   isPublicationPlan, planRunActive, planRunHasOutstandingWork, planStageCancelsOnStop,
   type PlanCenterItem, type PlanCenterList, type PlanCenterPlan, type PlanCenterRun, type PlanCenterStageAttempt,
 } from "../shared/plan-center";
-import { planPuleReceipt } from "../shared/plan-pule";
+import { readSunoBrowserReceipt } from "../shared/plan-pule";
 import { workflowBrowserMusic } from "../shared/plan-workflow-fields";
 import { isLocalPublicationWorkflow, workflowPublicationPlatforms } from "../shared/plan-workflow-graph";
 import { fanqieDownloadIssues } from "../shared/fanqie-downloads";
 import { stopPlanExecution } from "./plan-center-integration";
 import { CenterStore } from "./plan-center/storage";
 import { fanqieDirectoryCleanupStatus, isFanqieDirectoryCleanupOnlyFailure, isFanqieDirectoryDisconnectedBeforeUpload } from "./plan-fanqie-directory";
+import { refreshPlanArtist } from "./plan-workflow";
 import { readWorkflowPublication } from "./plan-workflow-publication";
 import { overlapsOccurrence, PublicationTaskService } from "./publication-tasks";
 import { observeDispatch } from "./publication-queue";
@@ -34,7 +35,7 @@ function blockedPlanFailure(items: PlanCenterItem[], publication: ReturnType<typ
   if (publication?.state === "action_required" && !publication.dispatch && !publication.qishui?.length) return publication.detail;
 }
 
-function confirmedSunoDownloadFailure(run: PlanCenterRun, items: PlanCenterItem[], attempts: PlanCenterStageAttempt[]) {
+function sunoSubmissionFailure(run: PlanCenterRun, items: PlanCenterItem[], attempts: PlanCenterStageAttempt[]) {
   if (run.source !== "publication_task" || run.snapshot.authorization.publish ||
     workflowBrowserMusic(run.snapshot.workflow)?.provider !== "suno_cn") return;
   const item = items.find(row => row.state === "unknown");
@@ -42,20 +43,27 @@ function confirmedSunoDownloadFailure(run: PlanCenterRun, items: PlanCenterItem[
   const latest = attempts.filter(row => row.runId === run.id && row.itemId === item.id && row.stage === "music_submit")
     .sort((a, b) => b.ordinal - a.ordinal)[0];
   if (!latest || latest.state !== "unknown") return;
-  const receipt = planPuleReceipt.safeParse(latest.result);
-  if (!receipt.success) return;
-  const requestId = /^suno-cn:([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})$/u.exec(receipt.data.trackingId ?? "")?.[1];
-  if (!requestId || receipt.data.songIds[0] !== requestId + ":A" || receipt.data.songIds[1] !== requestId + ":B") return;
-  const reason = latest.reason && latest.reason !== "WORKFLOW_SUNO_CN_BROWSER_RECEIPT_UNKNOWN"
-    ? latest.reason : "WORKFLOW_SUNO_CN_WAV_RECOVERY_REQUIRED";
+  const receipt = readSunoBrowserReceipt(latest.result);
+  const reason = latest.reason && !["WORKFLOW_SUNO_CN_BROWSER_RECEIPT_UNKNOWN", "RESTART_RECONCILE_REQUIRED"].includes(latest.reason)
+    ? latest.reason : receipt ? "WORKFLOW_SUNO_CN_WAV_RECOVERY_REQUIRED" : "WORKFLOW_SUNO_CN_BROWSER_RECEIPT_UNKNOWN";
   return { attemptId: latest.id, reason };
+}
+
+function settledMusicFailure(run: PlanCenterRun, items: PlanCenterItem[], attempts: PlanCenterStageAttempt[]) {
+  if (workflowBrowserMusic(run.snapshot.workflow)?.provider !== "yourmusic")
+    return sunoSubmissionFailure(run, items, attempts);
+  if (run.source !== "publication_task") return;
+  const attempt = attempts.find(row => row.runId === run.id && row.stage === "music_submit" &&
+    row.state === "unknown" && row.result?.browserRecoveryExhausted === true &&
+    items.some(item => item.id === row.itemId && item.state === "unknown"));
+  if (attempt?.reason) return { attemptId: attempt.id, reason: attempt.reason };
 }
 
 function settledPlanFailure(store: CenterStore, run: PlanCenterRun, rows: PlanCenterList, root: string) {
   if (run.state !== "blocked" || run.stopRequested) return;
   const items = rows.items.filter(item => item.runId === run.id);
-  const downloadFailure = confirmedSunoDownloadFailure(run, items, rows.stageAttempts);
-  const activity = downloadFailure ? { ...rows, stageAttempts: rows.stageAttempts.filter(row => row.id !== downloadFailure.attemptId) } : rows;
+  const musicFailure = settledMusicFailure(run, items, rows.stageAttempts);
+  const activity = musicFailure ? { ...rows, stageAttempts: rows.stageAttempts.filter(row => row.id !== musicFailure.attemptId) } : rows;
   if (planRunHasOutstandingWork(run, activity) || activity.stageAttempts.some(attempt => attempt.runId === run.id && planStageCancelsOnStop(run, attempt))) return;
   if (isLocalPublicationWorkflow(run.snapshot.workflow?.graph)) {
     return isFanqieDirectoryCleanupOnlyFailure(root, run) || isFanqieDirectoryDisconnectedBeforeUpload(root, run)
@@ -68,7 +76,7 @@ function settledPlanFailure(store: CenterStore, run: PlanCenterRun, rows: PlanCe
     return ["dispatching", "unknown"].includes(job?.state) ||
       job?.state === "uploaded" && job.record?.stage === "contract_pending" && (job.prepareContract ?? run.prepareContract ?? true);
   })) return;
-  return blockedPlanFailure(items, publication) ?? downloadFailure?.reason;
+  return blockedPlanFailure(items, publication) ?? musicFailure?.reason;
 }
 
 type ReleasedPlan = { state: "failed" | "stopped"; reason?: string };
@@ -161,10 +169,11 @@ function taskService(s: Studio) {
   const taskRunsForPlans = (planIds: readonly string[]) =>
     store.all("run", { field: "planId", values: planIds }).filter(run => run.source === "publication_task");
   const plans = () => store.all("plan").filter(isPublicationPlan)
-    .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? "")).map(plan => ({
-    id: plan.id, revision: plan.revision, title: plan.title, updatedAt: plan.updatedAt,
-    artistName: plan.artistSnapshot?.name ?? s.repo.maybe("artists", plan.artistId)?.name, publishes: planIncludesPublication(plan),
-  }));
+    .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? "")).map(definition => {
+      const plan = refreshPlanArtist(s.repo, definition);
+      return { id: plan.id, revision: plan.revision, title: plan.title, updatedAt: plan.updatedAt,
+        artistName: plan.artistSnapshot?.name ?? s.repo.maybe("artists", plan.artistId)?.name, publishes: planIncludesPublication(plan) };
+    });
   return { plans, store, service: new PublicationTaskService(s.repo, {
     now: s.now, plans,
     scheduledPlanConflicts(planIds, occurrence) {
@@ -215,11 +224,11 @@ function taskService(s: Studio) {
       }
       const scope = { field: "runId" as const, values: [id] };
       const items = store.all("item", scope);
-      const downloadFailure = run.state === "blocked" && workflowBrowserMusic(run.snapshot.workflow)?.provider === "suno_cn"
-        ? confirmedSunoDownloadFailure(run, items, store.all("stage", scope)) : undefined;
+      const musicFailure = run.state === "blocked" && workflowBrowserMusic(run.snapshot.workflow)
+        ? settledMusicFailure(run, items, store.all("stage", scope)) : undefined;
       return { state: run.stopRequested ? "stopped" : run.state,
         detail: run.reason ?? items.find(item => item.reason)?.reason,
-        failure: run.state === "blocked" ? blockedPlanFailure(items, readWorkflowPublication(s.repo, id)) ?? downloadFailure?.reason : undefined };
+        failure: run.state === "blocked" ? blockedPlanFailure(items, readWorkflowPublication(s.repo, id)) ?? musicFailure?.reason : undefined };
     },
     stopPlan: id => { if (store.get("run", id)?.source === "publication_task") stopPlanExecution(s, id); },
     observePublication: (dispatch, prepareContract) => observeDispatch(s, dispatch, prepareContract),

@@ -3,7 +3,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { Context } from "../../src/renderer/context";
 import Overview from "../../src/renderer/pages/Overview";
 import Insights from "../../src/renderer/pages/Insights";
-import CoverStudio from "../../src/renderer/pages/CoverStudio";
 import HelpNote from "../../src/renderer/components/HelpNote";
 import Track from "../../src/renderer/pages/Track";
 
@@ -33,7 +32,6 @@ const data = {
 const pages = {
   overview: Overview,
   insights: Insights,
-  cover: CoverStudio,
 };
 export function renderTrack() {
   const work={id:'copy-work',title:'原创详情样本',revision:1,artistId:'copy-artist',assets:{},assetHistory:[],parameters:{},config:{genre:'民谣'},story:'用户故事',lyrics:'用户歌词',prompt:'用户提示',rights:'用户授权记录',ai:'unknown'};

@@ -23,7 +23,9 @@ function fixture(){
     module:moduleFixture,exports:moduleFixture.exports,
     require(name){
       if(name==='react')return hookReact;
-      if(name==='../context')return{useStudio:()=>context};
+      if(name==='../context')return{useStudio:()=>context,useStudioRequest:()=>context.call};
+      if(name==='../browser-studio')return{studioMediaUrl:value=>value};
+      if(name==='./CoverInbox'||name==='./PlanCoverRecovery')return{default:()=>null,__esModule:true};
       throw Error('UNEXPECTED_COMPONENT_DEPENDENCY '+name);
     },
   },{filename:'PlanRunAssets.cjs'});

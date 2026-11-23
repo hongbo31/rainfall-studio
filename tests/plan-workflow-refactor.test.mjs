@@ -15,6 +15,7 @@ const { outputFiles } = await build({
     export { PlanCenterService } from './src/core/plan-center';
     export { executePlanCenter, tickPlanCenter } from './src/core/plan-center-integration';
     export { LyricWritingService } from './src/core/lyric-writing';
+    export { saveAccountLocalArtist } from './src/core/account-local-artists';
     export { ProviderTextAdapter } from './src/core/workflow/provider-text';
     export { saveGenerationConfig } from './src/core/generation-config';
     export { planPuleAction } from './src/core/plan-pule';
@@ -34,21 +35,21 @@ const compiled = { exports: {} };
 compileFunction(outputFiles[0].text, ["module", "exports", "require", "__dirname"])(
   compiled, compiled.exports, createRequire(import.meta.url), project,
 );
-const { Repository, PlanCenterService, LyricWritingService, ProviderTextAdapter, saveGenerationConfig, executePlanCenter,
+const { Repository, PlanCenterService, LyricWritingService, saveAccountLocalArtist, ProviderTextAdapter, saveGenerationConfig, executePlanCenter,
   tickPlanCenter, planPuleAction, createPlanPuleRunner, preparePlanDownloads, setDownloadDirectory,
   CenterStore, planFanqieAction, planFanqieJobs, createPlanFanqiePublisher, readWorkflowPublication, recordWorkflowQishuiSubmission,
   syncWorkflowPublications, workflowQishuiScope, resolveFanqieWork, tickPlanLyrics, callPublicationTasks, tickPublicationTasks } = compiled.exports;
 
-function fixture(t, { secondSinger, instrumental = false, configure = true, archive = true, root } = {}) {
+function fixture(t, { secondSinger, instrumental = false, vocalGender = "female", configure = true, archive = true, root } = {}) {
   const repo = new Repository(":memory:");
   t.after(() => repo.close());
   let clock = Date.parse("2026-11-20T07:00:00Z");
   const now = () => new Date(clock);
-  const advance = () => { clock += 20_000; };
+  const advance = (ms = 20_000) => { clock += ms; };
   const accountId = randomUUID(), artistId = randomUUID();
   const artist = { id: artistId, name: "艺人信息", accountId, accountLocalArtist: true, revision: 1,
-    defaults: { voice: instrumental ? "instrumental" : "female", genre: "民谣", duration: 165 },
-    profile: { lyricist: "词作者", composer: "曲作者", singer: "歌手甲", gender: "female", contractMode: "exclusive" }, secondSinger };
+    defaults: { voice: instrumental ? "instrumental" : vocalGender, genre: "民谣", duration: 165 },
+    profile: { lyricist: "词作者", composer: "曲作者", singer: "歌手甲", gender: vocalGender, contractMode: "exclusive" }, secondSinger };
   repo.save("accounts", { id: accountId, name: "创作账号", provider: "yourmusic" });
   repo.save("artists", artist);
   repo.save("accountLocalArtists", artist);
@@ -87,6 +88,162 @@ function fixture(t, { secondSinger, instrumental = false, configure = true, arch
     return { id: plan.id, expectedRevision: plan.revision, summaryHash: preview.summaryHash, requestId: randomUUID(), source: "manual" }; };
   return { center, repo, artist, draft, rpc, studio, now, advance, lyrics, modelId, startInput };
 }
+
+function updateArtist(x) {
+  const current = x.repo.get("accountLocalArtists", x.artist.id);
+  const promptTemplateId = randomUUID();
+  x.repo.save("promptTemplates", { id: promptTemplateId, revision: 1, name: "新版作词模板", content: "新版作词上下文" });
+  return saveAccountLocalArtist(x.repo, {
+    id: current.id, expected: current.revision, accountId: current.accountId,
+    defaults: { ...current.defaults, voice: "male" },
+    profile: { ...current.profile, singer: "新版歌手甲", lyricist: "新版词作者", composer: "新版曲作者", gender: "male",
+      voicePersona: "新版音色", timbreWeight: 23, styleWeight: 67 },
+    secondSinger: { name: "新版歌手乙" }, promptTemplateId,
+  });
+}
+
+test("artist edits refresh old plan projections and new confirmed runs without rewriting the plan or its history", t => {
+  const x = fixture(t, { secondSinger: { name: "原歌手乙" } });
+  const plan = x.rpc("save", { plan: x.draft, expectedRevision: null });
+  const oldRun = x.rpc("run", { ...x.startInput(plan), confirmGeneration: true });
+  x.rpc("stop", { runId: oldRun.id });
+  const historyBefore = x.rpc("runDetail", { runId: oldRun.id }).run;
+  const stalePreview = x.startInput(plan);
+  const storedBefore = new CenterStore(x.repo).get("plan", plan.id);
+  const updated = updateArtist(x);
+
+  assert.equal(x.rpc("read", { id: plan.id }).artistSnapshot.revision, updated.revision);
+  assert.equal(x.rpc("dashboard", {}).find(row => row.plan.id === plan.id).plan.artistSnapshot.name, updated.name);
+  const preview = x.rpc("preview", { id: plan.id });
+  assert.equal(preview.planRevision, plan.revision);
+  assert.equal(preview.summary.artistSnapshot.name, updated.name);
+  assert.notEqual(preview.summaryHash, stalePreview.summaryHash);
+  assert.throws(() => x.rpc("run", { ...stalePreview, confirmGeneration: true }), /SUMMARY_CONFLICT/);
+  const taskPlans = callPublicationTasks(x.studio, "publicationTasks.list", {}).plans;
+  assert.equal(taskPlans.find(row => row.id === plan.id).artistName, updated.name);
+  const fresh = x.rpc("run", { ...x.startInput(plan), confirmGeneration: true });
+  assert.equal(fresh.snapshot.workflowSnapshot.artist.lyricist, updated.profile.lyricist);
+  assert.equal(fresh.snapshot.workflowSnapshot.artist.composer, updated.profile.composer);
+  assert.equal(fresh.snapshot.workflowSnapshot.artist.timbreWeight, 23);
+  assert.equal(fresh.snapshot.workflowSnapshot.artist.styleWeight, 67);
+  assert.equal(fresh.snapshot.workflowSnapshot.secondSinger.name, updated.secondSinger.name);
+  assert.equal(fresh.snapshot.workflowSnapshot.template.id, updated.promptTemplateId);
+  assert.deepEqual(new CenterStore(x.repo).get("plan", plan.id), storedBefore);
+  assert.deepEqual(x.rpc("runDetail", { runId: oldRun.id }).run, historyBefore);
+
+  const otherAccountId = randomUUID();
+  x.repo.save("accounts", { id: otherAccountId, name: "另一个创作账号", provider: "yourmusic" });
+  x.repo.save("accountLocalArtists", { ...updated, accountId: otherAccountId });
+  assert.equal(x.rpc("preview", { id: plan.id }).summary.routeIssue, "WORKFLOW_ARTIST_CHANGED");
+});
+
+test("artist edits preserve the first task plan's lyric prompt while the queued plan freezes the new profile", t => {
+  const temp = fs.realpathSync.native(os.tmpdir());
+  const root = fs.mkdtempSync(path.join(temp, "rainfall-artist-sync-"));
+  t.after(() => {
+    if (path.dirname(root) === temp && path.basename(root).startsWith("rainfall-artist-sync-"))
+      fs.rmSync(root, { recursive: true, force: true });
+  });
+  const x = fixture(t, { root, secondSinger: { name: "原歌手乙" } });
+  const downloads = path.join(root, "downloads");
+  fs.mkdirSync(downloads);
+  setDownloadDirectory(x.repo, { root: downloads, expectedRevision: 0 });
+  const originalTemplate = { id: randomUUID(), revision: 1, name: "原作词模板", content: "原版作词上下文" };
+  x.repo.save("promptTemplates", originalTemplate);
+  x.repo.save("accountLocalArtists", { ...x.artist, promptTemplateId: originalTemplate.id });
+  const first = x.rpc("save", { plan: x.draft, expectedRevision: null });
+  const tail = x.rpc("save", { plan: { ...x.draft, id: randomUUID(), title: "排队计划" }, expectedRevision: null });
+  const taskCall = (method, input) => callPublicationTasks(x.studio, "publicationTasks." + method, input);
+  const task = taskCall("save", { expectedRevision: null, task: {
+    id: randomUUID(), title: "资料同步任务", execution: { kind: "manual" }, consent: true,
+    steps: [{ kind: "plans", planIds: [first.id, tail.id] }],
+  } });
+  taskCall("start", { id: task.id, expectedRevision: task.revision, requestId: randomUUID() });
+  tickPublicationTasks(x.studio);
+  const history = () => taskCall("history", { id: task.id })[0];
+  const [oldLink] = history().linked;
+  assert.equal(oldLink.planId, first.id);
+  assert.equal(history().linked.length, 1);
+  const updated = updateArtist(x);
+
+  tickPlanCenter(x.studio);
+  const jobs = x.lyrics.ready();
+  assert.equal(jobs.length, 1, "the active run starts lyrics even though its artist was edited");
+  const request = x.lyrics.claim(jobs[0].id);
+  const prompt = JSON.stringify(request.messages);
+  assert.match(prompt, /原版作词上下文/u);
+  assert.doesNotMatch(prompt, /新版作词上下文|新版词作者|新版歌手甲/u);
+  const oldRun = x.rpc("runDetail", { runId: oldLink.id }).run;
+  assert.equal(oldRun.snapshot.workflowSnapshot.secondSinger.name, "原歌手乙");
+  assert.equal(oldRun.snapshot.workflowSnapshot.artist.gender, "female");
+  assert.equal(oldRun.snapshot.workflowSnapshot.template.id, originalTemplate.id);
+
+  const store = new CenterStore(x.repo);
+  store.put("run", { ...store.get("run", oldLink.id), state: "completed" });
+  tickPublicationTasks(x.studio);
+  const [, tailLink] = history().linked;
+  assert.equal(tailLink?.planId, tail.id);
+  const newRun = x.rpc("runDetail", { runId: tailLink.id }).run;
+  assert.equal(newRun.snapshot.artistSnapshot.revision, updated.revision);
+  assert.equal(newRun.snapshot.workflowSnapshot.artist.gender, "male");
+  assert.equal(newRun.snapshot.workflowSnapshot.template.id, updated.promptTemplateId);
+  tickPlanCenter(x.studio);
+  const [newJob] = x.lyrics.ready();
+  assert.match(JSON.stringify(x.lyrics.claim(newJob.id).messages), /新版作词上下文/u);
+});
+
+test("artist edits refresh an enabled legacy definition when its scheduled run starts", t => {
+  const x = fixture(t);
+  const plan = x.rpc("save", { plan: x.draft, expectedRevision: null });
+  new CenterStore(x.repo).put("plan", { ...plan, enabled: true, schedule: {kind: "daily", localTime: "15:01"} });
+  const updated = updateArtist(x);
+  x.advance(60_000);
+  const [scheduled] = x.center.tick().runs;
+  assert.equal(scheduled.source, "scheduled");
+  assert.equal(scheduled.snapshot.artistSnapshot.revision, updated.revision);
+  assert.equal(scheduled.snapshot.workflowSnapshot.artist.singer, updated.profile.singer);
+});
+
+for (const instrumental of [false, true]) test(`artist voice changes adapt saved Suno inputs from ${instrumental ? "instrumental to vocal" : "vocal to instrumental and back"}`, t => {
+  const x = fixture(t, { instrumental });
+  const accountId = randomUUID(), profileId = randomUUID();
+  x.repo.save("accounts", { id: accountId, name: "苏诺原账号", provider: "suno_cn" });
+  x.repo.save("settings", { id: "api-profile:" + profileId, kind: "image", providerId: "doubao_image",
+    modelId: "doubao-seedream-5-5-261028", label: "方舟封面", executionEnabled: false, revision: 1 });
+  const node = "music:suno_cn", coverImage = { profileId, providerId: "doubao_image", modelId: "doubao-seedream-5-0-pro-260628" };
+  const base = { title: "alternateTitle", alternateTitle: "title", style: "style" };
+  const plan = x.rpc("save", { expectedRevision: null, plan: {
+    ...x.draft, outputs: { ...x.draft.outputs, cover: true },
+    workflow: { ...x.draft.workflow, graph: { nodes: ["lyrics", node], edges: [{ from: "lyrics", to: node }] },
+      browserMusic: { provider: "suno_cn", accountId, coverImage,
+        inputs: { ...base, ...(!instrumental ? { lyrics: "alternateTitle" } : {}) } } },
+  } });
+  const store = new CenterStore(x.repo);
+  const stored = store.get("plan", plan.id);
+  const changeVoice = voice => {
+    const current = x.repo.get("accountLocalArtists", x.artist.id);
+    return saveAccountLocalArtist(x.repo, { id: current.id, expected: current.revision, accountId: current.accountId,
+      defaults: { ...current.defaults, voice }, profile: current.profile });
+  };
+  const assertProjection = (inputs, songType) => {
+    const projection = x.rpc("read", { id: plan.id });
+    assert.equal(projection.songType, songType);
+    assert.equal(projection.revision, plan.revision);
+    assert.deepEqual(projection.workflow.browserMusic, stored.workflow.browserMusic);
+    assert.equal(x.rpc("preview", { id: plan.id }).summary.routeIssue, undefined);
+    const run = x.rpc("run", { ...x.startInput(plan), confirmGeneration: true });
+    assert.deepEqual(run.snapshot.workflow.browserMusic.inputs, inputs);
+    assert.equal(run.snapshot.routeSnapshot.image.modelId, coverImage.modelId);
+    assert.deepEqual(store.get("plan", plan.id), stored);
+    x.rpc("stop", { runId: run.id });
+  };
+  changeVoice(instrumental ? "female" : "instrumental");
+  assertProjection(instrumental ? { ...base, lyrics: "lyrics" } : base, instrumental ? "vocal" : "instrumental");
+  if (!instrumental) {
+    changeVoice("female");
+    assertProjection({ ...base, lyrics: "alternateTitle" }, "vocal");
+  }
+});
 
 test("new graph plans support read, optimistic edits and confirmed removal even before provider setup", t => {
   const { center, rpc, draft, startInput } = fixture(t, { configure: false });
@@ -780,13 +937,14 @@ test("a graph can run through a separately authorized publication task, but a di
   assert.equal(center.next({ runId: run.id }).state, "ready");
 });
 
-function musicFixture(t, { secondSinger, instrumental, count, graph, browser, cover = false, sunoCn = false, taskOwned = false }) {
+function musicFixture(t, { secondSinger, instrumental, vocalGender, count, graph, browser, cover = false,
+  sunoCn = false, taskOwned = false, query, taskWithTail = false }) {
   const parent = fs.realpathSync.native(os.tmpdir());
   const root = fs.mkdtempSync(path.join(parent, "rainfall-plan-fixture-"));
   t.after(() => {
     if (path.dirname(root) === parent && path.basename(root).startsWith("rainfall-plan-fixture-")) fs.rmSync(root, { recursive: true, force: true });
   });
-  const x = fixture(t, { secondSinger, instrumental, root });
+  const x = fixture(t, { secondSinger, instrumental, vocalGender, root });
   const directory = path.join(root, "downloads");
   fs.mkdirSync(directory);
   setDownloadDirectory(x.repo, { root: directory, expectedRevision: 0 });
@@ -821,8 +979,22 @@ function musicFixture(t, { secondSinger, instrumental, count, graph, browser, co
     : { pule: { accountId: puleAccountId, inputs } };
   const plan = x.rpc("save", { plan: { ...x.draft, count, outputs: { ...x.draft.outputs, cover },
     ...(graph ? { workflow: { ...x.draft.workflow, graph, ...(puleAccountId ? { platform: "fanqie", ...browserWorkflow } : {}) } } : {}) }, expectedRevision: null });
+  let taskProgress, tail;
+  if (taskWithTail) {
+    tail = x.rpc("save", { plan: { ...plan, id: randomUUID(), title: "后续计划" }, expectedRevision: null });
+    const task = callPublicationTasks(x.studio, "publicationTasks.save", { expectedRevision: null, task: {
+      id: randomUUID(), title: "音频计划队列", execution: { kind: "manual" }, consent: true,
+      steps: [{ kind: "plans", planIds: [plan.id, tail.id] }],
+    } });
+    const started = callPublicationTasks(x.studio, "publicationTasks.start", {
+      id: task.id, expectedRevision: task.revision, requestId: randomUUID(),
+    });
+    taskProgress = () => callPublicationTasks(x.studio, "publicationTasks.history", { id: task.id }).find(row => row.id === started.id);
+    tickPublicationTasks(x.studio);
+  }
   const { source, ...start } = x.startInput(plan);
-  const run = taskOwned ? x.center.runForPublication(start, false) : x.rpc("run", { ...start, source, confirmGeneration: true });
+  const run = taskProgress ? x.center.list().runs.find(row => row.id === taskProgress().linked[0].id) :
+    taskOwned ? x.center.runForPublication(start, false) : x.rpc("run", { ...start, source, confirmGeneration: true });
   const calls = [], downloads = [], fixtureErrors = [], tick = () => tickPlanCenter(x.studio);
   let originalsReady = false;
   let lostReceipt = false;
@@ -833,12 +1005,12 @@ function musicFixture(t, { secondSinger, instrumental, count, graph, browser, co
       if (lostReceipt) return { state: "unknown", reason: "MUSIC_SUBMISSION_TIMEOUT" };
       return { state: "accepted", trackingId: "job-" + n, songIds: ["song-" + n + "-A", "song-" + n + "-B"] };
     },
-    async query(ids) { return { state: "known", songs: ids.map(id => ({ id,
-      status: originalsReady ? "succeeded" : "generating", title: "model title", lyric: instrumental ? "" : "returned words",
+    async query(ids) { return query ? query(ids) : { state: "known", songs: ids.map(id => ({ id,
+      status: originalsReady ? "succeeded" : "processing", title: "model title", lyric: instrumental ? "" : "returned words",
       audio_url: "https://fixture.invalid/" + id, audio_delivery_status: "original", has_watermark: false })) }; },
     async download(url) { const id = new URL(url).pathname.slice(1); downloads.push(id); return { bytes: Buffer.from(id), mime: "audio/wav" }; },
   };
-  const runner = createPlanPuleRunner({ available: () => true, generation: () => 1,
+  const makeRunner = () => createPlanPuleRunner({ available: () => true, generation: () => 1,
     ...(browser ? { browser: browser(root, puleAccountId) } : {}),
     credentials: { apiCredentialStatus: async identity => {
       if (sunoCn) assert.equal(identity.profileId, imageId);
@@ -849,7 +1021,7 @@ function musicFixture(t, { secondSinger, instrumental, count, graph, browser, co
       try { return { ok: true, value: await planPuleAction(x.studio, method.split(".").at(-1), raw) }; }
       catch (error) { fixtureErrors.push(error.message); return { ok: false, error: { code: error.message } }; }
     } });
-  const writeLyrics = (n, words = "灯下等你 " + n) => {
+  const writeLyrics = (n, words = "灯下等你 " + n, style = "吉他民谣") => {
     const jobs = x.lyrics.ready();
     assert.equal(jobs.length, 1);
     const { id } = jobs[0];
@@ -858,14 +1030,185 @@ function musicFixture(t, { secondSinger, instrumental, count, graph, browser, co
       providerRequestId: "fixture", providerModel: x.modelId, finishReason: "stop", httpStatus: 200,
       usage: { promptTokens: 18, completionTokens: 18, cachedTokens: 0 }, content: JSON.stringify(output), status: "complete", reason: null,
     } });
-    const version = { title: "窗灯 " + n, alternateTitle: "夜归 " + n, style: "吉他民谣",
+    const version = { title: "窗灯 " + n, alternateTitle: "夜归 " + n, style,
       ...(instrumental ? {} : { language: "中文", lyrics: words }) };
-    const result = record(x.lyrics.claim(id), version);
+    const request = x.lyrics.claim(id);
+    const result = record(request, version);
     if (!instrumental && result.state === "ready") record(x.lyrics.claim(id), { revisionId: result.versions[0].id, score: 98, languageMatches: true, findings: ["气口自然"] });
     tick();
+    return request;
   };
-  return { ...x, plan, run, directory, calls, downloads, fixtureErrors, tick, writeLyrics, puleAccountId, pump: () => runner.pump(),
+  let runner = makeRunner();
+  return { ...x, plan, run, tail, taskProgress, directory, calls, downloads, fixtureErrors, tick, writeLyrics, puleAccountId,
+    pump: () => runner.pump(), restartRunner: () => { runner = makeRunner(); },
     originals: ready => { originalsReady = ready; }, loseReceipt: () => { lostReceipt = true; } };
+}
+
+test("API originals become available after polling and keep the paid receipt", async t => {
+  const x = musicFixture(t, { count: 1 });
+  x.tick();
+  x.writeLyrics(1);
+  await x.pump();
+  await x.pump();
+  const asset = () => x.center.list().stageAttempts.find(row => row.stage === "music_assets");
+  assert.equal(asset().reason, "MUSIC_ORIGINAL_PENDING");
+  x.originals(true);
+  x.advance(20 * 60_000);
+  await x.pump();
+  assert.equal(asset().state, "succeeded");
+  assert.equal(x.calls.length, 1);
+});
+
+test("API original polling expires across a runner restart without another submission", async t => {
+  const x = musicFixture(t, { count: 1, taskWithTail: true, query: () => ({ state: "pending" }) });
+  x.tick();
+  x.writeLyrics(1);
+  await x.pump();
+  await x.pump();
+  x.restartRunner();
+  x.advance(20 * 60_000);
+  await x.pump();
+  const stages = x.center.list().stageAttempts;
+  assert.equal(stages.find(row => row.stage === "music_assets").reason, "MUSIC_ORIGINAL_WAIT_EXPIRED");
+  assert.deepEqual(stages.find(row => row.stage === "music_submit").result.songIds, ["song-1-A", "song-1-B"]);
+  assert.equal(x.calls.length, 1);
+  tickPublicationTasks(x.studio);
+  tickPublicationTasks(x.studio);
+  assert.deepEqual(x.taskProgress().planFailures, [{ planId: x.plan.id, reason: "MUSIC_ORIGINAL_WAIT_EXPIRED" }]);
+  assert.equal(x.taskProgress().linked.at(-1).planId, x.tail.id);
+});
+
+for (const mode of ["preferred", "fallback", "pair"]) {
+  test(`API music archives the available original according to the ${mode} recording policy`, async t => {
+    let preferred;
+    const x = musicFixture(t, { count: 1, ...(mode === "pair" ? { secondSinger: { name: "歌手乙" } } : {}),
+      query: ids => ({ state: "known", songs: ids.map((id, index) => index === preferred
+        ? { id, status: "processing" }
+        : { id, status: "succeeded", audio_url: "https://fixture.invalid/" + id, title: "Model title", lyric: "returned" }) }),
+    });
+    const item = x.center.list().items.find(row => row.runId === x.run.id);
+    const configuredIndex = parseInt(createHash("sha256").update(JSON.stringify(item.id)).digest("hex").slice(0, 2), 16) % 2;
+    preferred = mode === "preferred" ? 1 - configuredIndex : configuredIndex;
+    x.tick();
+    x.writeLyrics(1);
+    await x.pump();
+    await x.pump();
+    const asset = () => x.center.list().stageAttempts.find(row => row.stage === "music_assets");
+    if (mode !== "preferred") {
+      assert.equal(asset().reason, "MUSIC_ORIGINAL_PENDING");
+      x.advance(20 * 60_000);
+      await x.pump();
+    }
+    if (mode === "pair") {
+      assert.equal(asset().reason, "MUSIC_ORIGINAL_WAIT_EXPIRED");
+      assert.deepEqual(x.downloads, []);
+    } else {
+      assert.equal(asset().state, "succeeded");
+      assert.deepEqual(x.downloads, [preferred === 0 ? "song-1-B" : "song-1-A"]);
+    }
+    assert.equal(x.calls.length, 1);
+  });
+}
+
+test("API query requires five consecutive errors and remembers them across runner restarts", async t => {
+  let outcome = "error";
+  const queries = [];
+  const x = musicFixture(t, { count: 1, query: ids => {
+    queries.push(ids);
+    return { state: outcome, ...(outcome === "known" ? { songs: ids.map(id => ({
+      id, status: "succeeded", audio_url: "https://fixture.invalid/" + id, title: "Model title", lyric: "returned",
+    })) } : {}) };
+  } });
+  x.tick();
+  x.writeLyrics(1);
+  await x.pump();
+  const asset = () => x.center.list().stageAttempts.find(row => row.stage === "music_assets");
+  const poll = async n => { for (let i = 0; i < n; i++) { x.advance(); await x.pump(); } };
+  await poll(4);
+  assert.equal(asset().reason, "MUSIC_ORIGINAL_QUERY_RETRY");
+  outcome = "pending";
+  await poll(1);
+  outcome = "error";
+  await poll(4);
+  assert.equal(asset().state, "waiting");
+  x.restartRunner();
+  await poll(1);
+  assert.equal(asset().state, "failed");
+  assert.equal(asset().reason, "MUSIC_ORIGINAL_QUERY_FAILED");
+  x.rpc("retry", { attemptId: asset().id });
+  outcome = "known";
+  await poll(1);
+  assert.equal(x.center.list().stageAttempts.filter(row => row.stage === "music_assets").at(-1).state, "succeeded");
+  assert.ok(queries.every(ids => ids[0] === "song-1-A" && ids[1] === "song-1-B"));
+  assert.equal(x.calls.length, 1);
+});
+
+test("a malformed existing receipt settles the waiting download without replaying submission", async t => {
+  const x = musicFixture(t, { count: 1 });
+  x.tick();
+  x.writeLyrics(1);
+  await x.pump();
+  await x.pump();
+  const submitted = x.center.list().stageAttempts.find(row => row.stage === "music_submit");
+  const malformed = { ...submitted.result, songIds: ["old-song"] };
+  new CenterStore(x.repo).put("stage", { ...submitted, result: malformed });
+  x.advance();
+  await x.pump();
+  const stages = x.center.list().stageAttempts;
+  assert.equal(stages.find(row => row.stage === "music_assets").reason, "MUSIC_RECEIPT_INVALID");
+  assert.deepEqual(stages.find(row => row.id === submitted.id).result, malformed);
+  assert.equal(x.calls.length, 1);
+});
+
+test("a changed API profile settles the waiting download and preserves the original receipt", async t => {
+  const x = musicFixture(t, { count: 1 });
+  x.tick();
+  x.writeLyrics(1);
+  await x.pump();
+  await x.pump();
+  const key = "api-profile:" + x.run.snapshot.music.profileId;
+  const profile = x.repo.get("settings", key);
+  x.repo.save("settings", { ...profile, revision: profile.revision + 1 });
+  x.advance();
+  await x.pump();
+  const stages = x.center.list().stageAttempts;
+  assert.equal(stages.find(row => row.stage === "music_assets").reason, "PROFILE_REVISION_CHANGED");
+  assert.deepEqual(stages.find(row => row.stage === "music_submit").result.songIds, ["song-1-A", "song-1-B"]);
+  assert.equal(x.calls.length, 1);
+});
+
+for (const legacy of [true, false]) {
+  test(`an API profile change before the first download respects the ${legacy ? "legacy ready" : "frozen blocked"} gate`, async t => {
+    const x = musicFixture(t, { count: 1 });
+    x.tick();
+    x.writeLyrics(1);
+    await x.pump();
+    assert.equal(x.center.list().stageAttempts.some(row => row.stage === "music_assets"), false);
+    if (legacy) {
+      const store = new CenterStore(x.repo);
+      const current = store.get("run", x.run.id);
+      store.put("run", { ...current, snapshot: { ...current.snapshot, routeSnapshot: undefined } });
+    }
+    const key = "api-profile:" + x.run.snapshot.music.profileId;
+    const profile = x.repo.get("settings", key);
+    x.repo.save("settings", { ...profile, revision: profile.revision + 1 });
+    const next = x.center.next({ runId: x.run.id });
+    assert.equal(next.stage, "music_assets");
+    assert.equal(next.state, legacy ? "ready" : "blocked");
+    if (!legacy) {
+      assert.throws(() => planPuleAction(x.studio, "claim", { runId: next.runId, itemId: next.itemId, stage: next.stage }),
+        /PROFILE_REVISION_CHANGED/);
+    }
+    await x.pump();
+    const stages = x.center.list().stageAttempts;
+    const assets = stages.filter(row => row.stage === "music_assets");
+    if (legacy) assert.deepEqual(assets.map(({ state, reason }) => ({ state, reason })),
+      [{ state: "failed", reason: "PROFILE_REVISION_CHANGED" }]);
+    else assert.deepEqual(assets, []);
+    assert.deepEqual(stages.find(row => row.stage === "music_submit").result.songIds, ["song-1-A", "song-1-B"]);
+    assert.equal(x.calls.length, 1);
+    assert.deepEqual(x.downloads, []);
+  });
 }
 
 test("a running browser task does not prevent a later task on the same account from opening its own window", { timeout: 3000 }, async () => {
@@ -1044,6 +1387,9 @@ test("Suno CN workflow passes inherited artist values and imports the staged pai
       await hooks.beforeGeneration();
       await hooks.beforeCharge("generation");
       await hooks.identify([input.requestId + ":A", input.requestId + ":B"]);
+      const submit = () => x.center.list().stageAttempts.find(row => row.stage === "music_submit");
+      assert.equal(submit().state, "dispatching");
+      assert.equal(submit().result?.trackingId, "suno-cn:" + input.requestId);
       for (const version of versions) {
         await hooks.saveWave(version, input.requestId + ":" + version, { async saveAs(file) {
           const bytes = Buffer.alloc(50);
@@ -1052,6 +1398,7 @@ test("Suno CN workflow passes inherited artist values and imports the staged pai
           bytes[44] = version === "A" ? 1 : 2;
           fs.writeFileSync(file, bytes);
         } }, version === "A" ? input.title : input.alternateTitle);
+        assert.match(submit().result.sunoWavs.sha256[version === "A" ? 0 : 1], /^[a-f0-9]{64}$/u);
       }
     },
   }) });
@@ -1072,6 +1419,77 @@ test("Suno CN workflow passes inherited artist values and imports the staged pai
   assert.ok(work.assets.audio_A && work.assets.audio_B);
   assert.equal(fs.existsSync(staged), false);
   assert.equal(opened, 1);
+});
+
+for (const sunoCn of [true, false]) {
+  test((sunoCn ? "Suno CN" : "Pule") + " reconciles the AI style with the selected lead vocal before opening the form", async t => {
+    let sent;
+    const capture = async (_page, input, hooks) => {
+      sent = input;
+      await hooks.beforeGeneration();
+      if (sunoCn) {
+        await hooks.beforeCharge("generation");
+        throw Error("SUNO_CN_VOCAL_STYLE_CONFLICT");
+      }
+      throw Error("PULE_CONTROL_UNAVAILABLE");
+    };
+    const x = musicFixture(t, { count: 1, vocalGender: "male", sunoCn, cover: sunoCn, taskOwned: true,
+      browser: root => ({
+        stagingDirectory: root,
+        async withTaskPage(_scope, _signal, run) { return run({}); },
+        runSuno: capture,
+        run: capture,
+      }),
+    });
+    x.tick();
+    const original = "东北民谣，女声旋律性唱腔, soft female vocals; - no 女声, 木吉他和手风琴";
+    const request = x.writeLyrics(1, "灯下等你", original);
+    assert.match(request.messages[0].content, /男声/u);
+    await x.pump();
+    assert.equal(sent.gender, "male");
+    assert.equal(sent.style, "东北民谣，男声旋律性唱腔, soft vocals; - no 女声, 木吉他和手风琴");
+    assert.equal(sent.lyrics, "灯下等你");
+    assert.equal(x.center.list().items[0].material.musicPrompt, original);
+    const attempt = x.center.list().stageAttempts.find(row => row.stage === "music_submit");
+    assert.equal(attempt.state, "failed");
+    assert.equal(attempt.reason, sunoCn ? "SUNO_CN_VOCAL_STYLE_CONFLICT" : "PULE_CONTROL_UNAVAILABLE");
+  });
+}
+
+test("Suno CN continues to archive a fully saved pair after a page interruption", async t => {
+  let submissions = 0;
+  const x = musicFixture(t, { count: 1, cover: true, sunoCn: true, secondSinger: { name: "歌手乙" }, browser: root => ({
+    stagingDirectory: root,
+    async withTaskPage(_scope, _signal, run) { return run({}); },
+    async runSuno(_page, input, hooks, { versions }) {
+      await hooks.beforeGeneration();
+      await hooks.beforeCharge("generation");
+      submissions++;
+      await hooks.identify([input.requestId + ":A", input.requestId + ":B"]);
+      for (const version of versions) {
+        await hooks.saveWave(version, input.requestId + ":" + version, { async saveAs(file) {
+          const bytes = Buffer.alloc(50);
+          bytes.write("RIFF", 0);
+          bytes.write("WAVE", 8);
+          bytes[44] = version === "A" ? 1 : 2;
+          fs.writeFileSync(file, bytes);
+        } }, version === "A" ? input.title : input.alternateTitle);
+      }
+      throw Error("SUNO_CN_WAV_DIALOG_STILL_OPEN");
+    },
+  }) });
+  x.tick();
+  x.writeLyrics(1);
+  await x.pump();
+  const attempt = x.center.list().stageAttempts.find(row => row.stage === "music_submit");
+  assert.equal(attempt.state, "succeeded");
+  new CenterStore(x.repo).put("stage", { ...attempt, state: "dispatching", externalTaskId: undefined, evidenceId: undefined });
+  const restored = new PlanCenterService(x.repo, x.center.options);
+  assert.equal(restored.list().stageAttempts.find(row => row.id === attempt.id).state, "succeeded");
+  await x.pump();
+  const [work] = x.repo.all("works");
+  assert.ok(work.assets.audio_A && work.assets.audio_B);
+  assert.equal(submissions, 1);
 });
 
 test("Suno CN keeps the saved original and the actual transfer error when the second WAV fails", async t => {
@@ -1111,6 +1529,8 @@ test("Suno CN keeps the saved original and the actual transfer error when the se
 
 test("mapped 谱乐 fields run on the chosen browser account and retry only the known download", async t => {
   const calls = [];
+  const progress = [];
+  let lastProgress;
   let wrongTitle = true;
   const x = musicFixture(t, { count: 1, secondSinger: { name: "歌手乙" }, browser: (root, accountId) => ({
     stagingDirectory: root,
@@ -1122,6 +1542,7 @@ test("mapped 谱乐 fields run on the chosen browser account and retry only the 
     async run(_page, input, hooks, _timeouts, phase) {
       calls.push({ input, phase });
       if (phase.kind === "submit") {
+        assert.equal(hooks.audioProgress, undefined);
         await hooks.beforeGeneration();
         await hooks.beforeCharge("generation");
         await hooks.identify(["browser-song-a", "browser-song-b"]);
@@ -1129,6 +1550,12 @@ test("mapped 谱乐 fields run on the chosen browser account and retry only the 
       }
       assert.deepEqual(phase.songIds, ["browser-song-a", "browser-song-b"]);
       for (const [index, song] of phase.songIds.entries()) {
+        const version = index ? "B" : "A";
+        lastProgress = hooks.audioProgress;
+        for (const phase of ["preparing", "downloading"]) {
+          await hooks.audioProgress(phase, version);
+          progress.push(x.center.list().stageAttempts.filter(row => row.stage === "music_assets").at(-1).reason);
+        }
         await hooks.saveWave(index ? "B" : "A", song, { async saveAs(file) {
           const bytes = Buffer.alloc(50);
           bytes.write("RIFF", 0);
@@ -1152,6 +1579,10 @@ test("mapped 谱乐 fields run on the chosen browser account and retry only the 
   x.advance();
   await x.pump();
   x.tick();
+  assert.deepEqual(progress, Array.from({ length: 2 }, () => [
+    "MUSIC_ASSETS_PREPARING_A", "MUSIC_ASSETS_DOWNLOADING_A", "MUSIC_ASSETS_PREPARING_B", "MUSIC_ASSETS_DOWNLOADING_B",
+  ]).flat());
+  await assert.rejects(lastProgress("downloading", "B"), /STOP_REQUESTED/);
   assert.equal(x.plan.routeSnapshot.music.channel, "pule_browser");
   assert.equal(x.center.list().runs[0].state, "completed", JSON.stringify(x.fixtureErrors));
   assert.deepEqual(calls.map(row => row.phase.kind), ["submit", "download", "download"]);
@@ -1251,14 +1682,37 @@ test("browser plans require explicit compatible mappings before charging or crea
   assert.equal(center.list().runs.length, 0);
 });
 
-test("a browser submission with a lost receipt does not switch to the API or replay generation", async t => {
+test("a lost browser receipt is recovered from the same account and preserves the original A/B order", async t => {
   let submits = 0;
-  const x = musicFixture(t, { count: 1, browser: (root, accountId) => ({
+  const reads = [], originalPair = ["pule-original-a", "pule-original-b"], downloads = [];
+  const x = musicFixture(t, { count: 1, secondSinger: { name: "歌手乙" }, browser: (root, accountId) => ({
     stagingDirectory: root,
     async withTaskPage(scope, _signal, operation) { assert.equal(scope.accountId, accountId); return operation({}); },
-    async run(_page, _input, hooks) {
+    async withHistoryPage(id, _signal, operation) { assert.equal(id, accountId); return operation({}); },
+    async readReceipt(_page, match) {
+      reads.push(match);
+      return { state: "found", songIds: originalPair };
+    },
+    async run(_page, input, hooks, _timeouts, phase) {
+      if (phase.kind === "download") {
+        assert.deepEqual(phase.songIds, originalPair);
+        for (const version of phase.versions) {
+          const index = version === "A" ? 0 : 1;
+          const id = phase.songIds[index];
+          downloads.push([version, id]);
+          const title = index === 0 ? input.title : input.alternateTitle;
+          await hooks.saveWave(version, id, { async saveAs(file) {
+            const bytes = Buffer.alloc(50);
+            bytes.write("RIFF", 0);
+            bytes.write("WAVE", 8);
+            bytes[44] = index + 1;
+            fs.writeFileSync(file, bytes);
+          } }, title);
+        }
+        return;
+      }
       await hooks.beforeGeneration();
-      await hooks.beforeCharge("generation");
+      await hooks.beforeCharge("generation", undefined, ["previous-a", "previous-b"]);
       submits++;
       throw Error("PULE_RESULT_UNCLEAR");
     },
@@ -1269,10 +1723,77 @@ test("a browser submission with a lost receipt does not switch to the API or rep
   const attempt = x.center.list().stageAttempts.find(row => row.stage === "music_submit");
   assert.equal(attempt.state, "unknown");
   assert.equal(attempt.reason, "WORKFLOW_PULE_BROWSER_RECEIPT_UNKNOWN");
+  assert.equal(attempt.result.browserError, "PULE_RESULT_UNCLEAR");
+  assert.deepEqual(attempt.result.beforeSongIds, ["previous-a", "previous-b"]);
   x.advance();
   await x.pump();
+  const recovered = x.center.list().stageAttempts.find(row => row.id === attempt.id);
+  assert.equal(recovered.state, "succeeded");
+  assert.deepEqual(recovered.result.songIds, originalPair);
+  assert.deepEqual(reads, [{ title: "夜归 1", beforeSongIds: ["previous-a", "previous-b"] }]);
+  await x.pump();
+  x.tick();
+  assert.deepEqual(downloads, [["A", originalPair[0]], ["B", originalPair[1]]]);
+  assert.equal(x.center.list().runs[0].state, "completed");
   assert.equal(submits, 1);
-  assert.throws(() => x.rpc("checkMusicReceipt", { attemptId: attempt.id }), /WORKFLOW_PULE_BROWSER_RECEIPT_UNKNOWN/);
+  assert.deepEqual(x.calls, []);
+  assert.deepEqual(x.fixtureErrors, []);
+});
+
+test("a legacy unknown Pule receipt without a baseline is preserved without opening an account or replaying", async t => {
+  let submits = 0;
+  const x = musicFixture(t, { count: 1, taskOwned: true, browser: root => ({
+    stagingDirectory: root,
+    async withTaskPage(_scope, _signal, operation) { return operation({}); },
+    async withHistoryPage() { assert.fail("a legacy row cannot be matched by title alone"); },
+    async run(_page, _input, hooks) {
+      await hooks.beforeGeneration();
+      await hooks.beforeCharge("generation");
+      submits++;
+      throw Error("PULE_RESULT_UNCLEAR");
+    },
+  }) });
+  x.tick();
+  x.writeLyrics(1);
+  await x.pump();
+  await x.pump();
+  const attempt = x.center.list().stageAttempts.find(row => row.stage === "music_submit");
+  assert.equal(attempt.state, "unknown");
+  assert.equal(attempt.reason, "PULE_BROWSER_HISTORY_BASELINE_MISSING");
+  assert.equal(attempt.result.browserRecoveryExhausted, true);
+  assert.equal(submits, 1);
+});
+
+test("unconfirmed browser receipts keep their evidence when background checks run out", async t => {
+  let submits = 0, checks = 0;
+  const x = musicFixture(t, { count: 1, taskOwned: true, browser: root => ({
+    stagingDirectory: root,
+    async withTaskPage(_scope, _signal, operation) { return operation({}); },
+    async withHistoryPage(_id, _signal, operation) { return operation({}); },
+    async readReceipt() { checks++; return { state: "ambiguous" }; },
+    async run(_page, _input, hooks) {
+      await hooks.beforeGeneration();
+      await hooks.beforeCharge("generation", undefined, ["older-song"]);
+      submits++;
+      throw Error("PULE_RESULT_UNCLEAR");
+    },
+  }) });
+  x.tick();
+  x.writeLyrics(1);
+  await x.pump();
+  for (let index = 0; index < 6; index++) {
+    x.advance(300_000);
+    await x.pump();
+  }
+  const attempt = x.center.list().stageAttempts.find(row => row.stage === "music_submit");
+  assert.equal(attempt.state, "unknown");
+  assert.equal(attempt.reason, "PULE_BROWSER_HISTORY_AMBIGUOUS");
+  assert.equal(attempt.result.browserRecoveryExhausted, true);
+  assert.deepEqual(attempt.result.beforeSongIds, ["older-song"]);
+  assert.equal(attempt.result.browserError, "PULE_RESULT_UNCLEAR");
+  assert.equal(checks, 4);
+  assert.equal(submits, 1);
+  assert.deepEqual(x.fixtureErrors, []);
 });
 
 test("one singer downloads exactly one original per round and only completes after archiving", async t => {

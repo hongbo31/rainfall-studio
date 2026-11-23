@@ -1,7 +1,7 @@
 import path from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import type {BrowserContext, Locator, Page} from 'playwright-core';
-import type {FanqieAsset, FanqieInput} from '../../shared/fanqie';
+import {fanqieOrigin, type FanqieAsset, type FanqieInput} from '../../shared/fanqie';
 import {fanqieDownloadBatchLimit, fanqieOriginalSingerSchema, fanqieOriginalWorkIdSchema} from '../../shared/fanqie-downloads';
 import {
   fanqieDirectoryStartTab, fanqieHomeUrl as homeUrl, fanqieProfileUrl as profileUrl,
@@ -17,9 +17,11 @@ import {expectedFanqieForm} from './native-upload';
 
 export type FanqieDirectorySong = FanqieInput & {
   songAttribute: 'original' | 'multi_version'; copyrightProof?: FanqieAsset; originalSinger?: string; originalWorkId?: string;
+  singerArtistId?: string;
 };
 export type FanqieDirectoryFormCallbacks = Pick<FanqieDirectoryTracePort, 'trace' | 'watch'> & {
   guard: () => void;
+  checkStopped?: () => Promise<void>;
   intent: (step: string, songIndex?: number) => Promise<void>;
 };
 
@@ -40,8 +42,12 @@ const musicTypes = {original: '原创', cover: '翻唱'} as const;
 const songAttributes = {original: '原版歌曲', multi_version: '多版本歌曲'} as const;
 const originalSingerError = 'FANQIE_ORIGINAL_SINGER_UNVERIFIED';
 const originalWorkError = 'FANQIE_ORIGINAL_WORK_UNVERIFIED';
+const singerIdError = 'FANQIE_SINGER_ID_UNVERIFIED';
+const artistSongsPath = '/api/author/home/get_song_list/v0/';
 const fieldValidationError = 'FANQIE_DIRECTORY_FIELD_VALIDATION';
 const deleteDraftError = 'FANQIE_DIRECTORY_DELETE_UNVERIFIED';
+const audioTransferTimeoutMs = 10 * 60_000;
+const planStopCheckIntervalMs = 2_000;
 const aiChoices = ['是', '否'];
 const visible = (locator: Locator) => locator.filter({visible: true});
 
@@ -121,6 +127,39 @@ function artistNames(region: Locator) {
   return visible(region.locator('.arco-tag-content .name')).allInnerTexts().then(names => names.map(name => name.trim()));
 }
 
+type CreditFiber = {
+  return?: CreditFiber;
+  key?: string | null;
+  memoizedProps?: {artist?: {id?: unknown}};
+};
+
+// Fanqie's result label carries artist.id. Arco keys the mounted selected tag by the field value.
+// Read those bindings because both elements display only the name.
+function renderedSingerIds(elements: Element[], source: 'option' | 'tag') {
+  return elements.map(element => {
+    const node = source === 'option' ? element : element.closest('.arco-tag');
+    if (!node) return null;
+    const property = Object.getOwnPropertyNames(node).find(key => key.startsWith('__reactFiber$'));
+    let fiber = property ? Reflect.get(node, property) as CreditFiber : undefined;
+    for (let depth = 0; fiber && depth < 6; depth++, fiber = fiber.return) {
+      if (source === 'tag') {
+        const value = /^([1-9]\d{4,24})-tag$/u.exec(fiber.key ?? '')?.[1];
+        if (value) return value;
+      } else {
+        const value = fiber.memoizedProps?.artist?.id;
+        const id = typeof value === 'number' && Number.isSafeInteger(value) ? String(value) : value;
+        if (typeof id === 'string' && /^[1-9]\d{4,24}$/u.test(id)) return id;
+      }
+    }
+    return null;
+  });
+}
+
+async function verifySingerId(region: Locator, expectedId: string) {
+  const ids = await visible(region.locator('.arco-tag-content .name')).evaluateAll(renderedSingerIds, 'tag' as const);
+  if (ids.length !== 1 || ids[0] !== expectedId) throw Error(singerIdError);
+}
+
 function dialog(page: Page, title: string) {
   return visible(page.getByRole('dialog', {name: title, exact: true}).or(
     page.locator('.arco-modal:not([role="dialog"], [role="dialog"] *)').filter({
@@ -195,6 +234,8 @@ type DirectorySongEntry = {
 type DirectoryRepair = {entry: DirectorySongEntry; fields: ReadonlySet<DirectoryRepairField>};
 
 function expectedDirectorySong(song: FanqieDirectorySong): ExpectedDirectorySong {
+  if (song.singerArtistId !== undefined &&
+    (typeof song.singerArtistId !== 'string' || !/^[1-9]\d{4,24}$/u.test(song.singerArtistId))) throw Error(singerIdError);
   const originalSinger = song.musicType === 'cover' ? fanqieOriginalSingerSchema.safeParse(song.originalSinger) : undefined;
   const originalWorkId = song.songAttribute === 'multi_version' ? fanqieOriginalWorkIdSchema.safeParse(song.originalWorkId) : undefined;
   if (originalSinger?.success === false) throw Error('FANQIE_DOWNLOAD_ORIGINAL_SINGER_REQUIRED');
@@ -260,23 +301,59 @@ async function selectOriginalWork(page: Page, card: Locator, index: number, id: 
   });
 }
 
-async function selectCredit(page: Page, card: Locator, index: number, role: keyof typeof authors, artist: string, write: Write, trace: Trace) {
+async function selectCredit(page: Page, card: Locator, index: number, role: keyof typeof authors, artist: string, write: Write, trace: Trace,
+  assertScope: () => void, artistId?: string) {
   const [field, name] = authors[role];
   const region = await fieldRegion(page, card, index, field, name);
   const search = await one(region.getByRole('textbox', {name: '搜索或选择艺人', exact: true}).or(region.locator('[role="combobox"] input')),
     'FANQIE_AUTHOR_REGION_UNVERIFIED');
-  const options = artistOptions(page, artist);
+  const options = artistId ? visible(region.locator('.artist-autocomplete-item-left').filter({
+    has: page.getByText(artist, {exact: true}),
+  })) : artistOptions(page, artist);
   if (!artist.trim() || (await artistNames(region)).length || await options.count()) throw Error('FANQIE_AUTHOR_REGION_UNVERIFIED');
   const option = await trace(`credit:${role}:search`, async () => {
     await search.scrollIntoViewIfNeeded();
     await write(`credit:${role}:search`, index);
     await search.click();
     await search.fill(artist);
-    return one(options, 'FANQIE_AUTHOR_AMBIGUOUS');
+    if (artistId) {
+      const deadline = performance.now() + 15_000;
+      do {
+        assertScope();
+        if (await search.inputValue() !== artist) throw Error(singerIdError);
+        const match = (await options.evaluateAll(renderedSingerIds, 'option' as const)).indexOf(artistId);
+        if (match >= 0) return options.nth(match);
+        await delay(120);
+      } while (performance.now() < deadline);
+      throw Error(singerIdError);
+    }
+    await options.first().waitFor({state: 'visible', timeout: 15_000}).catch(error => {
+      if (!(error instanceof Error) || error.name !== 'TimeoutError') throw error;
+      throw Error('FANQIE_AUTHOR_NOT_FOUND', {cause: error});
+    });
+    const matches = await options.count();
+    if (matches !== 1) throw Error(matches ? 'FANQIE_AUTHOR_AMBIGUOUS' : 'FANQIE_AUTHOR_NOT_FOUND');
+    return options;
   });
   const {detail, artistLabel, confirm} = await trace(`credit:${role}:preview`, async () => {
     await write(`credit:${role}:preview`, index);
-    await option.click();
+    if (artistId) {
+      if ((await option.evaluateAll(renderedSingerIds, 'option' as const))[0] !== artistId) throw Error(singerIdError);
+      // The official details dialog queries this artist's songs on open, before a selection is committed.
+      const [detailsRequest] = await Promise.all([
+        page.waitForRequest(request => {
+          const url = new URL(request.url());
+          if (url.origin !== fanqieOrigin || url.pathname !== artistSongsPath ||
+              request.method() !== 'GET' || (url.searchParams.get('page_no') ?? '0') !== '0' || request.serviceWorker()) return false;
+          try { return request.frame() === page.mainFrame(); } catch { return false; }
+        }, {timeout: 12_000}).catch(error => {throw Error(singerIdError, {cause: error});}),
+        option.click(),
+      ]);
+      const ids = new URL(detailsRequest.url()).searchParams.getAll('artist_id');
+      if (ids.length !== 1 || ids[0] !== artistId) throw Error(singerIdError);
+    } else {
+      await option.click();
+    }
     const detail = await one(dialog(page, '艺人详情'), 'FANQIE_AUTHOR_DETAILS_CHANGED');
     const artistLabel = visible(detail.getByText(artist, {exact: true}));
     if (await artistLabel.count() !== 1) throw Error('FANQIE_AUTHOR_DETAILS_CHANGED');
@@ -290,13 +367,21 @@ async function selectCredit(page: Page, card: Locator, index: number, role: keyo
     await detail.waitFor({state: 'hidden'});
     const selected = await artistNames(region);
     if (selected.length !== 1 || selected[0] !== artist) throw Error('FANQIE_AUTHOR_READBACK_REQUIRED');
+    if (artistId) await verifySingerId(region, artistId);
   });
 }
 
-async function waitForTransfer(area: Locator, verify: (text: string) => boolean, assertScope: () => void) {
-  const deadline = performance.now() + 120_000;
-  while (performance.now() < deadline) {
+async function waitForTransfer(area: Locator, verify: (text: string) => boolean, assertScope: () => void,
+  timeoutMs = 120_000, checkStopped?: FanqieDirectoryFormCallbacks['checkStopped']) {
+  const deadline = performance.now() + timeoutMs;
+  let nextStopCheck = 0;
+  for (let now = performance.now(); now < deadline; now = performance.now()) {
     assertScope();
+    if (checkStopped && now >= nextStopCheck) {
+      await checkStopped();
+      assertScope();
+      nextStopCheck = performance.now() + planStopCheckIntervalMs;
+    }
     const text = await directoryFileReceipt(area);
     if (verify(text)) return;
     if (/上传完成|上传失败|上传出错/u.test(text)) throw Error('FANQIE_UPLOAD_READBACK_REQUIRED');
@@ -443,8 +528,10 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
         if (song.instrumental && role === 'lyricist') {
           credit.lyricist = await artistNames(card.locator('.arco-form-item').filter({has: tab.locator(`label[for="songs_${index}_${field}_input"]`)}));
         } else {
-          credit[role] = await artistNames(await fieldRegion(tab, card, index, field, name));
+          const region = await fieldRegion(tab, card, index, field, name);
+          credit[role] = await artistNames(region);
           if (!credit[role].length) fields.add(role);
+          else if (role === 'singer' && song.singerArtistId) await verifySingerId(region, song.singerArtistId);
         }
       }
       const audioArea = await fileArea(tab, card, index, 'audio');
@@ -556,7 +643,8 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
       };
       if (needs('audio')) await traceSong('upload:audio', async () => {
         const area = await uploadMaterial('audio');
-        await waitForTransfer(area, text => fanqieTransferVerified(text, expectedAudio(spec, song, text)), assertScope);
+        await waitForTransfer(area, text => fanqieTransferVerified(text, expectedAudio(spec, song, text)),
+          assertScope, audioTransferTimeoutMs, callbacks.checkStopped);
       });
       if (!song.instrumental && needs('lyrics')) await traceSong('upload:lyrics', async () => {
         const area = await uploadMaterial('lyrics');
@@ -574,7 +662,8 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
           if (!fields) await callbacks.trace('credit:lyricist:skipped-instrumental', 'ok', tab, jobIndex);
           continue;
         }
-        if (needs(role)) await traceSong('credit:' + role, () => selectCredit(tab, card, index, role, song.authors[role], writeSong, traceSong));
+        if (needs(role)) await traceSong('credit:' + role, () => selectCredit(tab, card, index, role, song.authors[role], writeSong, traceSong,
+          assertScope, role === 'singer' ? song.singerArtistId : undefined));
       }
       if (needs('cover')) await traceSong('upload:cover', async () => {
         const area = await uploadMaterial('cover');

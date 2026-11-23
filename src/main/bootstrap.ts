@@ -527,6 +527,7 @@ const planPuleRunner=createPlanPuleRunner({rpc,credentials:apiCredentials,
   available:()=>mode==='production'&&!switching&&!closing,generation:()=>coreGeneration,
   browser:{stagingDirectory:path.join(root,'staging'),
     withTaskPage:(scope,signal,operation)=>accountBrowsers.withTaskMusicPage(scope,signal,operation),
+    withHistoryPage:(accountId,signal,read)=>accountBrowsers.withPuleHistoryPage(accountId,signal,read),
     closeTaskWindow:id=>accountBrowsers.closeTaskWindow(id)},
 });
 const planCoverImageRunner=createPlanCoverImageRunner({rpc,credentials:apiCredentials,

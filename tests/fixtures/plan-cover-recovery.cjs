@@ -1,7 +1,7 @@
 const {randomUUID}=require('node:crypto');
-module.exports=function fixture(s,api){
+module.exports=function fixture(s,api,title='Final lyrics cover recovery'){
  const center=s.planCenterService(),artistId=s.all('artists')[0].id;
- const plan=center.save({plan:{id:randomUUID(),artistId,title:'Final lyrics cover recovery',schedule:{kind:'daily',localTime:'09:00'},material:{source:'dot',channel:'isolated',identity:'author'},text:{profileId:randomUUID(),profileRevision:1,modelId:'deepseek-flash',budgetMicros:10000,consent:true},authorization:{text:true,music:false,publish:false},music:{route:'manual'},outputs:{lyrics:true,cover:true,music:false}},expectedRevision:null});
+ const plan=center.save({plan:{id:randomUUID(),artistId,title,schedule:{kind:'daily',localTime:'09:00'},material:{source:'dot',channel:'isolated',identity:'author'},text:{profileId:randomUUID(),profileRevision:1,modelId:'deepseek-flash',budgetMicros:10000,consent:true},authorization:{text:true,music:false,publish:false},music:{route:'manual'},outputs:{lyrics:true,cover:true,music:false}},expectedRevision:null});
  const preview=center.preview({id:plan.id}),run=center.run({id:plan.id,expectedRevision:plan.revision,summaryHash:preview.summaryHash,requestId:randomUUID(),source:'manual'}),item=center.list().items.find(i=>i.runId===run.id),candidateId=randomUUID();
  s.save('textCandidates',{id:candidateId});
  center.acceptDotCandidate({itemId:item.id,evidenceId:'isolated-inbox',candidate:{candidateId,artistId,channel:'isolated',identity:'author',externalItemId:item.expectedExternalItemId,title:'Original',lyrics:'Original lyrics'}});

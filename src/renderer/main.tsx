@@ -16,7 +16,6 @@ import { clientVersionLabel } from "./client-version";
 import { Context, Badge } from "./context";
 import Overview from "./pages/Overview";
 import Track from "./pages/Track";
-import CoverStudio from "./pages/CoverStudio";
 import PublishCenter from "./pages/PublishCenter";
 import Insights from "./pages/Insights";
 import ConfigurationCenter from "./pages/ConfigurationCenter";
@@ -37,7 +36,6 @@ const pages = [
   ["plans", "◷", "计划中心"],
   ["publish", "▤", "任务中心"],
   ["overview", "◫", "总览"],
-  ["cover", "▧", "封面工作室"],
   ["insights", "▥", "数据看板"],
   ["remote-assist", "▣", "远控"],
   ["platform-accounts", "◎", "账号管理"],
@@ -315,8 +313,6 @@ function App() {
             <Overview />
           ) : page === "track" && data.works.some((w: any) => w.id === id) ? (
             <Track key={id} id={id} />
-          ) : page === "cover" ? (
-            <CoverStudio key={id} initialId={id} />
           ) : page === "publish" ? (
             <PublishCenter key={data.mode} />
           ) : page === "insights" ? (

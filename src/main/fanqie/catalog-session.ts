@@ -15,7 +15,7 @@ import {FanqieCatalogRowError,type FanqieCatalog,type FanqieCatalogQuery,type Fa
 import {fanqieDownloadIssues} from '../../shared/fanqie-downloads';
 import {platformImageFailure} from '../../shared/platform-image';
 import type {FanqieDirectoryTracePort} from './directory-trace';
-import type {FanqieArtistPage} from './artist-creation';
+import {fanqieRosterNameKey, searchFanqieDirectorySinger, type FanqieArtistPage, type FanqieDirectorySinger} from './artist-creation';
 type AccountDocument = Page | Frame;
 type Options = {
   root: string; available: () => boolean; generation: () => number;
@@ -181,7 +181,7 @@ export class FanqieCatalogSession {
   private async observeAccount<T>(
     context: BrowserContext,
     guard: () => void,
-    read: (document: AccountDocument, go: (url: string) => Promise<void>, page: Page) => Promise<T>,
+    read: (document: AccountDocument, go: (url: string) => Promise<void>, page: Page, accountKey: string) => Promise<T>,
     trace?:FanqieDirectoryTracePort,
     inPlace = false,
   ) {
@@ -202,7 +202,7 @@ export class FanqieCatalogSession {
     document: AccountDocument,
     page: Page,
     guard: () => void,
-    read: (document: AccountDocument, go: (url: string) => Promise<void>, page: Page) => Promise<T>,
+    read: (document: AccountDocument, go: (url: string) => Promise<void>, page: Page, accountKey: string) => Promise<T>,
     trace?: FanqieDirectoryTracePort,
   ) {
     const releaseTrace=trace?.watch(page);
@@ -219,12 +219,12 @@ export class FanqieCatalogSession {
       await go(accountPage);
       const { accountId } = await readAccount(document); guard();
       if (!/^[1-9]\d{4,24}$/.test(accountId)) throw Error('FANQIE_ACCOUNT_ID_UNVERIFIED');
+      const accountKey = createHash('sha256').update('fanqie:' + accountId).digest('hex');
       await trace?.trace('catalog:account','ok',page);
-      const value = await read(document, go, page); guard();
+      const value = await read(document, go, page, accountKey); guard();
       await go(accountPage);
       const after = await readAccount(document); guard();
       if (accountId !== after.accountId) throw Error('FANQIE_CATALOG_SCOPE_CHANGED');
-      const accountKey = createHash('sha256').update('fanqie:' + accountId).digest('hex');
       this.options.verifyAccount?.(accountKey);
       await trace?.trace('catalog:account','ok',page);
       return { value, accountId, accountKey, maskedAccount: '***' + accountId.slice(-4) };
@@ -237,6 +237,28 @@ export class FanqieCatalogSession {
     this.mark('正在核对署名');
     await go(fanqieArtistUrl);
     return (await (this.options.artists ?? (p => readFanqieArtists(readPage(p))))(page)).artists;
+  }
+  async resolveDirectorySingers(context: BrowserContext, guard: () => void, expectedAccountKey: string,
+    names: readonly string[], trace?: FanqieDirectoryTracePort): Promise<ReadonlyMap<string, FanqieDirectorySinger>> {
+    const keys = new Set(names.map(fanqieRosterNameKey));
+    if (!keys.size) return new Map();
+    const { value, accountKey } = await this.observeAccount(context, guard, async (_document, go, page, before) => {
+      if (before !== expectedAccountKey) throw Error('FANQIE_CATALOG_SCOPE_CHANGED');
+      this.options.verifyAccount?.(before);
+      this.mark('正在核对本批歌手');
+      await go(fanqieArtistUrl);
+      const found = new Map<string, FanqieDirectorySinger>();
+      for (const key of keys) {
+        guard();
+        found.set(key, key ? await searchFanqieDirectorySinger(page, key, guard) : {issue: 'FANQIE_ARTIST_SEARCH_UNVERIFIED'});
+      }
+      await trace?.trace('catalog:artists','ok',page);
+      return found;
+    }, trace);
+    guard();
+    if (accountKey !== expectedAccountKey) throw Error('FANQIE_CATALOG_SCOPE_CHANGED');
+    this.verifiedAccountKey = accountKey;
+    return value;
   }
   private saveProfile(input: z.input<typeof ProfileSchema>) {
     const profile = ProfileSchema.parse(input);

@@ -21,9 +21,10 @@ await build({ stdin: { resolveDir: process.cwd(), contents: `
 const { runSunoCnBrowser, createPuleBrowserJobs, PlatformBrowserSessions, platformPageUrls, sunoCnOrigin } = createRequire(import.meta.url)(bundle);
 const html = await fs.readFile(new URL("./fixtures/suno-cn-browser.html", import.meta.url), "utf8");
 
-for (const scenario of ["vocal", "instrumental", "long-cover-prompt", "cover-rejection", "wav-label-variant", "wav-menu-missing", "wav-prepare-timeout",
+for (const scenario of ["vocal", "instrumental", "long-cover-prompt", "cover-rejection", "wav-label-variant", "wav-menu-missing", "wav-menu-retry-b",
+  "wav-menu-shared-budget", "wav-menu-replaced-b", "wav-menu-stop-b", "wav-prepare-timeout",
   "wav-prepare-rejected", "wav-download-not-started", "unchanged", "signed-out", "account-origin", "login-hydration", "layout-overflow", "generation-repaint", "already-pending",
-  "submit-blocked"]) {
+  "submit-blocked", "vocal-conflict", "insufficient-credits"]) {
   test(`苏诺之音 ${scenario} uses scoped controls and archives only the confirmed pair`, async t => {
     const browser = await launchHeadlessChromium(chromium);
     t.after(() => browser.close());
@@ -55,7 +56,7 @@ for (const scenario of ["vocal", "instrumental", "long-cover-prompt", "cover-rej
     const selectedCover = scenario === "cover-rejection" ? {
       profileId: randomUUID(), expectedRevision: 1, providerId: "zhipu_image", modelId: "glm-image",
     } : undefined;
-    let pageRuns = 0;
+    let pageRuns = 0, stopRequested = false;
     const jobs = createPuleBrowserJobs({
       root, provider: "suno_cn", captureWorkspace: () => () => {}, chooseAudio: async () => null,
       scope: async (_accountId, _artistId, _publication, coverImage) => ({ accountName: "账号", gender: "female", timbre: "小川",
@@ -81,11 +82,18 @@ for (const scenario of ["vocal", "instrumental", "long-cover-prompt", "cover-rej
       withPage: async (_id, _signal, run) => { pageRuns++; await run(page); },
       run: (page, input, hooks) => runSunoCnBrowser(page, input, {
         ...hooks,
+        guard: () => {
+          if (scenario === "wav-menu-stop-b" && traces.includes("menu:B:1") && !stopRequested) {
+            stopRequested = true;
+            jobs.stop({ id: jobs.status()[0].id });
+          }
+          return hooks.guard();
+        },
         beforeCharge: async (...args) => {
           await hooks.beforeCharge(...args);
           if (scenario === "submit-blocked") await page.locator(".suno-custom-create-action").evaluate(button => { button.disabled = true; });
         },
-      }, { control: 2000, generation: 2200, download: 2000, downloadStart: 550, poll: 30 }),
+      }, { control: scenario.startsWith("wav-menu-") ? 600 : 2000, generation: 2200, download: 3600, downloadStart: 550, poll: 30 }),
     });
     const instrumental = scenario === "instrumental";
     const title = scenario === "unchanged" ? "旧歌" : "窗边的灯";
@@ -114,6 +122,13 @@ for (const scenario of ["vocal", "instrumental", "long-cover-prompt", "cover-rej
       assert.deepEqual(job.files, []);
       return;
     }
+    if (scenario === "vocal-conflict" || scenario === "insufficient-credits") {
+      assert.equal(job.status, "failed");
+      assert.equal(job.code, scenario === "vocal-conflict" ? "SUNO_CN_VOCAL_STYLE_CONFLICT" : "SUNO_CN_INSUFFICIENT_CREDITS");
+      assert.deepEqual(traces, ["preflight"]);
+      assert.deepEqual(job.files, []);
+      return;
+    }
     if (scenario === "layout-overflow")
       assert.equal(await page.locator(".main-shell").getAttribute("data-scroll-after-mode"), "0,0");
     assert.deepEqual(traces[0], { title, lyrics: input.lyrics, style: input.style, instrumental,
@@ -125,12 +140,25 @@ for (const scenario of ["vocal", "instrumental", "long-cover-prompt", "cover-rej
       assert.equal(coverPrompts.length, 0);
       return;
     }
-    if (scenario === "wav-menu-missing") {
+    if (scenario === "wav-menu-missing" || scenario === "wav-menu-shared-budget") {
       assert.equal(job.status, "needs_review");
       assert.equal(job.code, "SUNO_CN_WAV_MENU_UNAVAILABLE");
       assert.deepEqual(job.chargeAttempts, [{ kind: "generation" }]);
-      assert.deepEqual(traces.slice(1), ["rename:B:灯外的雨"]);
+      assert.deepEqual(job.songIds, [input.requestId + ":A", input.requestId + ":B"]);
+      assert.deepEqual(traces.slice(1), scenario === "wav-menu-missing"
+        ? ["rename:B:灯外的雨", "menu:A:1", "menu:A:2", "menu:A:3", "menu:A:4"]
+        : ["rename:B:灯外的雨", "menu:A:1", "menu:A:2", "prepare:A:1", "menu:A:3", "prepare:A:2", "download:A", "menu:A:4"]);
       assert.equal(job.files.length, 0);
+      assert.equal(coverPrompts.length, 0);
+      return;
+    }
+    if (scenario === "wav-menu-replaced-b" || scenario === "wav-menu-stop-b") {
+      assert.equal(job.status, "needs_review");
+      assert.equal(job.code, scenario === "wav-menu-replaced-b" ? "SUNO_CN_RESULT_UNCLEAR" : "PULE_STOPPED");
+      assert.deepEqual(job.chargeAttempts, [{ kind: "generation" }]);
+      assert.deepEqual(job.songIds, [input.requestId + ":A", input.requestId + ":B"]);
+      assert.deepEqual(job.files.map(file => file.version), ["A"]);
+      assert.deepEqual(traces.slice(1), ["rename:B:灯外的雨", "menu:A:1", "download:A", "menu:B:1"]);
       assert.equal(coverPrompts.length, 0);
       return;
     }
@@ -163,7 +191,9 @@ for (const scenario of ["vocal", "instrumental", "long-cover-prompt", "cover-rej
     }
     assert.equal(job.status, "completed", `${job.code ?? ""} ${JSON.stringify(traces)}`);
     assert.deepEqual(job.chargeAttempts, [{ kind: "generation" }]);
-    const downloadTrace = scenario === "wav-prepare-timeout"
+    const downloadTrace = scenario === "wav-menu-retry-b"
+      ? ["menu:A:1", "download:A", "menu:B:1", "menu:B:2", "menu:B:3", "menu:B:4", "download:B"]
+      : scenario === "wav-prepare-timeout"
       ? ["prepare:A:1", "prepare:A:2", "download:A", "prepare:B:1", "download:B"]
       : scenario === "wav-download-not-started" ? ["download:A", "download:A", "download:B"] : ["download:A", "download:B"];
     assert.deepEqual(traces.slice(1), ["rename:B:灯外的雨", ...downloadTrace]);

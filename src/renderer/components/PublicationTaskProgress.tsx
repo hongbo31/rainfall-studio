@@ -1,7 +1,7 @@
 import React from "react";
 import type { PublicationPlanProgress, PublicationPlanStage } from "../../shared/publication-tasks";
 import { names } from "../context";
-import { planExecutionMessage, planStageLabels } from "../plan-execution-labels";
+import { musicAssetProgressLabel, planExecutionMessage, planStageLabels } from "../plan-execution-labels";
 
 const planStates: Record<PublicationPlanProgress["state"], string> = {
   pending: "未执行", queued: "排队中", running: "执行中", waiting: "等待中", blocked: "待处理",
@@ -22,7 +22,8 @@ export default function PublicationTaskProgress({ plans, formatIssue, openPlan }
       const active = ["running", "waiting", "blocked"].includes(plan.state);
       const stage = plan.reason ? steps.find(step => step.reason === plan.reason) :
         active && steps.find(step => ["dispatching", "waiting", "unknown"].includes(step.state));
-      const detail = [stage && stageLabel(stage), plan.reason && formatIssue(plan.reason)].filter(Boolean).join(" · ");
+      const assetProgress = stage && stage.stage === "music_assets" && musicAssetProgressLabel(stage.reason);
+      const detail = [stage && stageLabel(stage), assetProgress || (plan.reason && formatIssue(plan.reason))].filter(Boolean).join(" · ");
       const { runId } = plan;
       return <li key={plan.planId}>
         <article className="publication-plan-card" aria-label={plan.title} data-state={plan.state}>
@@ -44,10 +45,13 @@ export default function PublicationTaskProgress({ plans, formatIssue, openPlan }
                 {item.reason && item.reason !== plan.reason && !item.stages.some(step => step.reason === item.reason) &&
                   <p>{formatIssue(item.reason)}</p>}
                 {item.stages.length > 0 && <ul className="publication-plan-stage-list">
-                  {item.stages.map(step => <li key={step.id} data-state={step.state}>
-                    <span>{stageLabel(step)}</span><span>{planExecutionMessage(step.state)}</span>
-                    {step.reason && step.reason !== plan.reason && <small>{formatIssue(step.reason)}</small>}
-                  </li>)}
+                  {item.stages.map(step => {
+                    const progress = step.stage === "music_assets" && step.state === "waiting" && musicAssetProgressLabel(step.reason);
+                    return <li key={step.id} data-state={step.state}>
+                      <span>{stageLabel(step)}</span><span>{progress || planExecutionMessage(step.state)}</span>
+                      {!progress && step.reason && step.reason !== plan.reason && <small>{formatIssue(step.reason)}</small>}
+                    </li>;
+                  })}
                 </ul>}
               </div>)}
             </details>}

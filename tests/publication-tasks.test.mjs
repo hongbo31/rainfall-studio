@@ -719,7 +719,7 @@ test("the next task starts Fanqie after a previous download batch lost its brows
   assert.deepEqual(JSON.parse(fs.readFileSync(batchFile, "utf8")), batch);
 });
 
-test("a confirmed Suno pair with missing WAVs preserves its receipt and lets the task reach the next plan", t => {
+for (const hasReceipt of [true, false]) test(`Suno CN ${hasReceipt ? "with missing WAVs" : "without an old receipt"} preserves evidence and advances the task`, t => {
   const f = planLinkFixture(t);
   const music = f.plan("苏诺之音素素任务"), next = f.plan("后续上传计划");
   const task = f.send("save", { task: f.task([music.id, next.id]), expectedRevision: null });
@@ -738,19 +738,51 @@ test("a confirmed Suno pair with missing WAVs preserves its receipt and lets the
     routing: { text: { source: "default" }, image: { source: "default" }, music: { source: "default" } },
   } });
   f.store.put("item", { ...item, state: "unknown", reason });
+  const receipt = { trackingId: "suno-cn:" + requestId, songIds: [requestId + ":A", requestId + ":B"] };
+  const retained = f.store.put("stage", { id: attemptId, idempotencyKey: attemptId, requestHash: attemptId,
+    runId: run.id, itemId: item.id, stage: "music_submit", ordinal: 1, state: "unknown", reason,
+    ...(hasReceipt ? { result: receipt } : {}), createdAt: run.createdAt, updatedAt: run.updatedAt });
+  f.tick();
+  f.tick();
+  assert.deepEqual(current().linked.map(link => link.planId), [music.id, next.id]);
+  assert.equal(current().planFailures[0].reason, hasReceipt ? "WORKFLOW_SUNO_CN_WAV_RECOVERY_REQUIRED" : "WORKFLOW_SUNO_CN_BROWSER_RECEIPT_UNKNOWN");
+  assert.deepEqual(f.store.get("stage", attemptId), retained);
+  assert.equal(f.store.all("stage", { field: "runId", values: [run.id] }).length, 1);
+});
+
+test("an exhausted Pule receipt check lets the next plan run while preserving the unknown paid attempt", t => {
+  const f = planLinkFixture(t);
+  const music = f.plan("谱乐创作"), upload = f.plan("番茄音乐上传");
+  const task = f.send("save", { task: f.task([music.id, upload.id]), expectedRevision: null });
+  f.send("start", { id: task.id, expectedRevision: task.revision, requestId: randomUUID() });
+  const current = () => f.send("history", { id: task.id })[0];
+  f.tick();
+  const run = f.store.get("run", current().linked[0].id);
+  const item = f.store.all("item", { field: "runId", values: [run.id] })[0];
+  const accountId = randomUUID(), attemptId = randomUUID();
+  const workflow = { accountId, mode: "musician", inspiration: "", maxRewrites: 0,
+    graph: { nodes: ["lyrics", "music:yourmusic"], edges: [{ from: "lyrics", to: "music:yourmusic" }] },
+    browserMusic: { provider: "yourmusic", accountId, inputs: { title: "title", style: "style", lyrics: "lyrics" } } };
+  f.store.put("run", { ...run, state: "blocked", snapshot: { ...run.snapshot, workflow,
+    material: { ...run.snapshot.material, source: "workflow" }, outputs: { ...run.snapshot.outputs, cover: true },
+    routing: { text: { source: "default" }, image: { source: "default" }, music: { source: "default" } } } });
+  const reason = "WORKFLOW_PULE_BROWSER_RECEIPT_UNKNOWN";
+  f.store.put("item", { ...item, state: "unknown", reason });
   const attempt = f.store.put("stage", { id: attemptId, idempotencyKey: attemptId, requestHash: attemptId,
     runId: run.id, itemId: item.id, stage: "music_submit", ordinal: 1, state: "unknown", reason,
     createdAt: run.createdAt, updatedAt: run.updatedAt });
   f.tick();
   assert.equal(current().state, "action_required");
-  const receipt = { trackingId: "suno-cn:" + requestId, songIds: [requestId + ":A", requestId + ":B"] };
-  const retained = f.store.put("stage", { ...attempt, result: receipt });
+
+  const unconfirmed = "PULE_BROWSER_HISTORY_NOT_FOUND";
+  const evidence = f.store.put("stage", { ...attempt, reason: unconfirmed,
+    result: { beforeSongIds: ["old-a", "old-b"], browserRecoveryExhausted: true } });
+  f.store.put("item", { ...item, state: "unknown", reason: unconfirmed });
   f.tick();
   f.tick();
-  assert.deepEqual(current().linked.map(link => link.planId), [music.id, next.id]);
-  assert.equal(current().planFailures[0].reason, "WORKFLOW_SUNO_CN_WAV_RECOVERY_REQUIRED");
-  assert.deepEqual(f.store.get("stage", attemptId), retained);
-  assert.equal(f.store.all("stage", { field: "runId", values: [run.id] }).length, 1);
+  assert.deepEqual(current().linked.map(link => link.planId), [music.id, upload.id]);
+  assert.deepEqual(current().planFailures, [{ planId: music.id, reason: unconfirmed }]);
+  assert.deepEqual(f.store.get("stage", attemptId), evidence);
 });
 
 test("a start failure preserves the old failed execution for recovery and advances the new task", t => {

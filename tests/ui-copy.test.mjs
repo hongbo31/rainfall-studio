@@ -17,7 +17,7 @@ const { renderPage, renderTrack, helpNoteInteraction } = createRequire(import.me
 test("work details remove the coaching card and preserve concrete audio, import and publication actions",()=>{
   const html=renderTrack();
   for(const old of ['work-next-step','这首作品，下一步','试听并核对歌词与音频','当前发布用音频：A。'])assert(!html.includes(old),old);
-  for(const action of ['保存版本','试听 A','试听 B','导入音频 A','导入音频 B','准备发布材料','发布版本 A'])assert(html.includes(action),action);
+  for(const action of ['保存版本','试听 A','试听 B','导入音频 A','导入音频 B','导入封面','准备发布材料','发布版本 A'])assert(html.includes(action),action);
   assert(html.includes('A/B 试听说明'));
   assert(html.includes('授权依据'));
   assert(!html.includes('来源说明不替代平台权利核验'));
@@ -27,7 +27,6 @@ test("page names are concise and the overview keeps series management", () => {
   for (const [page, title] of Object.entries({
     overview: "总览",
     insights: "数据看板",
-    cover: "封面工作室",
   })) {
     assert.ok(renderPage(page).includes(`<h1>${title}</h1>`), page);
   }

@@ -11,7 +11,7 @@ import { imageApiProviders, imageCredentialProfiles } from "../../shared/platfor
 import { connectedPlanWorkflowGraph, PlanWorkflowGraphSchema, type PlanCenterPlan, type PlanCenterPlanInput,
   type PlanWorkflowGraph, type PlanWorkflowPublicationTarget } from "../../shared/plan-center";
 import { isLocalPublicationWorkflow, workflowProvider, workflowPublicationPlatforms, workflowSequence } from "../../shared/plan-workflow-graph";
-import { browserMusicProvider, browserMusicProviders, workflowBrowserMusic, workflowLyricFields, type WorkflowBrowserMusic } from "../../shared/plan-workflow-fields";
+import { browserMusicProvider, browserMusicProviders, withoutWorkflowLyrics, workflowBrowserMusic, workflowLyricFields, type WorkflowBrowserMusic } from "../../shared/plan-workflow-fields";
 import { publicationWorkflowHandler, workflowNodesCatalog, type WorkflowNodeDefinition } from "../../shared/platform-directory";
 import { fanqieScope } from "../fanqie-accounts";
 import { localMusicians, names, useStudio, useStudioRequest } from "../context";
@@ -57,17 +57,13 @@ function musicianFields(profile?: ArtistProfile, genre?: string, template?: stri
 
 const lyricOutputs = (instrumental: boolean) => Object.entries(workflowLyricFields).filter(([key]) => !instrumental || key !== "lyrics");
 
-function withoutLyrics(inputs: WorkflowBrowserMusic["inputs"]): WorkflowBrowserMusic["inputs"] {
-  return Object.fromEntries(Object.entries(inputs).filter(([name, field]) => name !== "lyrics" && field !== "lyrics"));
-}
-
 function MusicNodeSettings({ config, accounts, instrumental, upstream, inherited, hasImageProfile, onChange }: {
   config: WorkflowBrowserMusic; accounts: PlatformAccount[]; instrumental: boolean; upstream: string;
   inherited?: Record<string, string | undefined | null>; hasImageProfile: boolean;
   onChange: (value: WorkflowBrowserMusic) => void;
 }) {
   const outputs = lyricOutputs(instrumental);
-  const inputs = instrumental ? withoutLyrics(config.inputs) : config.inputs;
+  const inputs = instrumental ? withoutWorkflowLyrics(config.inputs) : config.inputs;
   const accountLabel = browserMusicProviders[config.provider].label + " 账号";
   const image = config.coverImage;
   return <>
@@ -99,7 +95,7 @@ function MusicNodeSettings({ config, accounts, instrumental, upstream, inherited
     <div className="form-grid plan-workflow-models">
       {(Object.keys(musicInputLabels) as (keyof typeof musicInputLabels)[]).filter(key => !instrumental || key !== "lyrics").map(key =>
         <label key={key}>{musicInputLabels[key]}<select aria-label={musicInputLabels[key]} disabled={!upstream} value={inputs[key] ?? ""} onChange={event =>
-          onChange({ ...config, inputs: { ...inputs, [key]: event.target.value || undefined } })}>
+          onChange({ ...config, inputs: { ...config.inputs, [key]: event.target.value || undefined } })}>
           <option value="">{key === "alternateTitle" ? "留空" : "选择上游字段"}</option>
           {outputs.map(([field, label]) => <option key={field} value={field}>{label}</option>)}
         </select></label>)}
@@ -128,6 +124,7 @@ export function PlanWorkflowSummary({ plan, profiles, artistName }: {
   }
   const { platform, mode, inspiration, maxRewrites, targetScore = defaultLyricTargetScore } = plan.workflow;
   const browser = workflowBrowserMusic(plan.workflow);
+  const browserInputs = browser && (plan.songType === "instrumental" ? withoutWorkflowLyrics(browser.inputs) : browser.inputs);
   const snapshot = plan.workflowSnapshot;
   const configured = (role: GenerationRole) => {
     const route = plan.routeSnapshot?.[role];
@@ -149,7 +146,7 @@ export function PlanWorkflowSummary({ plan, profiles, artistName }: {
         封面图片配置: plan.outputs.cover ? configured("image") : "关闭",
         ...(browser ? {
           [browserMusicProviders[browser.provider].label + " 账号"]: data.accounts?.find((account: PlatformAccount) => account.id === browser.accountId)?.name,
-          ...Object.fromEntries(Object.entries(browser.inputs).map(([field, output]) =>
+          ...Object.fromEntries(Object.entries(browserInputs ?? {}).map(([field, output]) =>
             [musicInputLabels[field as keyof typeof musicInputLabels], workflowLyricFields[output]])),
         } : { 音乐生成配置: configured("music") }),
       }} />
@@ -179,6 +176,7 @@ export default function PlanWorkflowForm({ initial, busy, error, onClose, onSave
   const [title, setTitle] = useState(initial?.title ?? "");
   const [platform, setPlatform] = useState<PlatformTarget | "">(initial?.workflow?.platform ?? "");
   const [artistId, setArtistId] = useState(initial?.artistId ?? "");
+  const [selectedArtistAccountId, setSelectedArtistAccountId] = useState(initial?.workflow?.accountId ?? "");
   const [fallbackAccountId, setFallbackAccountId] = useState(initial?.workflow?.accountId ?? "");
   const [countValue, setCountValue] = useState(String(initial?.count ?? 1));
   const [workflow, setWorkflow] = useState<PlanWorkflowGraph>(() => initial?.workflow
@@ -252,7 +250,9 @@ export default function PlanWorkflowForm({ initial, busy, error, onClose, onSave
   const availableArtists = platform ? artists.filter(row => scopedAccount && (row.accountId === scopedAccount.id ||
     !row.accountId && row.id === initial?.artistId && initial?.workflow?.platform === platform &&
       initial?.workflow?.accountId === scopedAccount.id)) : artists;
-  const artist = availableArtists.find(row => row.id === artistId);
+  const selectedArtist = artists.find(row => row.id === artistId);
+  const artistAccountChanged = selectedArtist?.accountId && selectedArtist.accountId !== selectedArtistAccountId;
+  const artist = artistAccountChanged ? undefined : availableArtists.find(row => row.id === artistId);
   const account = platform ? scopedAccount : accounts.find(row => row.id === (artist?.accountId || fallbackAccountId));
   const publicationTarget = (target: PlatformTarget): PlanWorkflowPublicationTarget => {
     const choice = publicationChoices[target];
@@ -381,7 +381,7 @@ export default function PlanWorkflowForm({ initial, busy, error, onClose, onSave
       enabled: false, schedule: initial?.schedule ?? defaultSchedule,
       songType: instrumental ? "instrumental" : "vocal",
       workflow: { accountId: account.id, ...(platform ? { platform } : {}), graph: workflow,
-        ...(browser ? { browserMusic: { ...browser, inputs: instrumental ? withoutLyrics(browser.inputs) : browser.inputs,
+        ...(browser ? { browserMusic: { ...browser,
           ...(imageChoice && { coverImage: { ...imageChoice, profileId: coverProfile?.id ?? imageChoice.profileId } }) } } : {}),
         ...(publishes ? { publications: publications.filter(target => target.accountId).map(target =>
           target.platform === "fanqie" ? { ...target, fanqieBatch: fanqieBatch.data } : target) } : {}),
@@ -426,12 +426,12 @@ export default function PlanWorkflowForm({ initial, busy, error, onClose, onSave
           </select></label>}
           <label>艺人信息<select aria-label="艺人信息" required disabled={!!platform && !scopedAccount} value={artistId} onChange={event => {
             const id = event.target.value;
+            const chosen = availableArtists.find(row => row.id === id);
             setArtistId(id);
-            if (artistSongType(availableArtists.find(row => row.id === id)?.defaults) === "instrumental")
-              setBrowserDraft(previous => previous && { ...previous, inputs: withoutLyrics(previous.inputs) });
+            setSelectedArtistAccountId(chosen?.accountId ?? fallbackAccountId);
           }}>
             <option value="">选择艺人</option>
-            {availableArtists.map(row => <option key={row.id} value={row.id}>{row.name}</option>)}
+            {availableArtists.map(row => <option key={row.id} value={row.id} disabled={!!artistAccountChanged && row.id === artistId}>{row.name}</option>)}
           </select></label>
           <label>歌曲生成次数<input required type="number" min={1} max={20} step={1} value={countValue}
             onChange={event => setCountValue(event.target.value)} /></label>
@@ -439,7 +439,7 @@ export default function PlanWorkflowForm({ initial, busy, error, onClose, onSave
         </div>
         {!localPublication && <>
         {!platform && artist && !artist.accountId && <label>关联账号<select aria-label="关联账号" required value={fallbackAccountId}
-          onChange={event => setFallbackAccountId(event.target.value)}>
+          onChange={event => { setFallbackAccountId(event.target.value); setSelectedArtistAccountId(event.target.value); }}>
           <option value="">选择账号</option>
           {accounts.map(row => <option key={row.id} value={row.id}>{row.name} · {names[row.provider]}</option>)}
         </select></label>}
@@ -447,7 +447,8 @@ export default function PlanWorkflowForm({ initial, busy, error, onClose, onSave
           ...inherited,
           ...(!platform && artist.accountId && account ? { 账号: account.name } : {}),
         }} />}
-        {artistId && !artist && <p className="plan-warning" role="status">原艺人已移除，请重新选择。</p>}
+        {artistId && !artist && <p className="plan-warning" role="status">{artistAccountChanged
+          ? "原艺人已关联到其他账号，请重新选择。" : "原艺人已移除，请重新选择。"}</p>}
         {artist?.accountId && !account && <p className="plan-warning" role="status">找不到艺人关联的账号。</p>}
         {(!artists.length || !accounts.length || artist?.accountId && !account || platform && (!scopedAccounts.length || scopedAccount && !availableArtists.length)) &&
           <button type="button" onClick={() => go("platform-accounts", platform || undefined)}>打开账号管理</button>}

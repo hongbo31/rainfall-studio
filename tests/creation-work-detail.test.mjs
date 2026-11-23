@@ -101,6 +101,7 @@ test("creation center lists recordings without parent rows and opens each versio
   await page.addScriptTag({ content: outputFiles.find(file => file.path.endsWith(".js")).text });
   await page.getByRole("button", { name: "查看全部 →", exact: true }).click();
   await expect(page.getByRole("button", { name: "作品库", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("navigation").getByRole("button", { name: "封面工作室", exact: true })).toHaveCount(0);
 
   const heading = page.getByRole("heading", { name: "创作中心", exact: true });
   const draftTitle = page.getByRole("form", { name: "歌曲编辑器" }).getByLabel("歌名", { exact: true });
@@ -121,6 +122,9 @@ test("creation center lists recordings without parent rows and opens each versio
   await legacyDraft.click();
   await expect(detail.getByRole("heading", { name: "无音频草稿", exact: true })).toBeVisible();
   await expect(detail.getByRole("button", { name: "导入音频 A", exact: true })).toBeVisible();
+  await expect(detail.getByRole("button", { name: /封面工作室/ })).toHaveCount(0);
+  await detail.getByRole("button", { name: "导入封面", exact: true }).click();
+  expect(await page.evaluate(() => window.testWorkImport)).toEqual({ role: "cover", workId: "draft-only" });
   await detail.getByRole("button", { name: "关闭详情", exact: true }).click();
   await expect(list.getByRole("button", { name: "查看 A 版 晨光练习", exact: true })).toHaveCount(0);
   await search.fill("晚风");

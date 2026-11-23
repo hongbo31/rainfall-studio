@@ -109,6 +109,7 @@ test("platform cards open their configured pages and execute through the matchin
     audioName: "目录歌曲甲.wav", title: "目录歌曲甲", singer: "歌手甲" };
   const pausedBatchId = "00000000-0000-4000-8000-000000000001";
   const archiveBatchId = "00000000-0000-4000-8000-000000000002";
+  const finishDirectoryUpload = Promise.withResolvers();
   let firstAccountScans = 0;
   let pendingDirectoryBatch = { id: pausedBatchId, state: "needs_review", remaining: 0, issue: "FANQIE_BROWSER_OPERATION_FAILED",
     preferences: { limit: 100, signContract: true }, items: [{ ...queuedTrack, id: "old-track", title: "已投稿作品",
@@ -168,12 +169,6 @@ test("platform cards open their configured pages and execute through the matchin
         defaults.revision++;
         return ok(defaults);
       }
-      case "cover.list": {
-        const image = modelProfiles.find(profile => profile.id === defaults.roles.image);
-        const manualCover = image ? { providerId: image.providerId, modelId: image.modelId } : null;
-        return ok({ requests: [], receipts: [], manualCover });
-      }
-      case "cover.inboxStatus": return ok([]);
       case "cover.generate":
         coverGenerations.push(input);
         return ok({ requestId: input.requestId, manualGeneration: true, state: "waiting" });
@@ -308,7 +303,7 @@ test("platform cards open their configured pages and execute through the matchin
     configuredKeys.delete(profileId);
     return ok({ profileId, configured: false, state: "absent" });
   });
-  await page.exposeFunction("studioFanqie", (method, input) => {
+  await page.exposeFunction("studioFanqie", async (method, input) => {
     if (method === "status") return ok({ connected: false, report: null });
     if (method === "downloadStatus") return ok(input.accountId === "fanqie-a" ? pendingDirectoryBatch : secondDirectoryBatch);
     if (method === "previewDownloads") {
@@ -325,6 +320,7 @@ test("platform cards open their configured pages and execute through the matchin
     if (method === "publishDownloads" || method === "reconcileDownloads") {
       debugCalls.push({ method, input });
       if (input.accountId === "fanqie-a") {
+        await finishDirectoryUpload.promise;
         pendingDirectoryBatch = { id: "00000000-0000-4000-8000-000000000003", state: "complete",
           items: [{ ...queuedTrack, state: "uploaded", officialStatus: "审核中", workId: "987654321012345601" }] };
         return ok(pendingDirectoryBatch);
@@ -466,6 +462,12 @@ test("platform cards open their configured pages and execute through the matchin
   await expect(executeUpload).toBeDisabled();
   await confirmRemaining.check();
   await executeUpload.click();
+  try {
+    await expect(fanqieDebug.getByText("正在上传本批歌曲…", { exact: true })).toBeVisible();
+    await expect(fanqieDebug.getByText("已投稿作品", { exact: true })).toHaveCount(0);
+  } finally {
+    finishDirectoryUpload.resolve();
+  }
   await expect(fanqieDebug.getByText("审核中 · 作品 ID 987654321012345601", { exact: true })).toBeVisible();
   await expect(separateActions).toHaveCount(0);
   await expect(executeUpload).toBeDisabled();
@@ -724,11 +726,6 @@ test("platform cards open their configured pages and execute through the matchin
   await expect(imageModels.getByText(/默认 · 方舟封面配置.*doubao-seedream-5-0-pro-260628/u)).toBeVisible();
   assert.equal(lyricCalls.length, 2, "editing models does not implicitly submit a test");
   assert.deepEqual(coverGenerations, [], "saving a model does not generate a cover");
-  await navigation.getByRole("button", { name: "封面工作室", exact: true }).click();
-  await page.getByRole("button", { name: "用 Doubao Seedream 5.0 Pro 生成封面（参考 ¥0.30/张）", exact: true }).click();
-  await expect.poll(() => coverGenerations[0]?.confirmedModelId).toBe("doubao-seedream-5-0-pro-260628");
-  assert.equal(coverGenerations[0].workId, "debug-work");
-  await navigation.getByRole("button", { name: "平台管理", exact: true }).click();
 
   const generation = page.getByRole("region", { name: "歌曲生成", exact: true });
   const pule = generation.getByRole("article", { name: "谱乐 AI", exact: true });

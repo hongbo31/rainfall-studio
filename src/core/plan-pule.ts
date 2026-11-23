@@ -5,7 +5,8 @@ import {z} from 'zod';
 import type {Studio} from './studio';
 import {CenterStore,digest} from './plan-center/storage';
 import type {PlanCenterItem,PlanCenterRun} from '../shared/plan-center';
-import {planPuleAttempt,planPuleAudioLimit,planPuleHistoryMatch,planPuleReceipt,planPuleReleaseIndex,planPuleScope,puleSubmissionText,
+import {planPuleAttempt,planPuleAssetProgress,planPuleAudioLimit,planPuleHistoryMatch,planPuleReceipt,planPuleReleaseIndex,planPuleScope,
+  puleBrowserBeforeSongIds,puleBrowserLookupStates,puleBrowserSongPair,puleSubmissionText,readSunoBrowserReceipt,sunoBrowserWavsComplete,
   withinPuleSubmissionWindow,type PlanPuleCustomDraft,type PlanPuleReceipt,type PlanPuleRetention,type PlanPuleTask} from '../shared/plan-pule';
 import {parseDraft} from '../shared/creation';
 import {workVersionTitle} from '../shared/work-versions';
@@ -47,11 +48,26 @@ const usesPuleRunner=(run:PlanCenterRun)=>['pule_prompt','creation','workflow'].
 
 const recoveryScope=planPuleAttempt.extend({stage:z.literal('music_submit')});
 const recoveryBackoff=[5000,30000,120000,300000];
+const browserRecoveryBackoff=[5000,25000,60000,120000];
+const finishedBrowserRuns=new Set(['completed','stopped','failed']);
+const musicAssetScope=planPuleScope.extend({stage:z.literal('music_assets')});
+const musicAssetAttempt=planPuleAttempt.extend({stage:z.literal('music_assets')});
+const assetWaitLimit=20*60_000;
+const assetQueryErrorLimit=5;
+const assetClaimFailures=new Set(['PROFILE_REVISION_CHANGED','MUSIC_RECEIPT_INVALID','MUSIC_GRANT_REQUIRED',
+  'WORKFLOW_SUNO_CN_ACCOUNT_REQUIRED','WORKFLOW_PULE_ACCOUNT_REQUIRED']);
 const recoveryChecks=(result?:Record<string,unknown>)=>Number.isInteger(result?.recoveryChecks)?Number(result!.recoveryChecks):0;
 const recoveryReasons={
   not_found:'MUSIC_HISTORY_NOT_FOUND',ambiguous:'MUSIC_HISTORY_AMBIGUOUS',unavailable:'MUSIC_HISTORY_UNAVAILABLE',
   credential_required:'CREDENTIAL_REQUIRED',pair_order_unavailable:'MUSIC_HISTORY_PAIR_ORDER_UNAVAILABLE',
 };
+const browserRecoveryReasons={
+  not_found:'PULE_BROWSER_HISTORY_NOT_FOUND',ambiguous:'PULE_BROWSER_HISTORY_AMBIGUOUS',
+  unavailable:'PULE_BROWSER_HISTORY_UNAVAILABLE',login_required:'PULE_BROWSER_HISTORY_LOGIN_REQUIRED',
+  missing_baseline:'PULE_BROWSER_HISTORY_BASELINE_MISSING',
+};
+const stageRecoveryScope=(attempt:{runId:string;itemId:string;id:string})=>
+  recoveryScope.parse({runId:attempt.runId,itemId:attempt.itemId,stage:'music_submit',attemptId:attempt.id});
 
 function recoveryDraft(run:PlanCenterRun,item:PlanCenterItem) {
   if(run.snapshot.workflow&&item.material?.source!=='workflow')return;
@@ -74,12 +90,24 @@ export function requestPlanPuleRecovery(s:Studio,id:string,scope:'creation'|'gra
   });
 }
 
-function takeRecovery(s:Studio) {
-  const rows=s.planCenterService().list(),now=s.now().getTime();
-  for(const attempt of rows.stageAttempts.filter(row=>row.stage==='music_submit'&&row.state==='unknown')
+function takeRecovery(s:Studio,browserOnly:boolean) {
+  const store=new CenterStore(s.repo),now=s.now().getTime();
+  for(const attempt of store.all('stage',{field:'state',values:['unknown']}).filter(row=>row.stage==='music_submit')
     .sort((a,b)=>a.updatedAt.localeCompare(b.updatedAt))){
-    const run=rows.runs.find(row=>row.id===attempt.runId),item=rows.items.find(row=>row.id===attempt.itemId&&row.runId===run?.id);
-    if(!run||!item||workflowBrowserMusic(run.snapshot.workflow))continue;
+    const run=store.get('run',attempt.runId),item=store.get('item',attempt.itemId);
+    if(!run||item?.runId!==run.id)continue;
+    const browser=workflowBrowserMusic(run.snapshot.workflow);
+    if(browser){
+      if(browser.provider!=='yourmusic'||!browser.accountId||run.stopRequested||
+          finishedBrowserRuns.has(run.state)||attempt.result?.browserRecoveryExhausted)continue;
+      const before=puleBrowserBeforeSongIds.safeParse(attempt.result?.beforeSongIds);
+      const check=recoveryChecks(attempt.result), wait=browserRecoveryBackoff[check];
+      if(wait===undefined||before.success&&now-Date.parse(attempt.updatedAt)<wait)continue;
+      const draft=before.success&&recoveryDraft(run,item);
+      return {scope:stageRecoveryScope(attempt),check,browser:{accountId:browser.accountId,
+        match:before.success&&draft?{title:draft.title,beforeSongIds:before.data}:null}};
+    }
+    if(browserOnly)continue;
     const draft=recoveryDraft(run,item);
     if(!draft)continue;
     const wait=recoveryBackoff[recoveryChecks(attempt.result)];
@@ -87,12 +115,46 @@ function takeRecovery(s:Studio) {
     const {profileId,profileRevision,modelId}=run.snapshot.music;
     if(!profileId||!profileRevision||!modelId||!['pule','yourmusic'].includes(run.snapshot.music.route))continue;
     return {
-      scope:recoveryScope.parse({runId:run.id,itemId:item.id,stage:'music_submit',attemptId:attempt.id}),
+      scope:stageRecoveryScope(attempt),
       profileId,profileRevision,match:{title:draft.title,lyrics:draft.lyrics,tags:draft.style,
         instrumental:run.snapshot.songType==='instrumental',model:modelId,createdAt:attempt.createdAt},
     };
   }
   return null;
+}
+
+function recordBrowserRecovery(s:Studio,raw:unknown){
+  const input=recoveryScope.extend({
+    check:z.number().int().min(0).max(browserRecoveryBackoff.length-1),
+    outcome:z.enum(['found','missing_baseline',...puleBrowserLookupStates]),
+    songIds:puleBrowserSongPair.optional(),
+  }).parse(raw);
+  return s.repo.transaction(()=>{
+    const service=s.planCenterService(),store=new CenterStore(s.repo);
+    const run=store.get('run',input.runId), attempt=store.get('stage',input.attemptId);
+    if(!run||run.stopRequested||finishedBrowserRuns.has(run.state)||workflowBrowserMusic(run.snapshot.workflow)?.provider!=='yourmusic'||
+        attempt?.runId!==input.runId||attempt.itemId!==input.itemId||attempt.stage!==input.stage||
+        attempt.state!=='unknown'||attempt.result?.browserRecoveryExhausted||recoveryChecks(attempt.result)!==input.check)
+      throw Error('RECONCILE_NOT_REQUIRED');
+    const before=puleBrowserBeforeSongIds.safeParse(attempt.result?.beforeSongIds);
+    const note=(outcome:keyof typeof browserRecoveryReasons)=>{
+      const checks=input.check+1, exhausted=outcome==='missing_baseline'||checks>=browserRecoveryBackoff.length;
+      return service.record({attemptId:attempt.id,status:'unknown',
+        reason:exhausted?browserRecoveryReasons[outcome]:'PULE_BROWSER_HISTORY_CHECKING',
+        result:{...attempt.result,recoveryChecks:checks,browserRecoveryExhausted:exhausted}});
+    };
+    if(input.outcome!=='found')return note(input.outcome);
+    const songIds=input.songIds;
+    if(!before.success)return note('missing_baseline');
+    if(!songIds||songIds.some(id=>before.data.includes(id)))return note('ambiguous');
+    const trackingId='pule-browser:'+songIds[0], receipt=planPuleReceipt.parse({trackingId,songIds});
+    try{assertNewBrowserReceipt(planTask(s,input),receipt);}
+    catch(error){if(error instanceof Error&&error.message==='MUSIC_RECEIPT_INVALID')return note('ambiguous');throw error;}
+    const recovered=service.reconcile({attemptId:attempt.id,status:'succeeded',evidenceId:trackingId,externalTaskId:trackingId,result:receipt});
+    s.repo.audit('planCenter.puleBrowser.recovered',attempt.id,{runId:run.id,checks:input.check+1,
+      reason:attempt.result?.browserError,evidenceId:trackingId});
+    return recovered;
+  });
 }
 
 function recordRecovery(s:Studio,raw:unknown){
@@ -130,8 +192,8 @@ function recordRecovery(s:Studio,raw:unknown){
 }
 
 function planTask(s:Studio,scope:PlanPuleTask) {
-  const service=s.planCenterService(),rows=service.list();
-  const run=rows.runs.find(row=>row.id===scope.runId),item=rows.items.find(row=>row.id===scope.itemId);
+  const service=s.planCenterService(),store=new CenterStore(s.repo);
+  const run=store.get('run',scope.runId),item=store.get('item',scope.itemId);
   if(!run||!item||item.runId!==run.id||!usesPuleRunner(run))
     throw Error('PLAN_MUSIC_SCOPE');
   const plan=run.snapshot,music=plan.music;
@@ -167,21 +229,24 @@ function planTask(s:Studio,scope:PlanPuleTask) {
     musicPrompts:{yourmusic:instrumentalPrompt,suno:instrumentalPrompt},
   }):undefined;
   const next=service.next({runId:run.id,itemId:item.id});
-  const attempt=rows.stageAttempts.filter(row=>row.itemId===item.id&&row.stage===scope.stage).at(-1);
-  const original=rows.stageAttempts.find(row=>row.itemId===item.id&&row.stage==='music_submit'&&row.state==='succeeded');
-  const receipt=scope.stage==='music_assets'?planPuleReceipt.parse(original?.result):undefined;
+  const stages=store.all('stage',{field:'runId',values:[run.id]}).filter(row=>row.itemId===item.id);
+  const attempt=stages.filter(row=>row.stage===scope.stage).at(-1);
+  const original=stages.find(row=>row.stage==='music_submit'&&row.state==='succeeded');
+  const knownReceipt=scope.stage==='music_assets'?planPuleReceipt.safeParse(original?.result):undefined;
+  if(knownReceipt&&!knownReceipt.success)throw Error('MUSIC_RECEIPT_INVALID');
+  const receipt=knownReceipt?.data;
   // The item ID is randomly seeded when the run starts, so a resumed download makes the same choice.
   const retention:PlanPuleRetention|undefined=plan.workflow?.graph
     ? plan.workflowSnapshot?.secondSinger ? {kind:'pair'}
       : {kind:'single',preferredIndex:parseInt(digest(item.id).slice(0,2),16)%2===0?0:1}
     : undefined;
-  return {service,rows,run,item,next,attempt,brief,receipt,draft,custom,retention,browser,
+  return {service,store,run,item,next,attempt,brief,receipt,draft,custom,retention,browser,
     profileId:music.profileId,profileRevision:music.profileRevision,modelId:music.modelId};
 }
 
-function browserAccountRuns({rows,browser}:ReturnType<typeof planTask>) {
+function browserAccountRuns({store,browser}:ReturnType<typeof planTask>) {
   const runs=new Map<string,PlanCenterRun>();
-  for(const run of rows.runs){
+  for(const run of store.all('run')){
     const account=workflowBrowserMusic(run.snapshot.workflow);
     if(account?.accountId===browser?.accountId&&account?.provider===(browser?.provider??'yourmusic'))runs.set(run.id,run);
   }
@@ -192,21 +257,21 @@ function assertNoPendingBrowserSong(task:ReturnType<typeof planTask>) {
   const normalize=(title:string)=>title.normalize('NFKC').trim();
   const title=normalize(task.custom?.title??'');
   const runs=browserAccountRuns(task);
-  for(const previous of task.rows.stageAttempts){
+  for(const previous of task.store.all('stage',{field:'runId',values:[...runs.keys()]})){
     if(previous.stage!=='music_submit'||previous.state!=='unknown'||previous.id===task.attempt?.id)continue;
     const run=runs.get(previous.runId);
     if(!run)continue;
-    const item=task.rows.items.find(row=>row.id===previous.itemId&&row.runId===run.id);
+    const item=task.store.get('item',previous.itemId);
     let previousTitle:string|undefined;
-    try{previousTitle=item&&workflowCreationDraft(run,item)?.title;}catch{/* Keep unresolved receipts when their inputs cannot be verified. */}
+    try{previousTitle=item?.runId===run.id?workflowCreationDraft(run,item)?.title:undefined;}catch{/* Keep unresolved receipts when their inputs cannot be verified. */}
     if(!previousTitle||normalize(previousTitle)===title)throw Error('WORKFLOW_MUSIC_PRIOR_RECEIPT_REQUIRED');
   }
 }
 
 function assertNewBrowserReceipt(task:ReturnType<typeof planTask>,receipt:PlanPuleReceipt) {
   const runs=browserAccountRuns(task);
-  for(const previous of task.rows.stageAttempts){
-    if(previous.stage!=='music_submit'||previous.id===task.attempt?.id||!runs.has(previous.runId))continue;
+  for(const previous of task.store.all('stage',{field:'runId',values:[...runs.keys()]})){
+    if(previous.stage!=='music_submit'||previous.id===task.attempt?.id)continue;
     const songIds=previous.result?.songIds;
     if(Array.isArray(songIds)&&receipt.songIds.some(id=>songIds.includes(id)))throw Error('MUSIC_RECEIPT_INVALID');
   }
@@ -220,6 +285,14 @@ const planSong=z.strictObject({
 });
 const extensions={'audio/mpeg':'mp3','audio/mp3':'mp3','audio/wav':'wav','audio/x-wav':'wav','audio/flac':'flac','audio/ogg':'ogg','audio/mp4':'m4a'} as const;
 const planSongs=z.tuple([planSong.nullable(),planSong.nullable()]);
+
+function currentAssetAttempt(s:Studio,scope:z.infer<typeof musicAssetScope>,attemptId?:string) {
+  const next=s.planCenterService().next({runId:scope.runId,itemId:scope.itemId});
+  if(next?.stage!=='music_assets'||!next.attemptId||(attemptId&&next.attemptId!==attemptId))return;
+  const attempt=new CenterStore(s.repo).get('stage',next.attemptId);
+  if(attempt?.runId===scope.runId&&attempt.itemId===scope.itemId&&attempt.stage===scope.stage&&
+      ['dispatching','waiting'].includes(attempt.state))return attempt;
+}
 
 async function saveSong(s:Studio,input:z.infer<typeof planPuleAttempt>&{songs:z.infer<typeof planSongs>}) {
   const verify=()=>{
@@ -287,8 +360,9 @@ async function saveSong(s:Studio,input:z.infer<typeof planPuleAttempt>&{songs:z.
 
 export function planPuleAction(s:Studio,action:string,raw:unknown) {
   if(s.mode!=='production')throw Error('PRODUCTION_REQUIRED');
-  if(action==='takeRecovery'){z.strictObject({}).parse(raw);return takeRecovery(s);}
+  if(action==='takeRecovery')return takeRecovery(s,z.strictObject({browserOnly:z.boolean().default(false)}).parse(raw).browserOnly);
   if(action==='recordRecovery')return recordRecovery(s,raw);
+  if(action==='recordBrowserRecovery')return recordBrowserRecovery(s,raw);
   const service=s.planCenterService();
   if(action==='list'){
     z.strictObject({}).parse(raw);
@@ -314,22 +388,71 @@ export function planPuleAction(s:Studio,action:string,raw:unknown) {
     return tasks;
   }
   if(action==='claim'){
-    const scope=planPuleScope.parse(raw),task=planTask(s,scope);
-    if(task.run.stopRequested||task.next?.stage!==scope.stage)throw Error('STOP_REQUESTED');
-    let attempt=task.attempt;
-    if(!attempt){
-      const claimed=service.claim({...scope,requestHash:digest({scope,brief:task.brief,draft:task.draft,custom:task.custom,
-        profileId:task.profileId,modelId:task.modelId,browser:task.browser})});
-      if(!('id' in claimed))throw Error(claimed.reason??'MUSIC_GRANT_REQUIRED');
-      attempt=claimed;
-    }else if(!(scope.stage==='music_assets'&&['dispatching','waiting'].includes(attempt.state))&&
-      !(scope.stage==='music_submit'&&attempt.state==='dispatching'&&attempt.ordinal>1))
-      throw Error('MUSIC_OUTCOME_UNKNOWN');
-    if(scope.stage==='music_assets'&&attempt.state==='dispatching')
-      attempt=service.record({attemptId:attempt.id,status:'waiting',reason:'ORIGINAL_ASSETS_PENDING'});
-    return {...scope,attemptId:attempt.id,prompt:task.brief.prompt,receipt:task.receipt,draft:task.draft,custom:task.custom,retention:task.retention,
-      ...(task.browser?{browser:task.browser}:{}),
-      profileId:task.profileId,profileRevision:task.profileRevision,modelId:task.modelId};
+    const scope=planPuleScope.parse(raw);
+    return s.repo.transaction(()=>{
+      let task:ReturnType<typeof planTask>;
+      try{task=planTask(s,scope);}
+      catch(error){
+        if(scope.stage!=='music_assets'||!(error instanceof Error)||!assetClaimFailures.has(error.message))throw error;
+        let attempt=currentAssetAttempt(s,{...scope,stage:scope.stage});
+        if(!attempt){
+          const next=service.next({runId:scope.runId,itemId:scope.itemId});
+          if(next?.stage!==scope.stage||next.state!=='ready'||next.attemptId)throw error;
+          const claimed=service.claim(scope);
+          if(!('id' in claimed))throw error;
+          attempt=claimed;
+        }
+        service.record({attemptId:attempt.id,status:'failed',reason:error.message});
+        return null;
+      }
+      if(task.run.stopRequested||task.next?.stage!==scope.stage)throw Error('STOP_REQUESTED');
+      let attempt=task.attempt;
+      if(!attempt){
+        const claimed=service.claim({...scope,requestHash:digest({scope,brief:task.brief,draft:task.draft,custom:task.custom,
+          profileId:task.profileId,modelId:task.modelId,browser:task.browser})});
+        if(!('id' in claimed))throw Error(claimed.reason??'MUSIC_GRANT_REQUIRED');
+        attempt=claimed;
+      }else if(!(scope.stage==='music_assets'&&['dispatching','waiting'].includes(attempt.state))&&
+        !(scope.stage==='music_submit'&&attempt.state==='dispatching'&&attempt.ordinal>1))
+        throw Error('MUSIC_OUTCOME_UNKNOWN');
+      if(scope.stage==='music_assets'&&attempt.state==='dispatching')
+        attempt=service.record({attemptId:attempt.id,status:'waiting',reason:'MUSIC_ASSETS_CHECKING'});
+      return {...scope,attemptId:attempt.id,prompt:task.brief.prompt,receipt:task.receipt,draft:task.draft,custom:task.custom,retention:task.retention,
+        ...(task.browser?{browser:task.browser}:{}),
+        profileId:task.profileId,profileRevision:task.profileRevision,modelId:task.modelId};
+    });
+  }
+  if(action==='assetProgress'){
+    const {reason,attemptId,...scope}=musicAssetAttempt.extend({reason:planPuleAssetProgress}).parse(raw);
+    return s.repo.transaction(()=>{
+      const attempt=currentAssetAttempt(s,scope,attemptId);
+      if(attempt?.state!=='waiting')throw Error('STOP_REQUESTED');
+      const queried=attempt.result?.assetQueryErrors && reason.startsWith('MUSIC_ASSETS_DOWNLOADING_');
+      if(attempt.reason!==reason||queried)service.record({attemptId,status:'waiting',reason,
+        ...(queried?{result:{...attempt.result,assetQueryErrors:0}}:{})});
+      return true;
+    });
+  }
+  if(action==='assetPoll'){
+    const {outcome,hasFallback,attemptId,...scope}=musicAssetAttempt.extend({
+      outcome:z.enum(['pending','error']),hasFallback:z.boolean().default(false),
+    }).parse(raw);
+    return s.repo.transaction(()=>{
+      const attempt=currentAssetAttempt(s,scope,attemptId);
+      if(attempt?.state!=='waiting')throw Error('STOP_REQUESTED');
+      const run=new CenterStore(s.repo).get('run',scope.runId);
+      if(!run||workflowBrowserMusic(run.snapshot.workflow))throw Error('PLAN_MUSIC_SCOPE');
+      const previous=attempt.result?.assetQueryErrors;
+      const errors=outcome==='error'?(typeof previous==='number'&&Number.isInteger(previous)&&previous>=0?previous:0)+1:0;
+      const expired=outcome==='pending'&&s.now().getTime()-Date.parse(attempt.createdAt)>=assetWaitLimit;
+      if(expired&&hasFallback)return true;
+      const exhausted=errors>=assetQueryErrorLimit;
+      service.record({attemptId,status:expired||exhausted?'failed':'waiting',
+        reason:expired?'MUSIC_ORIGINAL_WAIT_EXPIRED':exhausted?'MUSIC_ORIGINAL_QUERY_FAILED':
+          outcome==='error'?'MUSIC_ORIGINAL_QUERY_RETRY':'MUSIC_ORIGINAL_PENDING',
+        result:{...attempt.result,assetQueryErrors:errors}});
+      return false;
+    });
   }
   if(action==='current'||action==='authorizeBrowserSubmission'){
     const input=planPuleAttempt.parse(raw),task=planTask(s,input);
@@ -344,21 +467,52 @@ export function planPuleAction(s:Studio,action:string,raw:unknown) {
     }
     return true;
   }
+  if(action==='rememberBrowserSubmission'){
+    const input=recoveryScope.extend({beforeSongIds:puleBrowserBeforeSongIds}).parse(raw);
+    return s.repo.transaction(()=>{
+      const task=planTask(s,input), attempt=task.attempt;
+      if(task.run.stopRequested||task.next?.stage!==input.stage||attempt?.id!==input.attemptId||attempt.state!=='dispatching'||
+          !task.browser||task.browser.provider==='suno_cn')throw Error('PLAN_MUSIC_SCOPE');
+      if(attempt.result?.beforeSongIds!==undefined)throw Error('MUSIC_SUBMISSION_ALREADY_RECORDED');
+      new CenterStore(s.repo).put('stage',{...attempt,result:{...attempt.result,beforeSongIds:input.beforeSongIds}});
+      return true;
+    });
+  }
+  if(action==='checkpointSunoReceipt'){
+    const input=recoveryScope.extend({receipt:planPuleReceipt}).parse(raw);
+    return s.repo.transaction(()=>{
+      const task=planTask(s,input), attempt=task.attempt;
+      const receipt=readSunoBrowserReceipt(input.receipt);
+      if(!receipt||task.browser?.provider!=='suno_cn'||task.run.stopRequested||task.next?.stage!==input.stage||
+          attempt?.id!==input.attemptId||attempt.state!=='dispatching')throw Error('PLAN_MUSIC_SCOPE');
+      const previous=readSunoBrowserReceipt(attempt.result);
+      if(previous&&(previous.trackingId!==receipt.trackingId||
+          previous.sunoWavs?.sha256.some((hash,index)=>hash&&hash!==receipt.sunoWavs?.sha256[index])))
+        throw Error('MUSIC_RECEIPT_INVALID');
+      if(!previous)assertNewBrowserReceipt(task,receipt);
+      return new CenterStore(s.repo).put('stage',{...attempt,externalTaskId:receipt.trackingId,
+        evidenceId:receipt.trackingId,result:receipt});
+    });
+  }
   if(action==='assets'){
     const input=planPuleAttempt.extend({songs:planSongs}).parse(raw);
     return saveSong(s,input);
   }
   if(action==='record'){
-    const input=planPuleAttempt.extend({status:z.enum(['waiting','failed','unknown','succeeded']),reason:z.string().max(200).optional(),receipt:planPuleReceipt.optional()}).parse(raw);
+    const input=planPuleAttempt.extend({status:z.enum(['waiting','failed','unknown','succeeded']),reason:z.string().max(200).optional(),
+      receipt:planPuleReceipt.optional(),browserError:z.string().regex(/^[A-Z0-9_]{1,160}$/u).optional()}).parse(raw);
     const task=planTask(s,input);
     if(task.attempt?.id!==input.attemptId||!['dispatching','waiting'].includes(task.attempt.state))
       throw Error('PLAN_MUSIC_SCOPE');
     if(input.status==='succeeded'){
       if(input.stage!=='music_submit'||!input.receipt?.trackingId)throw Error('MUSIC_RECEIPT_REQUIRED');
       if((task.browser?.provider==='suno_cn')!==!!input.receipt.sunoWavs)throw Error('MUSIC_RECEIPT_INVALID');
+      if(task.browser?.provider==='suno_cn'&&!sunoBrowserWavsComplete(input.receipt,task.retention?.kind!=='single'))
+        throw Error('MUSIC_RECEIPT_INVALID');
       if(task.browser)assertNewBrowserReceipt(task,input.receipt);
     }
     return service.record({attemptId:input.attemptId,status:input.status,reason:input.reason,
+      ...(input.browserError&&!input.receipt?{result:{...task.attempt.result,browserError:input.browserError}}:{}),
       ...(input.receipt?{externalTaskId:input.receipt.trackingId,evidenceId:input.receipt.trackingId,result:input.receipt}:{})});
   }
   throw Error('METHOD_NOT_ALLOWED');

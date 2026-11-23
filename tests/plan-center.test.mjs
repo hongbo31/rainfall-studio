@@ -44,6 +44,33 @@ test('an independent scheduled occurrence can start while a task owns another ru
   assert.equal(rows.occurrences[0]?.runId, scheduled.id);
   assert.deepEqual(rows.runs.find(run => run.id === taskRun.id), taskRun);
 });
+test('checking and recording a stage do not load rows from other plan runs', t => {
+  const x = setup(t, { capabilities: full });
+  const other = trigger(x, x.save());
+  const run = trigger(x, x.save({ id: randomUUID() }));
+  const rows = x.service.list();
+  const item = rows.items.find(row => row.runId === run.id);
+  const otherItem = rows.items.find(row => row.runId === other.id);
+  x.service.claim({ runId: other.id, itemId: otherItem.id, stage: 'dot' });
+
+  const loadedRuns = new Set();
+  const settingsByPrefix = x.repo.settingsByPrefix.bind(x.repo);
+  t.mock.method(x.repo, 'settingsByPrefix', (...args) => {
+    const loaded = settingsByPrefix(...args);
+    if (['plan-center:run:', 'plan-center:item:', 'plan-center:stage:'].includes(args[0]))
+      for (const row of loaded) loadedRuns.add(row.value.runId ?? row.value.id);
+    return loaded;
+  });
+
+  const attempt = x.service.claim({ runId: run.id, itemId: item.id, stage: 'dot' });
+  x.service.record({ attemptId: attempt.id, status: 'waiting', reason: 'fixture-pending' });
+  assert.deepEqual(x.service.next({ itemId: item.id }), {
+    runId: run.id, itemId: item.id, stage: 'dot', state: 'waiting',
+    reason: 'fixture-pending', attemptId: attempt.id,
+  });
+  assert.equal(x.service.next({ runId: run.id, itemId: otherItem.id }), null);
+  assert.deepEqual([...loadedRuns], [run.id]);
+});
 test('weekly and once schedules use local Shanghai calendar and bounded latest catchup', t=> {
   const x=setup(t); x.save({schedule:{kind:'weekly',localTime:'09:00',weekdays:[1]}});
   x.now('2026-10-18T12:00:00Z'); x.service.tick(); assert.equal(x.service.list().runs.length,0);

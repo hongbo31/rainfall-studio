@@ -1,7 +1,6 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Context } from "../../src/renderer/context";
-import CoverStudio from "../../src/renderer/pages/CoverStudio";
 import { LyricsPublicationPanel } from "../../src/renderer/components/LyricsPublicationPanel";
 export function renderLyrics() {
   function SeededLyrics(){
@@ -22,31 +21,6 @@ export function renderLyrics() {
       }
     >
       <SeededLyrics />
-    </Context.Provider>,
-  );
-}
-export function renderCover(hasImage = false) {
-  const work = {
-    id: "fixture-work",
-    title: "隔离测试",
-    story: "测试故事",
-    lyrics: "测试歌词",
-    config: { genre: "民谣", mood: "温柔" },
-    assets: hasImage ? {cover:'fixture-cover'} : {},
-    assetHistory: [],
-  };
-  return renderToStaticMarkup(
-    <Context.Provider
-      value={
-        {
-          data: { works: [work], assets: hasImage ? [{id:'fixture-cover',kind:'image',parentId:'fixture-original',metadata:{width:3000,height:3000}}] : [], artists: [{name:'我的艺人'}] },
-          call: async () => ({ requests: [], receipts: [] }),
-          importAsset: async () => {},
-          exportArtifact: async () => {},
-        } as any
-      }
-    >
-      <CoverStudio initialId={work.id} />
     </Context.Provider>,
   );
 }

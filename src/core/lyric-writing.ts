@@ -244,16 +244,19 @@ export class LyricWritingService {
     return this.startJob(LyricInspirationStartSchema.parse(raw));
   }
 
-  startForPlan(raw: unknown, attemptId: string, retrySource?: RetrySource) {
+  startForPlan(raw: unknown, attemptId: string, retrySource?: RetrySource, frozenArtist?: Row) {
     const input = LyricStartFieldsSchema.parse(raw);
-    if (!input.artistId || (input.mode === "inspiration") !== !!input.inspiration) throw Error("PLAN_WORKFLOW_INVALID");
-    return this.startJob(input, attemptId, retrySource);
+    if (!input.artistId || (input.mode === "inspiration") !== !!input.inspiration ||
+        (frozenArtist && frozenArtist.id !== input.artistId)) throw Error("PLAN_WORKFLOW_INVALID");
+    return this.startJob(input, attemptId, retrySource, frozenArtist);
   }
 
-  private startJob(input: z.output<typeof LyricStartFieldsSchema> | z.output<typeof LyricInspirationStartSchema>, planAttemptId?: string, retrySource?: RetrySource) {
+  private startJob(input: z.output<typeof LyricStartFieldsSchema> | z.output<typeof LyricInspirationStartSchema>,
+    planAttemptId?: string, retrySource?: RetrySource, frozenArtist?: Row) {
     return this.repo.transaction(() => {
       const previous = this.findJob(input.id);
-      const inputHash = hash(planAttemptId ? { input, planAttemptId, ...(retrySource ? { retrySource } : {}) } : input);
+      const inputHash = hash(planAttemptId ? { input, planAttemptId,
+        ...(retrySource ? { retrySource } : {}), ...(frozenArtist ? { frozenArtist } : {}) } : input);
       if (previous) {
         if (previous.inputHash !== inputHash) throw Error("LYRIC_REQUEST_CONFLICT");
         return this.visible(previous);
@@ -263,7 +266,7 @@ export class LyricWritingService {
       }
       const profile = this.profile(input.profileId, input.profileRevision);
       const inspirationMode = "platform" in input;
-      const artist = input.artistId ? this.repo.get("accountLocalArtists", input.artistId) : null;
+      const artist = frozenArtist ?? (input.artistId ? this.repo.get("accountLocalArtists", input.artistId) : null);
       const songType = artistSongType(artist?.defaults);
       if (inspirationMode) {
         const account = this.repo.get("accounts", input.accountId);
@@ -402,7 +405,10 @@ export class LyricWritingService {
     const guidance = job.reviewWithContext && (task === "score" || task === "rewrite") ? contextualInstructions[task] : "";
     const rewriteGuidance = job.useLyricRubric && task === "rewrite"
       ? "以 style 的首稿风格为准，在给定底稿上优先解决一到两个主要问题。discardedRevision 是落选稿的评语，用于避免重做已退步的改动。" : "";
-    return [{ role: "system", content: (useExpertReview ? expertReview : tasks[task]) + guidance + rewriteGuidance + limit },
+    const gender = job.musician?.gender;
+    const vocalGuidance = job.planAttemptId && task === "generate" && (gender === "male" || gender === "female")
+      ? `本次计划的主唱为${gender === "male" ? "男声" : "女声"}。音乐风格 style 的主唱描述须与该配置一致。` : "";
+    return [{ role: "system", content: (useExpertReview ? expertReview : tasks[task]) + guidance + rewriteGuidance + limit + vocalGuidance },
       { role: "user", content: JSON.stringify(input) }];
   }
 
