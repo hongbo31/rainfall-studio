@@ -7,7 +7,7 @@ import { planCatalog } from './plan-center-catalog';
 import { planDotStatus } from './plan-center-dot';
 import { syncPlanMusic } from './plan-center-music';
 import { planPublicationStatus } from './plan-center-publication';
-import { CenterStore } from './plan-center/storage';
+import { CenterStore, digest } from './plan-center/storage';
 import { planFanqieJobsForRun } from './plan-fanqie';
 import { fanqieDirectoryCleanupStatus, fanqieDirectoryDiagnostics } from './plan-fanqie-directory';
 import { refreshPlanArtist } from './plan-workflow';
@@ -39,10 +39,8 @@ export function readPlanDashboard(store: CenterStore): PlanDashboardRow[] {
   for (const run of runs) {
     const row = rows.get(run.planId);
     if (!row) continue;
-    if (run.source !== 'publication_task') {
-      row.latest ??= runSummary(run);
-      if (planRunActive(run)) row.active ??= runSummary(run);
-    }
+    row.latest ??= runSummary(run);
+    if (planRunActive(run)) row.active ??= runSummary(run);
     if (run.state === 'blocked') row.stopsOnDelete = true;
     if (planRunBlocksDeletion(run, activity)) row.deleteBlocked = true;
   }
@@ -50,7 +48,7 @@ export function readPlanDashboard(store: CenterStore): PlanDashboardRow[] {
 }
 
 export function readPlanHistory(store: CenterStore, id: string): PlanCenterHistory {
-  const runs = newestFirst(store.all('run', { field: 'planId', values: [id] })).filter(run => run.source !== 'publication_task');
+  const runs = newestFirst(store.all('run', { field: 'planId', values: [id] }));
   const completed = new Map<string, number>();
   for (const item of store.all('item', { field: 'runId', values: runs.map(run => run.id) })) {
     if (item.state === 'completed') completed.set(item.runId, (completed.get(item.runId) ?? 0) + 1);
@@ -102,6 +100,13 @@ export function readPlanRunDetail(s: Studio, store: CenterStore, runId: string):
   const fanqieDiagnostics = s.mode === 'production' && !!fanqieDirectoryDiagnostics(s.root, run);
   const workPicker = run.snapshot.outputs.music && run.snapshot.music.route === 'manual' && items.some(item => !item.workId);
   const catalog = execution.publication.length ? planCatalog(s.repo) : undefined;
-  return { run, items, execution, fanqieCleanup, fanqieDiagnostics, stageAttempts: store.all('stage', scope), publishAttempts: store.all('publish', scope),
+  const stageAttempts=store.all('stage',scope).map(attempt=>({...attempt,observations:attempt.observations?.map(observation=>({...observation,evidenceId:redactPlanEvidenceId(observation.evidenceId)}))}));
+  return { run, items, execution, fanqieCleanup, fanqieDiagnostics, stageAttempts, publishAttempts: store.all('publish', scope),
     catalog: workPicker ? { ...catalog, works: planAssetsCatalog(s, run.snapshot.artistId) } : catalog };
+}
+
+function redactPlanEvidenceId(value:string) {
+  const normalized=value.trim();
+  if(!normalized)return '…';
+  return `sha256:${digest(normalized).slice(0,16)}…${normalized.slice(-4)}`;
 }

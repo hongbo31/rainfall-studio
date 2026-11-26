@@ -5,7 +5,7 @@ import type {ApiCredentials} from './api-credentials';
 import {planPuleAudioLimit,planPuleReceipt,planPuleReleaseIndex,sunoBrowserWavsComplete,type PlanPuleCustomDraft,type PlanPuleReceipt,
   type PlanPuleAssetProgress,type PlanPuleRetention,type PlanPuleTask,type PuleBrowserReceiptLookup,type PuleBrowserReceiptMatch} from '../shared/plan-pule';
 import type {BrowserMusicProvider} from '../shared/plan-workflow-fields';
-import {sunoCnPreflightBlocked,type PuleVersion} from '../shared/pule-browser';
+import {cleanPuleGeneratedText,sunoCnPreflightBlocked,type PuleVersion} from '../shared/pule-browser';
 import {workVersionTitle} from '../shared/work-versions';
 import type { YourMusicAdapter } from '../core/workflow/yourmusic';
 import type {CreativeDraft} from '../shared/creation';
@@ -47,6 +47,13 @@ function sunoWaveDirectory(staging: string, requestId: string) {
   return scopedDirectory(staging, 'suno-cn', requestId);
 }
 
+function cleanBrowserDraft(draft: PlanPuleCustomDraft): PlanPuleCustomDraft {
+  const title=cleanPuleGeneratedText(draft.title),style=cleanPuleGeneratedText(draft.style);
+  const alternateTitle=draft.alternateTitle===undefined?undefined:cleanPuleGeneratedText(draft.alternateTitle);
+  if(!title||!style||(draft.alternateTitle!==undefined&&!alternateTitle))throw Error('PLAN_MUSIC_TEXT_EMPTY');
+  return {...draft,title,...(alternateTitle!==undefined?{alternateTitle}:{}),lyrics:cleanPuleGeneratedText(draft.lyrics),style};
+}
+
 const waveDigest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
 function withMusicPage<T>(browser:BrowserPort,task:BrowserTask,signal:AbortSignal,run:(page:Page)=>Promise<T>) {
@@ -58,7 +65,7 @@ async function stageSunoWaves(browser: BrowserPort, task: BrowserTask, signal: A
   beforeGeneration: PulePageHooks['beforeGeneration'],
   markPaid: () => void, checkpoint: (receipt: PlanPuleReceipt) => Promise<void>) {
   const requestId=randomUUID();
-  const custom=task.custom;
+  const custom=cleanBrowserDraft(task.custom);
   const versions: readonly PuleVersion[]=task.retention?.kind==='single'?[task.retention.preferredIndex===0?'A':'B']:['A','B'];
   const sum: [string|null,string|null]=[null,null];
   let receipt: PlanPuleReceipt|undefined;
@@ -109,7 +116,7 @@ function readSunoWaves(browser: BrowserPort, task: BrowserTask) {
     if(!stat?.isFile()||stat.size>planPuleAudioLimit)throw Error('SUNO_CN_WAV_STAGING_INVALID');
     const bytes=fs.readFileSync(file);
     if(waveDigest(bytes)!==hash)throw Error('SUNO_CN_WAV_STAGING_INVALID');
-    return {id:receipt.songIds[index],title:workVersionTitle(task.custom,index===0?'audio_A':'audio_B'),lyrics:'',bytes,mime:'audio/wav'};
+    return {id:receipt.songIds[index],title:workVersionTitle(cleanBrowserDraft(task.custom),index===0?'audio_A':'audio_B'),lyrics:'',bytes,mime:'audio/wav'};
   });
   return {songs,requestId:waves.requestId};
 }
@@ -258,7 +265,7 @@ export function createPlanPuleRunner(options:Options){
           }
           return;
         }
-        const custom=task.custom;
+        const custom=cleanBrowserDraft(task.custom);
         const versions=task.retention?.kind==='single'?[task.retention.preferredIndex===0?'A' as const:'B' as const]:['A','B'] as const;
         const phase:PulePagePhase=task.stage==='music_submit'?{kind:'submit'}:
           {kind:'download',songIds:task.receipt!.songIds,versions};

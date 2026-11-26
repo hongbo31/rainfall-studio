@@ -35,11 +35,14 @@ const sizeText = (bytes: number) => {
   if(bytes>=1024)return (bytes/1024).toFixed(1)+'KB';
   return bytes.toFixed(1)+'B';
 };
+const coverCropWaitTimeoutMs = 60_000;
 export function expectedFanqieForm(input: FanqieInput): FanqieExpectedForm {
   const lyrics=input.assets.lyrics;
   if(!input.instrumental&&!lyrics)throw Error('FANQIE_LYRICS_INVALID');
+  const audioFileName = path.basename(input.assets.audio.file);
   return {title: input.title, authors: input.authors, ai: input.ai, musicType: input.musicType,
-    audio: {displayName: input.title, format: path.extname(input.assets.audio.file).toLowerCase() === '.wav' ? 'WAV' : 'MP3', displaySize: sizeText(input.assets.audio.bytes), bytes: input.assets.audio.bytes},
+    // The uploaded attachment name must be derived from the verified local asset, never the editable work title.
+    audio: {displayName: path.parse(audioFileName).name, format: path.extname(audioFileName).toLowerCase() === '.wav' ? 'WAV' : 'MP3', displaySize: sizeText(input.assets.audio.bytes), bytes: input.assets.audio.bytes},
     ...(input.instrumental?{instrumental:true as const}:{lyrics:{fileName:path.basename(lyrics!.file),displaySize:sizeText(lyrics!.bytes),bytes:lyrics!.bytes}})};
 }
 export async function executeFanqieNativeUpload(context: BrowserContext, input: FanqieInput,
@@ -113,7 +116,10 @@ export async function executeFanqieNativeUpload(context: BrowserContext, input: 
     const end = Date.now() + 120000;
     let state: Awaited<ReturnType<typeof readFanqieVisibleForm>> | undefined;
     while (Date.now() < end) {
-      await assertScope(); state = await readFanqieVisibleForm(adapter);
+      await assertScope();
+      if (role === 'cover' && await page.locator('#songs_0_coverImage .upload-img-item-mask').getByText('上传失败', {exact:true}).count())
+        throw Error('FANQIE_COVER_UPLOAD_FAILED');
+      state = await readFanqieVisibleForm(adapter);
       if (test(state)) return state;
       await new Promise(resolve => setTimeout(resolve, 300));
     }
@@ -124,19 +130,71 @@ export async function executeFanqieNativeUpload(context: BrowserContext, input: 
   };
   for (const role of fanqieRoles(input.instrumental)) {
     callbacks.progress({audio:'正在上传音频',lyrics:'正在上传歌词',cover:'正在上传封面'}[role]);
-    await intent('upload:'+role); await assertScope();
     const asset=input.assets[role];
     if(!asset)throw Error('FANQIE_ASSET_INVALID');
-    await chooseFanqieFile(adapter, await fanqieFileControl(adapter, role,input.instrumental),asset,assertScope);
     if (role === 'cover') {
-      const crop = page.getByRole('dialog', {name:'裁剪图片 (1/1)', exact:true});
-      await crop.waitFor({state:'visible', timeout:20000});
-      await intent('confirm-square-crop'); await assertScope();
-      await crop.getByRole('button', {name:'确定', exact:true}).click();
-      await crop.waitFor({state:'hidden', timeout:20000});
-      await waitReadback(role, s => s.coverPreview.length === 1 && s.coverPreview[0].complete && s.coverPreview[0].width > 0 && s.coverPreview[0].width === s.coverPreview[0].height);
-    } else if (role === 'audio') await waitReadback(role, s => fanqieTransferVerified(s.audioText, expected.audio));
-    else await waitReadback(role, s => fanqieTransferVerified(s.lyricsText, expected.lyrics!));
+      let retries=0;
+      let retryAfterCropTimeout=false;
+      let control=await fanqieFileControl(adapter, role,input.instrumental);
+      for (;;) {
+        try {
+          await intent(retries ? `upload:cover:retry:${retries}` : 'upload:cover');
+          await assertScope();
+          if (retries) {
+            const failed=page.locator('#songs_0_coverImage .upload-img-item-mask').getByText('上传失败',{exact:true});
+            if(retryAfterCropTimeout&&await failed.count()===0) control=await fanqieFileControl(adapter,role,input.instrumental);
+            else {
+              if (await failed.count()!==1) throw Error('FANQIE_COVER_RETRY_CONTROL_UNVERIFIED');
+              await failed.hover();
+              control=page.locator('#songs_0_coverImage .upload-img-item-btns-replace-text').getByText('重新上传',{exact:true});
+              if (await control.count()!==1||!await control.isVisible()) throw Error('FANQIE_COVER_RETRY_CONTROL_UNVERIFIED');
+            }
+            retryAfterCropTimeout=false;
+          }
+          await chooseFanqieFile(adapter, control, asset, assertScope);
+          const crop=page.getByRole('dialog',{name:'裁剪图片 (1/1)',exact:true});
+          const failed=page.locator('#songs_0_coverImage .upload-img-item-mask').getByText('上传失败',{exact:true});
+          try { await crop.or(failed).first().waitFor({state:'visible',timeout:coverCropWaitTimeoutMs}); }
+          catch(error) {
+            if(error instanceof Error&&error.name==='TimeoutError')throw Error('FANQIE_COVER_CROP_TIMEOUT',{cause:error});
+            throw error;
+          }
+          if (await failed.count()) throw Error('FANQIE_COVER_UPLOAD_FAILED');
+          await intent('confirm-square-crop'); await assertScope();
+          const confirm=crop.getByRole('button',{name:'确定',exact:true});
+          try {
+            await confirm.waitFor({state:'visible',timeout:coverCropWaitTimeoutMs});
+            await confirm.click({timeout:coverCropWaitTimeoutMs});
+            await crop.waitFor({state:'hidden',timeout:coverCropWaitTimeoutMs});
+          } catch(error) {
+            if(error instanceof Error&&error.name==='TimeoutError')throw Error('FANQIE_COVER_CROP_TIMEOUT',{cause:error});
+            throw error;
+          }
+          await waitReadback(role, s => s.coverPreview.length === 1 && s.coverPreview[0].complete && s.coverPreview[0].width > 0 && s.coverPreview[0].width === s.coverPreview[0].height);
+          break;
+        } catch(error) {
+          if (!(error instanceof Error)||!['FANQIE_COVER_UPLOAD_FAILED','FANQIE_COVER_CROP_TIMEOUT'].includes(error.message)) throw error;
+          if (retries>=3) throw Error('FANQIE_COVER_UPLOAD_RETRIES_EXHAUSTED',{cause:error});
+          retries++;
+          if(error.message==='FANQIE_COVER_CROP_TIMEOUT') {
+            retryAfterCropTimeout=true;
+            const crop=page.getByRole('dialog',{name:'裁剪图片 (1/1)',exact:true});
+            if(await crop.count()===1) {
+              const close=crop.locator('.arco-modal-close-icon, .arco-modal-close');
+              if(await close.count()!==1)throw Error('FANQIE_COVER_CROP_CLOSE_UNVERIFIED');
+              await intent(`close-cover-crop:retry:${retries}`); await assertScope();
+              await close.click({timeout:coverCropWaitTimeoutMs});
+              await crop.waitFor({state:'hidden',timeout:coverCropWaitTimeoutMs});
+            }
+          }
+        }
+      }
+    } else {
+      await intent('upload:'+role); await assertScope();
+      await chooseFanqieFile(adapter, await fanqieFileControl(adapter, role,input.instrumental),asset,assertScope);
+      if (role === 'audio') await waitReadback(role, s => fanqieTransferVerified(s.audioText, expected.audio));
+      else await waitReadback(role, s => fanqieTransferVerified(s.lyricsText, expected.lyrics!));
+    }
   }
   assertFanqieFirstStepReadback(await readFanqieVisibleForm(adapter), expected);
   callbacks.progress('正在确认上传结果');

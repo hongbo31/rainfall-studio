@@ -12,6 +12,13 @@ export const puleAudioMaxBytes = 80 * 1024 * 1024;
 export const puleDownloadTimeoutMs = 10 * 60_000;
 export const puleDownloadRetryLimit = 3;
 
+/** Remove punctuation and symbol characters from new text sent to Pule or Suno. */
+export function cleanPuleGeneratedText(value: string) {
+  return value.replace(/\r\n?/gu, "\n")
+    .replace(/[\p{P}\p{S}\p{Cf}\p{Cc}]/gu, character => character === "\n" ? "\n" : " ")
+    .replace(/[^\S\n]+/gu, " ").trim();
+}
+
 export function sunoCnPreflightBlocked(code: string) {
   return code === "SUNO_CN_VOCAL_STYLE_CONFLICT" || code === "SUNO_CN_INSUFFICIENT_CREDITS";
 }
@@ -24,10 +31,10 @@ export type PulePublication = z.infer<typeof pulePublicationSchema>;
 export const puleScopeSchema = AccountWorkWindowSchema.required({ artistId: true })
   .extend({ publication: pulePublicationSchema.optional(), coverImage: imageSelectionSchema.optional() });
 export const puleSongFields = {
-  title: z.string().trim().min(1).max(80),
-  alternateTitle: z.string().trim().min(1).max(80).optional(),
-  lyrics: z.string().max(5000),
-  style: z.string().trim().min(1).max(1000),
+  title: z.string().transform(cleanPuleGeneratedText).pipe(z.string().min(1).max(80)),
+  alternateTitle: z.string().transform(cleanPuleGeneratedText).pipe(z.string().min(1).max(80)).optional(),
+  lyrics: z.string().max(5000).transform(cleanPuleGeneratedText),
+  style: z.string().transform(cleanPuleGeneratedText).pipe(z.string().min(1).max(1000)),
 };
 export const puleStartSchema = puleScopeSchema.extend({
   requestId: z.uuid(),

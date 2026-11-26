@@ -17,6 +17,7 @@ export type HttpRequest = {
   signal?: AbortSignal;
   assertActive?:()=>void;
   assertDispatch?:()=>Promise<void>;
+  onDispatch?:()=>void;
 };
 export type HttpResponse = {
   status: number;
@@ -160,7 +161,9 @@ export const nodeHttpsTransport: HttpTransport = async (input) => {
       const failure = Object.assign(Error(cause.message === "HTTP_TIMEOUT" ? "HTTP_TIMEOUT" : "HTTP_REQUEST_FAILED"), { code: cause.code });
       reject(failure);
     });
-    if (input.body !== undefined) req.write(JSON.stringify(input.body));
+    const body = input.body === undefined ? undefined : JSON.stringify(input.body);
+    input.onDispatch?.();
+    if (body !== undefined) req.write(body);
     req.end();
   });
 };

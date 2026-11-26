@@ -23,6 +23,9 @@ export type FanqieDirectoryFormCallbacks = Pick<FanqieDirectoryTracePort, 'trace
   guard: () => void;
   checkStopped?: () => Promise<void>;
   intent: (step: string, songIndex?: number) => Promise<void>;
+  archiveObserved: (songIndexes: readonly number[]) => Promise<void>;
+  verifyUnsubmitted: (songIndex: number) => Promise<void>;
+  rejectUnsubmittedSong: (songIndex: number) => Promise<void>;
 };
 
 const finishedRelease = 'xpath=//span[text()="成品发行"]/../..//span[text()="发布作品"]';
@@ -45,9 +48,20 @@ const originalWorkError = 'FANQIE_ORIGINAL_WORK_UNVERIFIED';
 const singerIdError = 'FANQIE_SINGER_ID_UNVERIFIED';
 const artistSongsPath = '/api/author/home/get_song_list/v0/';
 const fieldValidationError = 'FANQIE_DIRECTORY_FIELD_VALIDATION';
+const lyricsContentRejectedError = 'FANQIE_LYRICS_CONTENT_REJECTED';
+const lyricsContentSongUnmappedError = 'FANQIE_LYRICS_CONTENT_REJECTED_UNMAPPED';
 const deleteDraftError = 'FANQIE_DIRECTORY_DELETE_UNVERIFIED';
+const submissionRejectionUnmappedError = 'FANQIE_SUBMISSION_REJECTION_UNMAPPED';
+const submissionRejectionRetriesExhaustedError = 'FANQIE_SUBMISSION_REJECTION_RETRIES_EXHAUSTED';
+const allSongsRejectedError = 'FANQIE_ALL_SONGS_REJECTED';
+const submissionRejectionRetries = 7;
+const submissionRejectionWaitMs = 4_000;
 const audioTransferTimeoutMs = 10 * 60_000;
+const coverCropWaitTimeoutMs = 60_000;
 const planStopCheckIntervalMs = 2_000;
+const artistSearchTimeoutMs = 8_000;
+const artistSearchResultTimeoutMs = 15_000;
+const artistSearchRetries = 3;
 const aiChoices = ['是', '否'];
 const visible = (locator: Locator) => locator.filter({visible: true});
 
@@ -197,6 +211,27 @@ function coverPreview(area: Locator) {
   }));
 }
 
+function coverUploadFailure(area: Locator) {
+  return visible(area.locator('.upload-img-item-mask').getByText('上传失败', {exact:true}));
+}
+
+async function waitForCropOrFailure(crop: Locator, failed: Locator) {
+  try {
+    await crop.or(failed).first().waitFor({state: 'visible', timeout: coverCropWaitTimeoutMs});
+  } catch (error) {
+    if (error instanceof Error && error.name === 'TimeoutError') throw Error('FANQIE_COVER_CROP_TIMEOUT', {cause: error});
+    throw error;
+  }
+}
+
+async function closeTimedOutCrop(crop: Locator, write: () => Promise<void>) {
+  const close = visible(crop.locator('.arco-modal-close-icon, .arco-modal-close'));
+  if (await close.count() !== 1) throw Error('FANQIE_COVER_CROP_CLOSE_UNVERIFIED');
+  await write();
+  await close.click({timeout: coverCropWaitTimeoutMs});
+  await crop.waitFor({state: 'hidden', timeout: coverCropWaitTimeoutMs});
+}
+
 async function waitForCover(area: Locator, assertScope: () => void, verifiedSource?: string) {
   const deadline = performance.now() + 20_000;
   let broughtIntoView = false;
@@ -230,6 +265,7 @@ type DirectorySongEntry = {
   jobIndex: number;
   repairs: number;
   coverSource?: string;
+  coverUploadRetries: number;
 };
 type DirectoryRepair = {entry: DirectorySongEntry; fields: ReadonlySet<DirectoryRepairField>};
 
@@ -306,34 +342,76 @@ async function selectCredit(page: Page, card: Locator, index: number, role: keyo
   const [field, name] = authors[role];
   const region = await fieldRegion(page, card, index, field, name);
   const search = await one(region.getByRole('textbox', {name: '搜索或选择艺人', exact: true}).or(region.locator('[role="combobox"] input')),
-    'FANQIE_AUTHOR_REGION_UNVERIFIED');
+    'FANQIE_AUTHOR_REGION_UNVERIFIED', artistSearchTimeoutMs);
   const options = artistId ? visible(region.locator('.artist-autocomplete-item-left').filter({
     has: page.getByText(artist, {exact: true}),
   })) : artistOptions(page, artist);
-  if (!artist.trim() || (await artistNames(region)).length || await options.count()) throw Error('FANQIE_AUTHOR_REGION_UNVERIFIED');
+  if (!artist.trim() || (await artistNames(region)).length) throw Error('FANQIE_AUTHOR_REGION_UNVERIFIED');
+  const retryMessage = async () => {
+    // The creator form renders this retry link inside its own autocomplete panel,
+    // not the generic Arco select-popup-inner container.
+    const dropdown = visible(region.locator('.artist-autocomplete-dropdown'));
+    const message = visible(dropdown.getByText('加载艺人失败，点击此处或下拉列表重试', {exact: true}));
+    if (await message.count() > 1) throw Error('FANQIE_AUTHOR_RETRY_CONTROL_AMBIGUOUS');
+    return await message.count() === 1 ? message : undefined;
+  };
   const option = await trace(`credit:${role}:search`, async () => {
-    await search.scrollIntoViewIfNeeded();
+    await search.scrollIntoViewIfNeeded({timeout: artistSearchTimeoutMs});
     await write(`credit:${role}:search`, index);
-    await search.click();
-    await search.fill(artist);
-    if (artistId) {
-      const deadline = performance.now() + 15_000;
-      do {
+    await search.click({timeout: artistSearchTimeoutMs});
+    let lastFailure: unknown;
+    let sawNamedCandidate = false;
+    let loadRetries = 0;
+    let searchRetries = 0;
+    let keepSearchAfterLoadRetry = false;
+    for (;;) {
+      assertScope();
+      if (!keepSearchAfterLoadRetry) await search.fill(artist, {timeout: artistSearchTimeoutMs});
+      keepSearchAfterLoadRetry = false;
+      const deadline = performance.now() + artistSearchResultTimeoutMs;
+      let clickedRetry = false;
+      while (performance.now() < deadline) {
         assertScope();
-        if (await search.inputValue() !== artist) throw Error(singerIdError);
-        const match = (await options.evaluateAll(renderedSingerIds, 'option' as const)).indexOf(artistId);
-        if (match >= 0) return options.nth(match);
+        if (await search.inputValue() !== artist) throw Error(artistId ? singerIdError : 'FANQIE_AUTHOR_SEARCH_UNVERIFIED');
+        const failed = await retryMessage();
+        if (failed) {
+          if (loadRetries >= artistSearchRetries) throw Error('FANQIE_AUTHOR_LOAD_RETRIES_EXHAUSTED');
+          loadRetries++;
+          await write(`credit:${role}:retry-load`, index);
+          try {
+            await failed.click({timeout: artistSearchTimeoutMs});
+            lastFailure = Error('番茄下拉框提示加载艺人失败，已点击重试');
+          } catch (error) { throw Error('FANQIE_AUTHOR_RETRY_CONTROL_UNVERIFIED', {cause: error}); }
+          clickedRetry = true;
+          break;
+        }
+        if (artistId) {
+          sawNamedCandidate ||= await options.count() > 0;
+          const ids = await options.evaluateAll(renderedSingerIds, 'option' as const);
+          const match = ids.indexOf(artistId);
+          if (match >= 0) return options.nth(match);
+        } else {
+          const count = await options.count();
+          if (count > 1) throw Error('FANQIE_AUTHOR_AMBIGUOUS');
+          if (count === 1) return options;
+        }
         await delay(120);
-      } while (performance.now() < deadline);
-      throw Error(singerIdError);
+      }
+      if (clickedRetry) {
+        keepSearchAfterLoadRetry = true;
+        continue;
+      }
+      if (performance.now() >= deadline) lastFailure = Error(`输入艺人后 ${artistSearchResultTimeoutMs / 1000} 秒未加载到匹配下拉项`);
+      if (searchRetries < artistSearchRetries) {
+        searchRetries++;
+        await write(`credit:${role}:retry-search`, index);
+        await delay(250);
+        continue;
+      }
+      break;
     }
-    await options.first().waitFor({state: 'visible', timeout: 15_000}).catch(error => {
-      if (!(error instanceof Error) || error.name !== 'TimeoutError') throw error;
-      throw Error('FANQIE_AUTHOR_NOT_FOUND', {cause: error});
-    });
-    const matches = await options.count();
-    if (matches !== 1) throw Error(matches ? 'FANQIE_AUTHOR_AMBIGUOUS' : 'FANQIE_AUTHOR_NOT_FOUND');
-    return options;
+    if (artistId && sawNamedCandidate) throw Error(singerIdError, {cause: lastFailure});
+    throw Error(artistId ? 'FANQIE_AUTHOR_SEARCH_TIMEOUT' : 'FANQIE_AUTHOR_NOT_FOUND', {cause: lastFailure});
   });
   const {detail, artistLabel, confirm} = await trace(`credit:${role}:preview`, async () => {
     await write(`credit:${role}:preview`, index);
@@ -372,7 +450,7 @@ async function selectCredit(page: Page, card: Locator, index: number, role: keyo
 }
 
 async function waitForTransfer(area: Locator, verify: (text: string) => boolean, assertScope: () => void,
-  timeoutMs = 120_000, checkStopped?: FanqieDirectoryFormCallbacks['checkStopped']) {
+  timeoutMs = 120_000, checkStopped?: FanqieDirectoryFormCallbacks['checkStopped'], retryFailure?: () => Promise<void>) {
   const deadline = performance.now() + timeoutMs;
   let nextStopCheck = 0;
   for (let now = performance.now(); now < deadline; now = performance.now()) {
@@ -384,10 +462,29 @@ async function waitForTransfer(area: Locator, verify: (text: string) => boolean,
     }
     const text = await directoryFileReceipt(area);
     if (verify(text)) return;
-    if (/上传完成|上传失败|上传出错/u.test(text)) throw Error('FANQIE_UPLOAD_READBACK_REQUIRED');
+    if (/上传失败|上传出错/u.test(text)) {
+      if (retryFailure) await retryFailure();
+      else throw Error('FANQIE_UPLOAD_READBACK_REQUIRED');
+    } else if (/上传完成/u.test(text)) throw Error('FANQIE_UPLOAD_READBACK_REQUIRED');
     await delay(250);
   }
   throw Error('FANQIE_UPLOAD_READBACK_TIMEOUT');
+}
+
+function failedTransferRetryControl(area: Locator) {
+  const failedRows = visible(area.locator('[class*="upload-list-item-"]').filter({hasText: /上传失败|上传出错/u}));
+  return {failedRows, controls: visible(failedRows.locator('.serial-fm-icon-general_reload'))};
+}
+
+async function waitForTransferRetryStart(area: Locator, assertScope: () => void, checkStopped?: FanqieDirectoryFormCallbacks['checkStopped']) {
+  const deadline = performance.now() + 30_000;
+  while (performance.now() < deadline) {
+    assertScope();
+    await checkStopped?.();
+    assertScope();
+    if (!/上传失败|上传出错/u.test(await directoryFileReceipt(area))) return;
+    await delay(250);
+  }
 }
 
 async function checkAuthorizationGroup(page: Page, titles: readonly string[], assertScope: () => void) {
@@ -401,6 +498,11 @@ async function checkAuthorizationGroup(page: Page, titles: readonly string[], as
   assertScope();
   if (!await heading.count() && await errors.count()) throw Error('FANQIE_UPLOAD_PAGE_ERROR');
   if (await heading.count() !== 1) throw Error('FANQIE_AUTHORIZATION_STEP_UNVERIFIED');
+  const archiveMarker = visible(page.locator('xpath=//div/h3[text()="选择签约模式"]/../div/div[2]'));
+  await archiveMarker.waitFor({state: 'visible', timeout: 15_000}).catch(error => {
+    throw Error('FANQIE_ARCHIVE_MARKER_UNVERIFIED', {cause: error});
+  });
+  if (await archiveMarker.count() !== 1) throw Error('FANQIE_ARCHIVE_MARKER_UNVERIFIED');
   const expectedCount = new RegExp(`^授权信息\\s*[·・]\\s*${titles.length}$`, 'u');
   await one(page.getByRole('heading', {name: expectedCount}), 'FANQIE_AUTHORIZATION_WORK_MISMATCH');
   if (await visible(page.getByRole('heading', {name: /^授权信息\s*[·・]\s*\d+$/u})).count() !== 1 ||
@@ -427,14 +529,15 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
   let unwatch: (() => void) | undefined;
   let editor: Awaited<ReturnType<typeof bindDirectoryCards>> | undefined;
   const trace: Trace = async (step, action, index, details) => {
-    await callbacks.trace(step, 'begin', page, index);
+    const eventDetails = index === undefined ? details : {...details, songTitle: songs[index]?.title};
+    await callbacks.trace(step, 'begin', page, index, undefined, eventDetails);
     try {
       callbacks.guard();
       const value = await action();
-      await callbacks.trace(step, 'ok', page, index, undefined, details);
+      await callbacks.trace(step, 'ok', page, index, undefined, eventDetails);
       return value;
     } catch (error) {
-      await callbacks.trace(step, 'error', page, index, error);
+      await callbacks.trace(step, 'error', page, index, error, eventDetails);
       throw error;
     }
   };
@@ -619,23 +722,31 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
         });
       }
 
-      const uploadMaterial = async (role: DirectoryFileRole) => {
+      const uploadMaterial = async (role: DirectoryFileRole, replaceCover = false) => {
         const asset = role === 'proof' ? song.copyrightProof : song.assets[role];
         if (!asset) throw Error('FANQIE_ASSET_INVALID');
         await cards.count(count);
         await cards.card(index, count);
         const area = await fileArea(tab, card, index, role);
-        if (role === 'cover' && (await coverPreview(area)).length) throw Error('FANQIE_COVER_READBACK_REQUIRED');
+        const existingCover = role === 'cover' ? await coverPreview(area) : [];
+        const failedCover = role === 'cover' ? coverUploadFailure(area) : undefined;
+        const failedCoverCount = failedCover ? await failedCover.count() : 0;
+        if (failedCoverCount > 1) throw Error('FANQIE_COVER_RETRY_CONTROL_UNVERIFIED');
+        if (role === 'cover' && existingCover.length && !replaceCover) throw Error('FANQIE_COVER_READBACK_REQUIRED');
         if (role !== 'cover' && await directoryFileReceipt(area)) throw Error('FANQIE_EXISTING_FORM_REQUIRES_RECONCILIATION');
         const missingControl = role === 'proof' ? 'FANQIE_COPYRIGHT_PROOF_CONTROL_UNVERIFIED' : 'FANQIE_UPLOAD_CONTROL_UNVERIFIED';
-        const uploader = await one(area.locator(role === 'cover' ? '.image-upload-input-btn' : '[class*="upload-input-container-"]'),
-          missingControl);
+        if (failedCoverCount === 1) await failedCover!.hover();
+        const uploader = await one(area.locator(role === 'cover' && (existingCover.length || failedCoverCount)
+          ? '.upload-img-item-btns-replace-text' : role === 'cover' ? '.image-upload-input-btn' : '[class*="upload-input-container-"]'),
+          role === 'cover' && failedCoverCount ? 'FANQIE_COVER_RETRY_CONTROL_UNVERIFIED' : missingControl);
         // Click the upload icon inside the shared file area to keep the copyright guide link untouched.
         const control = role === 'cover' ? uploader : await one(uploader.locator('[class*="upload-input-icon-container-"]'), missingControl);
         await writeSong(role === 'proof' ? 'upload:copyright-proof' : 'upload:' + role);
         await chooseDirectoryFile(tab, area, control, role, asset, async () => {
+          // The account was verified before opening this form. Re-navigating a hidden
+          // account iframe around every local file selection can interrupt a long draft
+          // when the network changes; the form URL and owned card are the live scope here.
           assertScope();
-          await account(tab);
           await cards.requireMounted(index, count);
           assertScope();
         });
@@ -643,14 +754,36 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
       };
       if (needs('audio')) await traceSong('upload:audio', async () => {
         const area = await uploadMaterial('audio');
+        let retries = 0;
         await waitForTransfer(area, text => fanqieTransferVerified(text, expectedAudio(spec, song, text)),
-          assertScope, audioTransferTimeoutMs, callbacks.checkStopped);
+          assertScope, audioTransferTimeoutMs, callbacks.checkStopped, async () => {
+            if (retries >= 3) throw Error('FANQIE_UPLOAD_RETRIES_EXHAUSTED');
+            retries++;
+            await traceSong(`upload:audio:retry:${retries}`, async () => {
+              const {failedRows, controls} = failedTransferRetryControl(area);
+              if (await failedRows.count() !== 1 || await controls.count() !== 1) throw Error('FANQIE_UPLOAD_RETRY_CONTROL_UNVERIFIED');
+              await writeSong(`upload:audio:retry:${retries}`);
+              await controls.click();
+              await waitForTransferRetryStart(area, assertScope, callbacks.checkStopped);
+            });
+          });
       });
       if (!song.instrumental && needs('lyrics')) await traceSong('upload:lyrics', async () => {
         const area = await uploadMaterial('lyrics');
-        await waitForTransfer(area, text => fanqieTransferVerified(text, spec.lyrics!), assertScope);
+        let retries = 0;
+        await waitForTransfer(area, text => fanqieTransferVerified(text, spec.lyrics!), assertScope, 120_000, undefined, async () => {
+          if (retries >= 3) throw Error('FANQIE_UPLOAD_RETRIES_EXHAUSTED');
+          retries++;
+          await traceSong(`upload:lyrics:retry:${retries}`, async () => {
+            const {failedRows, controls} = failedTransferRetryControl(area);
+            if (await failedRows.count() !== 1 || await controls.count() !== 1) throw Error('FANQIE_UPLOAD_RETRY_CONTROL_UNVERIFIED');
+            await writeSong(`upload:lyrics:retry:${retries}`);
+            await controls.click();
+            await waitForTransferRetryStart(area, assertScope);
+          });
+        });
       });
-      else if (song.instrumental && !fields) await callbacks.trace('upload:lyrics:skipped-instrumental', 'ok', tab, jobIndex);
+      else if (song.instrumental && !fields) await callbacks.trace('upload:lyrics:skipped-instrumental', 'ok', tab, jobIndex, undefined, {songTitle: song.title});
       if (needs('title')) await traceSong('fill-title', async () => {
         const title = await titleField(tab, card, index);
         await writeSong('fill-title');
@@ -659,22 +792,44 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
       });
       for (const role of authorRoles) {
         if (role === 'lyricist' && song.instrumental) {
-          if (!fields) await callbacks.trace('credit:lyricist:skipped-instrumental', 'ok', tab, jobIndex);
+          if (!fields) await callbacks.trace('credit:lyricist:skipped-instrumental', 'ok', tab, jobIndex, undefined, {songTitle: song.title});
           continue;
         }
         if (needs(role)) await traceSong('credit:' + role, () => selectCredit(tab, card, index, role, song.authors[role], writeSong, traceSong,
           assertScope, role === 'singer' ? song.singerArtistId : undefined));
       }
       if (needs('cover')) await traceSong('upload:cover', async () => {
-        const area = await uploadMaterial('cover');
-        await traceSong('confirm-square-crop', async () => {
-          const crop = await one(dialog(tab, '裁剪图片 (1/1)'), 'FANQIE_CROP_DIALOG_UNVERIFIED');
-          const confirm = await one(crop.getByRole('button', {name: '确定', exact: true}), 'FANQIE_CROP_DIALOG_UNVERIFIED');
-          await writeSong('confirm-square-crop');
-          await confirm.click();
-          await crop.waitFor({state: 'hidden'});
-          entry.coverSource = (await waitForCover(area, assertScope)).source;
-        });
+        let area = await uploadMaterial('cover', !!fields), retries = 0;
+        for (;;) {
+          try {
+            await traceSong(retries ? `confirm-square-crop:retry:${retries}` : 'confirm-square-crop', async () => {
+              const crop = dialog(tab, '裁剪图片 (1/1)'), failed = coverUploadFailure(area);
+              await waitForCropOrFailure(crop, failed);
+              if (await failed.count()) throw Error('FANQIE_COVER_UPLOAD_FAILED');
+              const confirmedCrop = await one(crop, 'FANQIE_CROP_DIALOG_UNVERIFIED');
+              const confirm = await one(confirmedCrop.getByRole('button', {name: '确定', exact: true}), 'FANQIE_COVER_CROP_TIMEOUT', coverCropWaitTimeoutMs);
+              await writeSong('confirm-square-crop');
+              await confirm.click();
+              await confirmedCrop.waitFor({state: 'hidden', timeout: coverCropWaitTimeoutMs}).catch(error => {
+                if (error instanceof Error && error.name === 'TimeoutError') throw Error('FANQIE_COVER_CROP_TIMEOUT', {cause:error});
+                throw error;
+              });
+            });
+            entry.coverSource = (await waitForCover(area, assertScope)).source;
+            break;
+          } catch (error) {
+            if (!(error instanceof Error) || !['FANQIE_COVER_UPLOAD_FAILED', 'FANQIE_COVER_CROP_TIMEOUT'].includes(error.message)) throw error;
+            if (retries >= 3) throw Error('FANQIE_COVER_UPLOAD_RETRIES_EXHAUSTED', {cause:error});
+            retries++;
+            await traceSong(`upload:cover:retry:${retries}`, async () => {
+              if (error.message === 'FANQIE_COVER_CROP_TIMEOUT') {
+                const crop = dialog(tab, '裁剪图片 (1/1)');
+                if (await crop.count() === 1) await closeTimedOutCrop(crop, () => writeSong(`close-cover-crop:retry:${retries}`));
+              }
+              area = await uploadMaterial('cover', true);
+            });
+          }
+        }
       });
       if (!fields) await traceSong('declare-ai', async () => select('declare-ai', await fieldRegion(tab, card, index, 'ai_usage_type', '是否为AI作品'), song.ai ? '是' : '否', aiChoices));
       const proof = song.copyrightProof;
@@ -682,7 +837,7 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
         const area = await uploadMaterial('proof');
         await waitForTransfer(area, text => proofVerified(text, proof), assertScope);
       });
-      else if (!fields) await callbacks.trace('upload:copyright-proof:skipped', 'ok', tab, jobIndex);
+      else if (!fields) await callbacks.trace('upload:copyright-proof:skipped', 'ok', tab, jobIndex, undefined, {songTitle: song.title});
     };
 
     const assertDraftIdentity = async (entry: DirectorySongEntry, card: Locator, index: number) => {
@@ -733,6 +888,39 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
       else await addCard(entry, order.length);
       order.push(entry);
     };
+    const removeRejectedDraft = async (entry: DirectorySongEntry) => {
+      const index = positionOf(entry), count = order.length;
+      await trace('first-step:submission-rejection:remove-card', async () => {
+        await cards.count(count);
+        const card = await cards.card(index, count);
+        const songItem = cards.form.locator('.song-item').filter({has: fieldLabel(tab, index, 'name')});
+        const header = await one(songItem.locator(':scope > .song-header'), deleteDraftError);
+        const caption = await one(header.locator(':scope > .name'), deleteDraftError);
+        const remove = await one(header.locator(':scope > .delete-icon'), deleteDraftError);
+        await remove.scrollIntoViewIfNeeded();
+        await write('first-step:submission-rejection:remove-card', entry.jobIndex);
+        const label = /^歌曲\s*(\d+)\s*[:：]\s*(.*)$/u.exec((await caption.innerText()).trim());
+        if (Number(label?.[1]) !== index + 1 || label?.[2] !== entry.song.title) throw Error(deleteDraftError);
+        await assertDraftIdentity(entry, card, index);
+        await cards.requireMounted(index, count);
+        await remove.click();
+        const removal = await one(dialog(tab, '温馨提示').filter({
+          has: tab.getByText('删除后，歌曲和编辑的内容都将被删除', {exact: true}),
+        }), deleteDraftError);
+        const confirm = await one(removal.getByRole('button', {name: '确认删除', exact: true}), deleteDraftError);
+        const button = await confirm.elementHandle();
+        try {
+          await write('first-step:submission-rejection:confirm-delete', entry.jobIndex);
+          await button.click({timeout: 3_000}).catch(error => {throw Error(deleteDraftError, {cause: error});});
+        } finally {
+          await button.dispose().catch(() => {});
+        }
+        await removal.waitFor({state: 'hidden'});
+        await cards.count(count - 1);
+      }, entry.jobIndex, {songTitle: entry.song.title});
+      order.splice(index, 1);
+      entry.coverSource = undefined;
+    };
 
     const repairSong = async ({entry, fields}: DirectoryRepair, rebuild = false) => {
       const index = positionOf(entry), count = order.length;
@@ -744,7 +932,7 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
         const message = directoryValidationMessages(region).first();
         const target = await message.count() ? message : region;
         if (await target.count() === 1) await target.scrollIntoViewIfNeeded({timeout: 1_500}).catch(() => {});
-        await callbacks.trace('first-step:validation:' + field, 'error', tab, jobIndex, Error(fieldValidationError));
+        await callbacks.trace('first-step:validation:' + field, 'error', tab, jobIndex, Error(fieldValidationError), {songTitle: entry.song.title});
       }
       await trace('repair:song', async () => {
         if (entry.repairs >= 2) throw Error('FANQIE_DIRECTORY_REPAIR_LIMIT');
@@ -768,23 +956,42 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
     };
 
     for (const [jobIndex, song] of songs.entries()) {
-      const entry: DirectorySongEntry = {song, spec: expected[jobIndex], jobIndex, repairs: 0};
+      const entry: DirectorySongEntry = {song, spec: expected[jobIndex], jobIndex, repairs: 0, coverUploadRetries: 0};
       await addCard(entry, order.length);
       order.push(entry);
       try {
         await fillSong(entry);
       } catch (error) {
-        if (!(error instanceof Error) || !/^FANQIE_(?:UPLOAD_READBACK_(?:REQUIRED|TIMEOUT)|COVER_UPLOAD_FAILED)$/u.test(error.message))
-          throw error;
-        const index = positionOf(entry);
-        const card = await cards.card(index, order.length);
-        const fields = repairFields(entry, index, await readDirectoryFieldErrors(card));
-        if (!fields.size) throw error;
-        await repairSong({entry, fields}, true);
+        if (error instanceof Error && error.message === 'FANQIE_COVER_READBACK_REQUIRED' && entry.coverUploadRetries < 1) {
+          entry.coverUploadRetries++;
+          await repairSong({entry, fields: new Set<DirectoryRepairField>(['cover'])});
+        } else {
+          if (!(error instanceof Error) || !/^FANQIE_(?:UPLOAD_READBACK_(?:REQUIRED|TIMEOUT)|COVER_UPLOAD_FAILED)$/u.test(error.message))
+            throw error;
+          const index = positionOf(entry);
+          const card = await cards.card(index, order.length);
+          const fields = repairFields(entry, index, await readDirectoryFieldErrors(card));
+          if (!fields.size && error.message === 'FANQIE_UPLOAD_READBACK_TIMEOUT') {
+            // A stalled transfer may leave the uploader blank without rendering a validation message.
+            // Re-read the visible draft before deciding; never infer success from the timeout itself.
+            const observed = await trace('upload:timeout-readback', () => readSong(entry), jobIndex);
+            if (!observed.size) continue;
+            const uploadFields = new Set([...observed].filter(field => field === 'audio' || field === 'lyrics' || field === 'cover'));
+            if (!uploadFields.size) throw error;
+            await repairSong({entry, fields: uploadFields});
+          } else {
+            if (!fields.size) throw error;
+            await repairSong({entry, fields}, true);
+          }
+        }
       }
       for (;;) {
         const fields = await trace('song:readback', () => readSong(entry), jobIndex);
         if (!fields.size) break;
+        if (fields.has('cover')) {
+          if (entry.coverUploadRetries >= 1) throw Error('FANQIE_COVER_READBACK_REQUIRED');
+          entry.coverUploadRetries++;
+        }
         await repairSong({entry, fields});
       }
     }
@@ -803,14 +1010,60 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
     };
 
     const confirmation = dialog(tab, '是否确认上传成品');
+    const rejectionNotice = visible(tab.locator('xpath=//span[contains(text(),"作品信息提交失败")]'));
+    const waitForSubmissionRejection = async () => {
+      const deadline = Date.now() + submissionRejectionWaitMs;
+      for (;;) {
+        callbacks.guard();
+        if (tab.isClosed()) throw Error('FANQIE_BROWSER_PAGE_CLOSED');
+        // Successful confirmation can navigate to the authorization step. The
+        // rejection watch only applies while the upload form remains visible.
+        if (tab.url() !== formUrl) return undefined;
+        const texts = (await rejectionNotice.allInnerTexts()).map(text => text.trim()).filter(Boolean);
+        if (texts.length) {
+          const uniqueTexts = [...new Set(texts)];
+          const titles = [...new Set(uniqueTexts.map(text => /作品信息提交失败\s*[：:]\s*《([^》]+)》/u.exec(text)?.[1]?.trim())
+            .filter((title): title is string => Boolean(title)))];
+          return {texts: uniqueTexts, title: titles.length === 1 && uniqueTexts.every(text =>
+            /作品信息提交失败\s*[：:]\s*《([^》]+)》/u.test(text)) ? titles[0] : undefined};
+        }
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) return undefined;
+        await delay(Math.min(100, remaining));
+      }
+    };
     const afterNext = async () => {
       const messages = directoryValidationMessages(cards.form);
-      await confirmation.or(messages).first().waitFor({state: 'visible', timeout: 15_000}).catch(async error => {
-        const code = await visible(tab.locator(directoryPageError)).count() ? 'FANQIE_UPLOAD_PAGE_ERROR' : 'FANQIE_UPLOAD_CONFIRMATION_UNVERIFIED';
+      const pageErrors = visible(tab.locator(directoryPageError));
+      await confirmation.or(messages).or(pageErrors).first().waitFor({state: 'visible', timeout: 15_000}).catch(async error => {
+        const code = await pageErrors.count() ? 'FANQIE_UPLOAD_PAGE_ERROR' : 'FANQIE_UPLOAD_CONFIRMATION_UNVERIFIED';
         throw Error(code, {cause: error});
       });
       await cards.assertCurrent();
       const errors = await readDirectoryFieldErrors(cards.form);
+      if (!await confirmation.count() && await pageErrors.count()) {
+        const notices = (await pageErrors.allInnerTexts()).map(text => text.trim()).filter(Boolean);
+        const rejectedTitles = [...new Set(notices.map(text => /作品信息提交失败\s*[：:]\s*《([^》]+)》\s*歌词内容不符合规范/u.exec(text)?.[1]?.trim()).filter((title): title is string => Boolean(title)))];
+        if (rejectedTitles.length) {
+          const rejectedTitle = rejectedTitles.length === 1 ? rejectedTitles[0] : undefined;
+          if (!rejectedTitle) {
+            await callbacks.trace('first-step:validation:lyrics-content', 'error', tab, undefined,
+              Error(lyricsContentSongUnmappedError));
+            throw Error(lyricsContentSongUnmappedError);
+          }
+          const matches = order.filter(entry => entry.song.title.trim() === rejectedTitle);
+          if (matches.length === 1) {
+            const entry = matches[0];
+            await callbacks.trace('first-step:validation:lyrics-content', 'error', tab, entry.jobIndex,
+              Error(lyricsContentRejectedError), {songTitle: entry.song.title});
+            throw Error(lyricsContentRejectedError);
+          }
+          await callbacks.trace('first-step:validation:lyrics-content', 'error', tab, undefined,
+            Error(lyricsContentSongUnmappedError), {songTitle: rejectedTitle});
+          throw Error(lyricsContentSongUnmappedError);
+        }
+        if (!errors.length) throw Error('FANQIE_UPLOAD_PAGE_ERROR');
+      }
       if (!errors.length) {
         if (await confirmation.count() !== 1) throw Error(fieldValidationError);
         return [];
@@ -837,6 +1090,7 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
       await confirmation.waitFor({state: 'hidden'});
     });
 
+    let removedRejectedSongs = 0;
     for (;;) {
       const repairs = await trace('first-step:next', async () => {
         await account(tab);
@@ -853,6 +1107,7 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
         continue;
       }
 
+      let rejectedAndRemoved = false;
       const recheck = await trace('first-step:confirm-upload', async () => {
         const confirm = await one(confirmation.getByRole('button', {name: '确认上传', exact: true}), 'FANQIE_UPLOAD_CONFIRMATION_UNVERIFIED');
         await trace('first-step:preflight', () => write('first-step:preflight'));
@@ -864,18 +1119,56 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
         }
         await trace('first-step:confirm-upload:click', async () => {
           await write('first-step:confirm-upload');
-          await confirm.click();
+          await confirm.click({noWaitAfter: true});
         }, undefined, {batchSize: order.length});
+        const rejection = await trace('first-step:submission-rejection:watch-4s', () => waitForSubmissionRejection(),
+          undefined, {batchSize: order.length, submissionRejectionWaitMs});
+        if (rejection) {
+          if (!rejection.title) {
+            await callbacks.trace('first-step:submission-rejection:unmapped', 'error', tab, undefined,
+              Error(submissionRejectionUnmappedError), {noticeCount: rejection.texts.length});
+            throw Error(submissionRejectionUnmappedError);
+          }
+          const matches = order.filter(entry => entry.song.title.trim() === rejection.title);
+          if (matches.length !== 1) {
+            await callbacks.trace('first-step:submission-rejection:unmapped', 'error', tab, undefined,
+              Error(submissionRejectionUnmappedError), {songTitle: rejection.title, matchCount: matches.length});
+            throw Error(submissionRejectionUnmappedError);
+          }
+          const entry = matches[0];
+          await callbacks.trace('first-step:submission-rejection:matched', 'ok', tab, entry.jobIndex, undefined,
+            {songTitle: entry.song.title, noticeCount: rejection.texts.length, removedCount: removedRejectedSongs});
+          await callbacks.verifyUnsubmitted(entry.jobIndex);
+          if (order.length === 1) {
+            // The official Form.List requires one card to remain. Keep that rejected
+            // card visible for review, but remove its unsubmitted local materials.
+            await callbacks.rejectUnsubmittedSong(entry.jobIndex);
+            await callbacks.trace('first-step:submission-rejection:all-songs-removed', 'error', tab, entry.jobIndex,
+              Error(allSongsRejectedError), {songTitle: entry.song.title});
+            throw Error(allSongsRejectedError);
+          }
+          if (removedRejectedSongs >= submissionRejectionRetries) {
+            await callbacks.trace('first-step:submission-rejection:limit', 'error', tab, entry.jobIndex,
+              Error(submissionRejectionRetriesExhaustedError), {songTitle: entry.song.title, retryLimit: submissionRejectionRetries});
+            throw Error(submissionRejectionRetriesExhaustedError);
+          }
+          await removeRejectedDraft(entry);
+          await callbacks.rejectUnsubmittedSong(entry.jobIndex);
+          removedRejectedSongs++;
+          rejectedAndRemoved = true;
+        }
         return [];
       });
+      if (rejectedAndRemoved) continue;
       if (!recheck.length) break;
       for (const repair of recheck) await repairSong(repair);
     }
     await trace('first-step:authorization-readback', async () => {
-      await checkAuthorizationGroup(tab, songs.map(song => song.title), assertScope);
+      await checkAuthorizationGroup(tab, order.map(entry => entry.song.title), assertScope);
+      await callbacks.archiveObserved(order.map(entry => entry.jobIndex));
       await account(tab);
       assertScope();
-    }, undefined, {batchSize: songs.length});
+    }, undefined, {batchSize: order.length});
     return tab;
   } finally {
     await editor?.dispose().catch(() => {});
@@ -883,9 +1176,11 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
   }
 }
 
-function expectedAudio(spec: FanqieExpectedForm, song: FanqieDirectorySong, text: string, includeTitle = false) {
+function expectedAudio(spec: FanqieExpectedForm, song: FanqieDirectorySong, text: string, _includeTitle = false) {
   const {name, base} = path.parse(song.assets.audio.file);
   const shown = text.split(/\r?\n/u, 1)[0].trim();
-  const allowed = includeTitle ? [name, base, song.title] : [name, base];
+  // Only the selected local audio filename (with or without extension) verifies
+  // the upload. A separately edited work title is not evidence of its filename.
+  const allowed = [name, base];
   return {...spec.audio, displayName: allowed.includes(shown) ? shown : name};
 }

@@ -373,7 +373,7 @@ const fanqieAccounts = new FanqieAccountSessions({root,available:()=>mode==='pro
     return result.value;
   },
   trashDownload:file=>shell.trashItem(file),
-  openDiagnostics:async folder=>{if(await shell.openPath(folder))throw Error('FANQIE_DIAGNOSTICS_OPEN_FAILED');},
+  openDiagnostics:async file=>{if(await shell.openPath(file))throw Error('FANQIE_DIAGNOSTICS_OPEN_FAILED');},
   pickBundle:async()=>{const result=await showOpenDialog({title:'选择番茄发布材料清单',properties:['openFile'],filters:[{name:'番茄发布材料清单',extensions:['json']}]});return result.canceled?null:result.filePaths[0];}});
 async function browserAccount(accountId:string,artistId?:string):Promise<PlatformAccount>{
   if(mode!=='production'||switching||closing)throw Error('PRODUCTION_REQUIRED');
@@ -794,7 +794,7 @@ function handlers() {
         const result = await rpc("internal.planFanqieDirectory.diagnostics", parsed);
         if (!result.ok) return result;
         if (generation !== coreGeneration || switching || closing) throw Error("WORKSPACE_CHANGED");
-        if (await shell.openPath(result.value.directory)) return { ok: false, error: fanqieCatalogError(Error("FANQIE_DIAGNOSTICS_OPEN_FAILED")) };
+        if (await shell.openPath(result.value.file)) return { ok: false, error: fanqieCatalogError(Error("FANQIE_DIAGNOSTICS_OPEN_FAILED")) };
         return { ok: true, value: null };
       }
       if (method === "platformImage.generate") {

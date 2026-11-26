@@ -200,3 +200,5 @@
   .publication-plan-picker-grid { grid-template-columns: minmax(0, 1fr); gap: 14px; }
   .publication-plan-choices, .publication-plan-order { max-height: 25vh; }
 }
+.publication-plan-reason:is([data-kind="credits"], [data-kind="check"]) { color: var(--danger); font-weight: 600; }
+.publication-plan-config { align-self: flex-start; margin-top: 6px; min-height: 32px; }

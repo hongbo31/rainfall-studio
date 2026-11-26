@@ -10,6 +10,7 @@ import {isOfficialSignInRoute,launchAccountBrowser} from '../browser-accounts';
 import {openBackgroundOfficialPage} from '../background-page';
 import {fanqieAccountTab, fanqieArtistUrl, fanqieProfileUrl as accountPage, withFanqieReadFrame} from './directory-page';
 import {fanqieOrigin} from '../../shared/fanqie';
+import {fanqieBrowserFailureCode} from './browser-errors';
 import type {AccountLoginState} from '../../shared/platform-accounts';
 import {FanqieCatalogRowError,type FanqieCatalog,type FanqieCatalogQuery,type FanqieCatalogReport} from '../../shared/fanqie-catalog';
 import {fanqieDownloadIssues} from '../../shared/fanqie-downloads';
@@ -27,6 +28,7 @@ type Options = {
   browserDirectory?: string;
   verifyAccount?: (accountKey: string) => void;
 };
+type ObserveAccountOptions = {trace?:FanqieDirectoryTracePort; inPlace?:boolean; verifyAfterRead?:boolean};
 // Only the public locator/evaluate surface is exposed to the read-only adapters.
 function readPage(page: AccountDocument) {
   return {url: async () => page.url(), playwright: page};
@@ -136,7 +138,7 @@ export class FanqieCatalogSession {
   }
   async verifyRestoredAccount(){
     return this.run(async(context,guard)=>{
-      const observed=await this.observeAccount(context,guard,async()=>null,undefined,true);
+      const observed=await this.observeAccount(context,guard,async()=>null,{inPlace:true});
       if(observed.accountKey!==this.profile()?.accountKey)throw Error('FANQIE_ACCOUNT_IDENTITY_MISMATCH');
       this.verifiedAccountKey=observed.accountKey;
       this.mark('登录已核对');
@@ -182,20 +184,20 @@ export class FanqieCatalogSession {
     context: BrowserContext,
     guard: () => void,
     read: (document: AccountDocument, go: (url: string) => Promise<void>, page: Page, accountKey: string) => Promise<T>,
-    trace?:FanqieDirectoryTracePort,
-    inPlace = false,
+    options:ObserveAccountOptions = {},
   ) {
+    const {trace,inPlace=false,verifyAfterRead=true}=options;
     this.verifiedAccountKey = undefined;
     this.mark('正在读取番茄账号'); guard();
     if (inPlace) {
       const page = fanqieAccountTab(context);
-      return withFanqieReadFrame(page, guard, frame => this.observeAccountDocument(frame, page, guard, read, trace));
+      return withFanqieReadFrame(page, guard, frame => this.observeAccountDocument(frame, page, guard, read, trace, verifyAfterRead));
     }
     const primary = context.pages().find(page => !page.isClosed());
     if (!primary) throw Error('FANQIE_BROWSER_CONNECTION_REQUIRED');
     const page = await openBackgroundOfficialPage(primary);
     try {
-      return await this.observeAccountDocument(page, page, guard, read, trace);
+      return await this.observeAccountDocument(page, page, guard, read, trace, verifyAfterRead);
     } finally { await page.close().catch(() => {}); }
   }
   private async observeAccountDocument<T>(
@@ -204,6 +206,7 @@ export class FanqieCatalogSession {
     guard: () => void,
     read: (document: AccountDocument, go: (url: string) => Promise<void>, page: Page, accountKey: string) => Promise<T>,
     trace?: FanqieDirectoryTracePort,
+    verifyAfterRead = true,
   ) {
     const releaseTrace=trace?.watch(page);
     let checkpoint='catalog:account';
@@ -220,13 +223,15 @@ export class FanqieCatalogSession {
       const { accountId } = await readAccount(document); guard();
       if (!/^[1-9]\d{4,24}$/.test(accountId)) throw Error('FANQIE_ACCOUNT_ID_UNVERIFIED');
       const accountKey = createHash('sha256').update('fanqie:' + accountId).digest('hex');
-      await trace?.trace('catalog:account','ok',page);
+      await trace?.trace('catalog:account','ok',page,undefined,undefined,{accountIdentityChecks:1});
       const value = await read(document, go, page, accountKey); guard();
-      await go(accountPage);
-      const after = await readAccount(document); guard();
-      if (accountId !== after.accountId) throw Error('FANQIE_CATALOG_SCOPE_CHANGED');
+      if (verifyAfterRead) {
+        await go(accountPage);
+        const after = await readAccount(document); guard();
+        if (accountId !== after.accountId) throw Error('FANQIE_CATALOG_SCOPE_CHANGED');
+      }
       this.options.verifyAccount?.(accountKey);
-      await trace?.trace('catalog:account','ok',page);
+      if (verifyAfterRead) await trace?.trace('catalog:account','ok',page,undefined,undefined,{accountIdentityChecks:2});
       return { value, accountId, accountKey, maskedAccount: '***' + accountId.slice(-4) };
     } catch(error) {
       await trace?.trace(checkpoint,'error',page,undefined,error);
@@ -242,6 +247,8 @@ export class FanqieCatalogSession {
     names: readonly string[], trace?: FanqieDirectoryTracePort): Promise<ReadonlyMap<string, FanqieDirectorySinger>> {
     const keys = new Set(names.map(fanqieRosterNameKey));
     if (!keys.size) return new Map();
+    // The upload form independently rechecks the bound account before any write.
+    // Avoid a redundant trailing profile read after the read-only artist lookup.
     const { value, accountKey } = await this.observeAccount(context, guard, async (_document, go, page, before) => {
       if (before !== expectedAccountKey) throw Error('FANQIE_CATALOG_SCOPE_CHANGED');
       this.options.verifyAccount?.(before);
@@ -254,7 +261,7 @@ export class FanqieCatalogSession {
       }
       await trace?.trace('catalog:artists','ok',page);
       return found;
-    }, trace);
+    }, {trace, verifyAfterRead:false});
     guard();
     if (accountKey !== expectedAccountKey) throw Error('FANQIE_CATALOG_SCOPE_CHANGED');
     this.verifiedAccountKey = accountKey;
@@ -294,7 +301,10 @@ export class FanqieCatalogSession {
       const artists=withArtists?await this.readArtists(document,go):[];
       if(withArtists)await trace?.trace('catalog:artists','ok',page);
       return { catalog, artists };
-    },trace,queries!==undefined);
+    },{trace,inPlace:queries!==undefined,
+      // Initial/submit preflight lookups are followed by another account check at the form;
+      // receipt reads keep the post-read identity check.
+      verifyAfterRead:!queries || queries.some(query=>query.waitForReceipt)});
     guard();
     const report = {...catalog, accountKey, maskedAccount};
     const folder = this.stateDirectory(); fs.mkdirSync(folder, {recursive: true});
@@ -377,7 +387,8 @@ export class FanqieCatalogSession {
 }
 
 export function fanqieCatalogError(error: unknown) {
-  const code = error instanceof Error && error.name === 'TimeoutError' ? 'FANQIE_BROWSER_TIMEOUT' : error instanceof Error && /strict mode violation/.test(error.message) ? 'FANQIE_CONTROL_AMBIGUOUS' : error instanceof Error && /^[A-Z0-9_]+$/.test(error.message) ? error.message : 'FANQIE_BROWSER_OPERATION_FAILED';
+  const browserCode=fanqieBrowserFailureCode(error);
+  const code = browserCode!=='FANQIE_BROWSER_OPERATION_FAILED' ? browserCode : error instanceof Error && /^[A-Z0-9_]+$/.test(error.message) ? error.message : 'FANQIE_BROWSER_OPERATION_FAILED';
   const messages: Record<string, string> = {
     FANQIE_CHROME_NOT_FOUND: '未找到已安装的 Google Chrome，请检查浏览器安装位置。',
     FANQIE_BATCH_SCOPE_CHANGED: '账号或批次选择已变化，已停止操作，请重新核对。',
@@ -401,6 +412,7 @@ export function fanqieCatalogError(error: unknown) {
     FANQIE_CONTROL_AMBIGUOUS: '页面出现多个同名控件，已停止操作并保留页面。',
     FANQIE_RELEASE_ENTRY_AMBIGUOUS: '首页发布入口不唯一，已停止操作并保留页面。',
     FANQIE_BROWSER_TIMEOUT: '番茄页面读取超时，请核对登录状态后重试读取。',
+    FANQIE_BROWSER_PAGE_CLOSED: '番茄工作页面已关闭，自动化已暂停。请重新打开工作窗口，并核对执行日志和官网回执后再继续。',
     FANQIE_IDENTITY_PAGE_REQUIRED: '请在番茄工作窗口完成登录后重试。',
     FANQIE_ACCOUNT_ID_UNVERIFIED: '未读到番茄账号，请核对登录状态。',
     FANQIE_CATALOG_FILTERED: '未读到完整作品列表，请重新读取。',
@@ -408,6 +420,13 @@ export function fanqieCatalogError(error: unknown) {
     FANQIE_CATALOG_WORK_ID_UNVERIFIED: '官网作品列表中有一行读不到有效作品 ID，已暂停上传查重。',
     FANQIE_CATALOG_DUPLICATE_ID: '官网作品列表出现重复 ID，已暂停上传查重。',
     FANQIE_CATALOG_STATUS_UNVERIFIED: '所选作品的官网状态待核对，已暂停签约或回执确认。',
+    FANQIE_LYRICS_CONTENT_REJECTED: '番茄提示这首歌的歌词内容不符合规范；执行日志已记录歌名和序号。请用修订后的真实歌词替换歌词附件，再重新核对。',
+    FANQIE_LYRICS_CONTENT_REJECTED_UNMAPPED: '番茄提示歌词内容不符合规范，但未能唯一匹配歌曲，已暂停上传；请查看执行日志和番茄页面。',
+    FANQIE_SUBMISSION_REJECTION_UNMAPPED: '番茄提示作品信息提交失败，但歌名无法唯一匹配到本批歌曲；已暂停并保留页面，请查看执行日志。',
+    FANQIE_SUBMISSION_REJECTION_RETRIES_EXHAUSTED: '番茄连续拒绝了多首作品，自动剔除和复核已达到 7 次上限；已暂停并保留页面，请人工检查剩余歌曲。',
+    FANQIE_ALL_SONGS_REJECTED: '本批歌曲都被番茄拒绝，未进入签约或归档；已回收拒绝歌曲的本地音频、歌词和封面。',
+    FANQIE_SUBMISSION_VALIDATION_REJECTED: '番茄拒绝了这首作品；对应的本地音频、歌词和封面已移入系统回收站。',
+    FANQIE_REJECTED_MATERIALS_CLEANUP_FAILED: '番茄已拒绝这首作品，但本地素材未能全部安全移入回收站；批次已暂停，请查看执行日志后处理。',
     FANQIE_CATALOG_SCOPE_CHANGED: '番茄账号发生变化，请重新读取。',
     FANQIE_ACCOUNT_IDENTITY_MISMATCH: '当前登录与已绑定账号不一致，请在专属窗口登录原账号。',
     FANQIE_ACCOUNT_ALREADY_BOUND: '该番茄账号已在其他本地账号中绑定，请使用原账号。',

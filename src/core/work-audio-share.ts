@@ -18,7 +18,7 @@ function resolveRecording(s: Studio, raw: unknown) {
 
 export function workAudioExportInfo(s: Studio, input: unknown) {
   const { recording } = resolveRecording(s, input);
-  return { filename: recording.filename, extension: recording.extension };
+  return { filename: recording.filename, extension: recording.extension, version: recording.version };
 }
 
 export async function exportWorkAudio(s: Studio, input: unknown, destination: string) {

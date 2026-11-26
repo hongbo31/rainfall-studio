@@ -98,7 +98,7 @@ export function fanqieDirectoryDiagnostics(root: string, run: PlanCenterRun) {
   try {
     const { batch } = fanqieRunJournalPaths(root, run.id, target.accountId);
     const trace = path.join(batch, "trace.jsonl");
-    if (fs.lstatSync(trace).isFile() && isOwnedPath(trace)) return batch;
+    if (fs.lstatSync(trace).isFile() && isOwnedPath(trace)) return trace;
   } catch {
     return;
   }
@@ -206,9 +206,9 @@ export function planFanqieDirectoryAction(studio: Studio, action: string, input:
     throw Error("FANQIE_BATCH_SCOPE_CHANGED");
 
   if (action === "diagnostics") {
-    const directory = fanqieDirectoryDiagnostics(studio.root, run);
-    if (!directory) throw Error("FANQIE_DIAGNOSTICS_OPEN_FAILED");
-    return { directory };
+    const file = fanqieDirectoryDiagnostics(studio.root, run);
+    if (!file) throw Error("FANQIE_DIAGNOSTICS_OPEN_FAILED");
+    return { file };
   }
   if (action === "cleanupScope") {
     const scope = readCleanupBatch(studio.root, run);

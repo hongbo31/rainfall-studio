@@ -94,9 +94,14 @@ export function fanqieTransferVerified(text: string, expected: FanqieExpectedFor
 
 /** These are visible transfer acknowledgements, not remote file hashes or a saved official work ID. */
 export function assertFanqieFirstStepReadback(actual: FanqieVisibleForm, expected: FanqieExpectedForm) {
-  if (actual.songCount !== 1 || actual.title !== expected.title || actual.ai !== (expected.ai ? '是' : '否') ||
-      !!actual.instrumental!==!!expected.instrumental ||
-      actual.musicType !== (expected.musicType === 'original' ? '原创' : '翻唱')) throw Error('FANQIE_METADATA_READBACK_REQUIRED');
+  // Keep the blocking gate, but identify the failed visible field in the durable run trace.
+  // Do not include title/artist/lyrics values: field names are enough to diagnose UI drift.
+  if (actual.songCount !== 1) throw Error('FANQIE_METADATA_READBACK_REQUIRED:song-count');
+  if (actual.title !== expected.title) throw Error('FANQIE_METADATA_READBACK_REQUIRED:title');
+  if (actual.ai !== (expected.ai ? '是' : '否')) throw Error('FANQIE_METADATA_READBACK_REQUIRED:ai-usage');
+  if (!!actual.instrumental !== !!expected.instrumental) throw Error('FANQIE_METADATA_READBACK_REQUIRED:instrumental');
+  if (actual.musicType !== (expected.musicType === 'original' ? '原创' : '翻唱'))
+    throw Error('FANQIE_METADATA_READBACK_REQUIRED:music-type');
   for (const role of ['lyricist', 'composer', 'singer'] as const) {
     if(expected.instrumental&&role==='lyricist'){
       if(actual.authors[role].length)throw Error('FANQIE_AUTHOR_READBACK_REQUIRED');

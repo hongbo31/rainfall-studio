@@ -86,6 +86,15 @@ export class ProviderTextService{
    if(!['dispatching','unknown'].includes(op.state))throw Error('TEXT_OPERATION_STATE');
    const matches=providerTextModelMatches(op.request,r.providerModel);
    if(r.status==='complete'&&(!matches||!r.usage||r.httpStatus!==200||!r.providerRequestId||r.finishReason!=='stop'||r.content===null))throw Error('TEXT_RESULT_MODEL_PROOF');
+   if(r.status==='confirmed_unsent'){
+    this.saveOperation({...op,state:'invalid',costMicros:null,result:r});
+    return this.save({...job,reservedMicros:Math.max(0,job.reservedMicros-op.reservedMicros),state:job.stopRequested?'stopped':'blocked',reason:job.stopRequested?'TEXT_STOP_REQUESTED':r.reason??'TEXT_REQUEST_PREPARATION_FAILED'});
+   }
+   if(r.status==='invalid'&&r.reason==='TEXT_PROVIDER_CREDITS_REQUIRED'){
+    const rejectedCost=r.usage&&matches?providerTextCost(op.request.price,r.usage):null;
+    this.saveOperation({...op,state:'invalid',costMicros:rejectedCost,result:r});
+    return this.save({...job,spentMicros:job.spentMicros+(rejectedCost??0),reservedMicros:Math.max(0,job.reservedMicros-op.reservedMicros),state:job.stopRequested?'stopped':'blocked',reason:job.stopRequested?'TEXT_STOP_REQUESTED':'TEXT_PROVIDER_CREDITS_REQUIRED'});
+   }
    const cost=r.usage&&matches?providerTextCost(op.request.price,r.usage):null;
    let next:ProviderTextJob={...job,spentMicros:job.spentMicros+(cost??0),reservedMicros:cost===null?job.reservedMicros:Math.max(0,job.reservedMicros-op.reservedMicros)};
    let operationState:ProviderTextOperation['state']=r.status;

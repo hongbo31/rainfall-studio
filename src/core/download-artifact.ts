@@ -5,7 +5,7 @@ import { lyricResultText, lyricResultVersion } from "../shared/lyric-writing";
 import { safeWorkFilenameStem } from "../shared/work-analysis";
 import { exportCover } from "./assets";
 import { zip } from "./backup";
-import { saveConfiguredDownload } from "./download-archive";
+import { resolveNamedDownloadFolder, resolveWorkDownloadFolder, saveConfiguredDownload } from "./download-archive";
 import { materialEntries } from "./materials";
 import type { Studio } from "./studio";
 import { exportWorkAudio, workAudioExportInfo } from "./work-audio-share";
@@ -21,12 +21,13 @@ const coverTaskSelection = workSelection.extend({
 export function downloadArtifact(s: Studio, kind: ConfiguredDownloadKind, input: unknown) {
   switch (kind) {
     case "workAudio": {
-      const { filename } = workAudioExportInfo(s, input);
-      return saveConfiguredDownload(s.repo, filename, file => exportWorkAudio(s, input, file));
+      const { filename, version } = workAudioExportInfo(s, input);
+      const { workId } = workSelection.extend({ version: z.enum(["A", "B"]) }).parse(input);
+      return saveConfiguredDownload(s.repo, filename, file => exportWorkAudio(s, input, file), resolveWorkDownloadFolder(s.repo, workId, version));
     }
     case "workCertificate": {
       const { filename } = workCertificateExportInfo(s, input);
-      return saveConfiguredDownload(s.repo, filename, file => exportWorkCertificate(s, input, file));
+      return saveConfiguredDownload(s.repo, filename, file => exportWorkCertificate(s, input, file), resolveWorkDownloadFolder(s.repo, z.object({ workId: z.uuid() }).parse(input).workId));
     }
     case "lyricResult": {
       const { jobId, versionId } = lyricSelection.parse(input);
@@ -37,13 +38,13 @@ export function downloadArtifact(s: Studio, kind: ConfiguredDownloadKind, input:
       return saveConfiguredDownload(s.repo, filename, file => {
         fs.writeFileSync(file, "\uFEFF" + lyricResultText(result), { flag: "wx" });
         return {};
-      });
+      }, resolveNamedDownloadFolder(s.repo, job.musicianName, job.templateName));
     }
     case "cover": {
       const selection = coverSelection.parse(input);
       const work = s.get("works", selection.workId);
       const filename = safeWorkFilenameStem(work.title) + ".png";
-      return saveConfiguredDownload(s.repo, filename, file => exportCover(s, work.id, file, selection));
+      return saveConfiguredDownload(s.repo, filename, file => exportCover(s, work.id, file, selection), resolveWorkDownloadFolder(s.repo, work.id));
     }
     case "coverTask": {
       const { workId, brief = "", editedText } = coverTaskSelection.parse(input);
@@ -54,7 +55,7 @@ export function downloadArtifact(s: Studio, kind: ConfiguredDownloadKind, input:
         fs.writeFileSync(file, text, { flag: "wx" });
         s.save("works", { ...s.get("works", workId), coverTaskText: text, coverBrief: brief });
         return {};
-      });
+      }, resolveWorkDownloadFolder(s.repo, workId));
     }
     case "coverRequest": {
       const { requestId } = z.strictObject({ requestId: z.uuid() }).parse(input);
@@ -63,7 +64,7 @@ export function downloadArtifact(s: Studio, kind: ConfiguredDownloadKind, input:
       return saveConfiguredDownload(s.repo, filename, file => {
         fs.writeFileSync(file, JSON.stringify(request, null, 2), { flag: "wx" });
         return {};
-      });
+      }, resolveWorkDownloadFolder(s.repo, request.workId, request.variant ? "B" : "A"));
     }
     case "materials": {
       const { batchId } = z.strictObject({ batchId: z.uuid() }).parse(input);

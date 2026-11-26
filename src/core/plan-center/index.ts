@@ -8,7 +8,7 @@ import { TextEvaluationScoreSchema } from '../../shared/text-evaluation';
 import { PairSchema } from '../quality/contracts';
 import { pairHash } from '../quality/scoring';
 import type { Repository } from '../database';
-import { PlanCenterPlanSchema, PlanCenterSaveSchema, PlanCenterDeleteSchema, PlanCenterToggleSchema, PlanCenterScheduleCreationSchema, PlanCenterIdSchema, PlanCenterRunSchema, PlanCenterStopSchema, PlanCenterClaimSchema, PlanCenterRecordSchema, PlanCenterReconcileSchema, PlanCenterRetrySchema, PlanCenterMaterialsSchema, PlanCenterCapabilitySchema, PlanCenterCapabilityNames, isPublicationPlan } from '../../shared/plan-center';
+import { PlanCenterPlanSchema, PlanCenterSaveSchema, PlanCenterDeleteSchema, PlanCenterToggleSchema, PlanCenterScheduleCreationSchema, PlanCenterIdSchema, PlanCenterRunSchema, PlanCenterStopSchema, PlanCenterClaimSchema, PlanCenterRecordSchema, PlanCenterReconcileSchema, PlanCenterManualObservationSchema, PlanCenterRetrySchema, PlanCenterMaterialsSchema, PlanCenterCapabilitySchema, PlanCenterCapabilityNames, isPublicationPlan } from '../../shared/plan-center';
 import type { CreationTaskSummary, PlanCenterPlan, PlanCenterPlanInput, PlanCenterCapabilities, PlanCenterCapabilityName, PlanCenterRun, PlanCenterItem, PlanCenterStage, PlanCenterStageAttempt, PlanCenterPublishAttempt, PlanCenterAlbumBinding, PlanCenterPublishTarget, PlanCenterList, PlanCenterMigration } from '../../shared/plan-center';
 import { planRunActive, planRunBlocksDeletion, planStageCancelsOnStop } from '../../shared/plan-center';
 import { CenterStore, digest, isLegacyOwned } from './storage';
@@ -33,6 +33,7 @@ export type PlanCenterOptions = {
 const terminalRuns=new Set(['completed','stopped','failed']);
 const names:Record<PlanCenterStage,PlanCenterCapabilityName|undefined>={dot:'dot',text_generate:'text',text_score:'text',lyric_write:'text',cover:'cover',music_submit:'music',music_assets:'music',materials:undefined};
 const safeId=z.string().min(1).max(500);
+const sunoRepeatablePostGenerationFailures=new Set(['SUNO_CN_RENAME_MENU_UNAVAILABLE','SUNO_CN_RENAME_UNCONFIRMED']);
 const targetInput=z.strictObject({runId:safeId,platform:safeId,accountId:safeId});
 const publishInput=targetInput.extend({itemId:safeId});
 const missingTheme=(plan:PlanCenterPlanInput)=>['provider','pule_prompt'].includes(plan.material.source??'dot')&&!plan.theme?.trim()&&!plan.storyContext?.storyBeat.trim();
@@ -188,7 +189,7 @@ export class PlanCenterService {
       const old=this.store.get('plan',p.id);
       if(old?.material.source!=='creation')throw Error('NOT_FOUND');
       if(old.revision!==p.expectedRevision)throw Error('REVISION_CONFLICT');
-      if(this.hasActiveRun(old.id,'scheduled'))throw Error('ACTIVE_RUN');
+      if(this.hasActiveRun(old.id))throw Error('ACTIVE_RUN');
       const now=this.now(),plan={...old,enabled:true,schedule:p.schedule,updatedAt:now,revision:old.revision+1};
       this.checkCreationSchedule(plan);
       const issue=planRouteIssue(this.repo,plan);
@@ -219,6 +220,8 @@ export class PlanCenterService {
   }
   private runTrusted(p:Omit<z.output<typeof PlanCenterRunSchema>,'source'>&{source:'manual'|'debug'|'directory'|'publication_task'},includePlanPublication=false,prepareContract?:boolean){
     return this.repo.transaction(()=>{
+      if(!!p.retrySunoRunId!==(p.confirmSunoRegeneration===true))throw Error('SUNO_RETRY_CONFIRMATION_REQUIRED');
+      if(p.retrySunoRunId&&(!p.confirmSunoRegeneration||!['manual','debug'].includes(p.source)))throw Error('SUNO_RETRY_SCOPE');
       const existing=this.store.all('run').find(r=>r.requestId===p.requestId);
       if(existing) {if(existing.planId!==p.id||existing.source!==p.source||existing.summaryHash!==p.summaryHash||existing.planRevision!==p.expectedRevision||
         (existing.prepareContract??true)!==(prepareContract??true))throw Error('REQUEST_ID_CONFLICT');return existing;}
@@ -228,14 +231,19 @@ export class PlanCenterService {
       const publishes=workflowPublicationPlatforms(plan.workflow?.graph).length>0;
       const local=isLocalPublicationWorkflow(plan.workflow?.graph);
       if(plan.workflow?.graph&&(p.source==='manual'||p.source==='debug')){
+        if(p.retrySunoRunId&&workflowBrowserMusic(plan.workflow)?.provider!=='suno_cn')throw Error('SUNO_RETRY_SCOPE');
         if(!local&&!p.confirmGeneration)throw Error('WORKFLOW_CONFIRMATION_REQUIRED');
         if(local&&p.confirmGeneration)throw Error('WORKFLOW_CONFIRMATION_SCOPE');
         if(publishes&&!p.confirmPublication)throw Error('WORKFLOW_PUBLICATION_CONFIRMATION_REQUIRED');
         if(!publishes&&p.confirmPublication)throw Error('WORKFLOW_CONFIRMATION_SCOPE');
         const issue=planWorkflowIssue(this.repo,plan)??planRouteIssue(this.repo,plan);
         if(issue)throw Error(issue);
-        return this.createRun(authorizeGraphPlanExecution(plan,publishes),p.source,p.requestId,p.summaryHash);
+        const superseded=p.retrySunoRunId?this.supersedeSunoRun(p.retrySunoRunId,plan):undefined;
+        const created=this.createRun(authorizeGraphPlanExecution(plan,publishes),p.source,p.requestId,p.summaryHash);
+        if(superseded)this.store.put('stage',{...superseded,supersededByRunId:created.id});
+        return created;
       }
+      if(p.retrySunoRunId)throw Error('SUNO_RETRY_SCOPE');
       if(p.confirmGeneration||p.confirmPublication)throw Error('WORKFLOW_CONFIRMATION_SCOPE');
       if(p.source==='publication_task'){
         if(!isPublicationPlan(plan)||local&&!includePlanPublication)throw Error('PUBLICATION_PLAN_UNAVAILABLE');
@@ -251,14 +259,41 @@ export class PlanCenterService {
       return this.createRun(plan,p.source,p.requestId,p.summaryHash);
     });
   }
-  private hasActiveRun(planId: string, source: PlanCenterRun['source']) {
-    const taskOwned = source === 'publication_task';
+  private supersedeSunoRun(runId:string,plan:PlanCenterPlan) {
+    const previous=this.store.get('run',runId);
+    if(!previous||previous.planId!==plan.id||previous.stopRequested||previous.state!=='blocked'||
+      workflowBrowserMusic(previous.snapshot.workflow)?.provider!=='suno_cn'||plan.count!==1)
+      throw Error('SUNO_RETRY_SCOPE');
+    const items=this.store.all('item',{field:'runId',values:[runId]});
+    const attempts=this.store.all('stage',{field:'runId',values:[runId]});
+    if(items.length!==1)throw Error('SUNO_RETRY_SCOPE');
+    const item=items[0];
+    const laterStageAttempt=attempts.some(attempt=>attempt.itemId===item.id&&['music_assets','cover','materials'].includes(attempt.stage));
+    if(item.workId||item.versions.length||item.materials||laterStageAttempt)throw Error('SUNO_RETRY_SCOPE');
+    const submitAttempts=attempts.filter(attempt=>attempt.itemId===item.id&&attempt.stage==='music_submit');
+    const failed=submitAttempts.at(-1);
+    const receipt=failed?.state==='unknown'?readSunoBrowserReceipt(failed.result):undefined;
+    const next=this.next({runId,itemId:item.id});
+    const activeStages=attempts.filter(attempt=>['dispatching','waiting','unknown'].includes(attempt.state));
+    const activePublications=this.store.all('publish',{field:'runId',values:[runId]}).some(attempt=>
+      ['dispatching','submitted','reviewing','unknown'].includes(attempt.state));
+    const activeAlbum=this.store.all('album').some(binding=>binding.createdByRunId===runId&&['dispatching','unknown'].includes(binding.state));
+    if(!failed||failed.state!=='unknown'||!failed.reason||!sunoRepeatablePostGenerationFailures.has(failed.reason)||!receipt||
+      next?.stage!=='music_submit'||next.attemptId!==failed.id||activeStages.length!==1||activeStages[0].id!==failed.id||activePublications||activeAlbum)
+      throw Error('SUNO_RETRY_SCOPE');
+    const saved=this.store.put('stage',{...failed,state:'failed',updatedAt:this.now()});
+    this.refresh(previous.id);
+    return saved;
+  }
+  private hasActiveRun(planId: string) {
     return this.store.all('run', { field: 'planId', values: [planId] })
-      .some(run => (run.source === 'publication_task') === taskOwned && planRunActive(run));
+      .some(run => planRunActive(run));
   }
   private createRun(plan:PlanCenterPlan,source:PlanCenterRun['source'],requestId:string,summaryHash:string,occurrenceKey?:string,prepareContract?:boolean) {
     if(missingTheme(plan))throw Error('THEME_REQUIRED');
-    if(this.hasActiveRun(plan.id,source))throw Error('ACTIVE_RUN');
+    const activity={stageAttempts:this.store.all('stage'),publishAttempts:this.store.all('publish'),albumBindings:this.store.all('album')};
+    const activeRun=this.store.all('run',{field:'planId',values:[plan.id]}).find(run=>planRunBlocksDeletion(run,activity));
+    if(activeRun)throw Object.assign(Error('ACTIVE_RUN'),{activeRunId:activeRun.id});
     const workflowIssue=planWorkflowIssue(this.repo,plan)??(source!=='publication_task'&&
       workflowPublicationPlatforms(plan.workflow?.graph).length&&!plan.authorization.publish?'WORKFLOW_PUBLICATION_CONFIRMATION_REQUIRED':undefined);
     const local=isLocalPublicationWorkflow(plan.workflow?.graph);
@@ -288,7 +323,7 @@ export class PlanCenterService {
       const now=this.now();
       for(const plan of this.store.all('plan').filter(p=>p.enabled)) {
         if(missingTheme(plan))continue;
-        if(this.hasActiveRun(plan.id,'scheduled'))continue;
+        if(this.hasActiveRun(plan.id))continue;
         const cursor=this.store.get('cursor',plan.id)??{id:plan.id,lastAt:plan.createdAt??now};
         const times=dueTimes(plan,cursor.lastAt,now);if(!times.length)continue;
         const selected=plan.catchUp.mode==='bounded'?times.slice(-plan.catchUp.limit)[0]:times.at(-1)!;
@@ -525,9 +560,24 @@ export class PlanCenterService {
     const p=PlanCenterReconcileSchema.parse(input);
     return this.repo.transaction(()=>{
       const attempt=this.store.get('stage',p.attemptId);if(!attempt)throw Error('NOT_FOUND');if(!['unknown','dispatching','waiting'].includes(attempt.state))throw Error('RECONCILE_NOT_REQUIRED');
-      if(p.status==='pending')return this.store.put('stage',{...attempt,state:'waiting',evidenceId:p.evidenceId,externalTaskId:p.externalTaskId??attempt.externalTaskId,updatedAt:this.now()});
-      if(p.status==='not_found') {const a=this.store.put('stage',{...attempt,state:'not_found',evidenceId:p.evidenceId,reason:'RECONCILED_NOT_FOUND',updatedAt:this.now()});this.refresh(a.runId);return a;}
-      return this.recordInside({...p,status:p.status});
+      const observedAt=this.now();
+      const observed=this.store.put('stage',{...attempt,observations:[...(attempt.observations??[]),{status:p.status,evidenceId:p.evidenceId,source:p.source,actor:p.actor,observedAt,...(p.reason?{reason:p.reason}:{})}],updatedAt:observedAt});
+      if(p.status==='pending')return this.store.put('stage',{...observed,state:'waiting',evidenceId:p.evidenceId,externalTaskId:p.externalTaskId??attempt.externalTaskId,updatedAt:observedAt});
+      if(p.status==='not_found') {this.refresh(observed.runId);return observed;}
+      return this.recordInside({attemptId:p.attemptId,status:p.status,evidenceId:p.evidenceId,...(p.result?{result:p.result}:{}),...(p.externalTaskId?{externalTaskId:p.externalTaskId}:{}),...(p.reason?{reason:p.reason}:{})});
+    });
+  }
+  recordManualObservation(input:unknown) {
+    const p=PlanCenterManualObservationSchema.parse(input);
+    return this.repo.transaction(()=>{
+      const attempt=this.store.get('stage',p.attemptId);
+      if(!attempt)throw Error('NOT_FOUND');
+      if(!['unknown','dispatching','waiting'].includes(attempt.state))throw Error('RECONCILE_NOT_REQUIRED');
+      const observedAt=this.now();
+      const observation={status:p.status,evidenceId:`manual:${randomUUID()}`,source:'user' as const,actor:'local-user',observedAt,reason:p.reason};
+      const saved=this.store.put('stage',{...attempt,observations:[...(attempt.observations??[]),observation],updatedAt:observedAt});
+      this.repo.audit('planCenter.reconciliation.recorded',attempt.id,{runId:attempt.runId,status:p.status});
+      return saved;
     });
   }
   retry(input:z.input<typeof PlanCenterRetrySchema>) {
@@ -535,7 +585,7 @@ export class PlanCenterService {
     return this.repo.transaction(()=>{
       const attempt=this.store.get('stage',p.attemptId);if(!attempt)throw Error('NOT_FOUND');
       if(attempt.state==='succeeded')return attempt;
-      if(!['failed','not_found'].includes(attempt.state))throw Error('RECONCILE_REQUIRED');
+      if(attempt.state!=='failed')throw Error('RECONCILE_REQUIRED');
       const run=this.store.get('run',attempt.runId)!,item=this.store.get('item',attempt.itemId)!;
       if(run.stopRequested)throw Error('STOP_REQUESTED');
       if(run.snapshot.material.source==='provider'&&['text_generate','text_score'].includes(attempt.stage))throw Error('PROVIDER_TEXT_RETRY_REQUIRES_NEW_RUN');
@@ -670,7 +720,7 @@ export class PlanCenterService {
     const workflowPublishes=run.snapshot.authorization.publish&&workflowPublicationPlatforms(run.snapshot.workflow?.graph).length>0;
     const workflowPublication=workflowPublishes?readWorkflowPublication(this.repo,run.id):undefined;
     const required=this.stages(run.snapshot);
-    let complete=0,blocked=false,waiting=false;
+    let complete=0,blocked=false,waiting=false,blockedReason:string|undefined;
     for(const item of items) {
       const next=required.find(s=>!stages.some(a=>a.itemId===item.id&&a.stage===s&&a.state==='succeeded'));
       if(!next) {
@@ -693,10 +743,16 @@ export class PlanCenterService {
         continue;
       }
       const attempt=stages.filter(a=>a.itemId===item.id&&a.stage===next).at(-1),gate=attempt?{state:attempt.state==='dispatching'?'running':attempt.state,reason:attempt.reason}:this.stageGate(run,item,next);
-      blocked ||= ['blocked','failed','not_found','unknown'].includes(gate.state);waiting ||= gate.state.startsWith('waiting');
+      if(['blocked','failed','not_found','unknown'].includes(gate.state)) {blocked=true;blockedReason??=gate.reason;}
+      waiting ||= gate.state.startsWith('waiting');
       this.store.put('item',{...item,...gate,updatedAt:now});
     }
-    this.store.put('run',{...run,state:complete===items.length?'completed':workflowPublication?.state==='failed'?'failed':blocked?'blocked':waiting?'waiting':'running',updatedAt:now});
+    const latestFailure=stages.filter(attempt=>['failed','unknown'].includes(attempt.state)&&attempt.reason)
+      .sort((left,right)=>Date.parse(left.updatedAt)-Date.parse(right.updatedAt)).at(-1);
+    const hasNewFailure=!!latestFailure&&(!run.lastFailureAt||Date.parse(latestFailure.updatedAt)>=Date.parse(run.lastFailureAt));
+    this.store.put('run',{...run,state:complete===items.length?'completed':workflowPublication?.state==='failed'?'failed':blocked?'blocked':waiting?'waiting':'running',
+      ...(blockedReason?{reason:blockedReason}:{}),
+      ...(hasNewFailure?{lastFailureReason:latestFailure!.reason,lastFailureAt:latestFailure!.updatedAt}:{}),updatedAt:now});
   }
   private recover() {
     this.repo.transaction(()=>{

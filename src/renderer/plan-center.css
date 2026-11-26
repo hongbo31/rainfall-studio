@@ -333,3 +333,19 @@ body{background:var(--bg);color:var(--text)}aside{background:var(--surface-raise
     grid-template-columns: minmax(0, 1fr);
   }
 }
+.plan-credit-alert { flex-basis: 100%; margin: 8px 0; }
+.plan-credit-alert p { margin: 5px 0 9px; }
+.plan-stage-check { color: var(--danger); font-weight: 600; }
+.plan-stage-diagnostics { margin: 4px 0 10px; color: var(--muted); overflow-wrap: anywhere; }
+.plan-stage-diagnostics summary { cursor: pointer; }
+.plan-stage-diagnostics p { margin: 4px 0; }
+.plan-reconciliation-observations { margin-top: 8px; }
+.plan-reconciliation-observations h4 { margin: 0 0 4px; }
+.plan-reconciliation-observations ol { margin: 0; padding-inline-start: 1.5em; }
+.plan-reconciliation-observations li + li { margin-top: 8px; }
+.plan-manual-reconciliation { flex-basis: 100%; margin: 4px 0 8px; color: var(--muted); }
+.plan-manual-reconciliation summary { cursor: pointer; }
+.plan-manual-reconciliation form { display: grid; gap: 8px; max-width: 420px; margin-top: 8px; }
+.plan-manual-reconciliation label { display: grid; gap: 4px; }
+.plan-manual-reconciliation textarea { min-height: 72px; resize: vertical; }
+.plan-manual-reconciliation p { margin: 0; font-size: 12px; }

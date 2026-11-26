@@ -105,6 +105,13 @@ function releasePreviousTaskPlan(store: CenterStore, run: PlanCenterRun, readLeg
   return reason ? { state: "failed", reason } : undefined;
 }
 
+function maskExternalId(id?: string) {
+  const value = id?.trim();
+  if (!value) return undefined;
+  if (value.length > 8) return value.slice(0, 4) + "…" + value.slice(-4);
+  return value.length > 2 ? "…" + value.slice(-2) : "…";
+}
+
 function planProgress(store: CenterStore, { task, run }: PublicationTaskList["tasks"][number], options: PublicationPlan[], root: string): PublicationPlanProgress[] {
   const frozen = run?.plans ?? [];
   const stored = run ? store.repo.maybe("settings", publicationRunKey + run.id)?.value as PublicationTaskRun | undefined : undefined;
@@ -126,16 +133,19 @@ function planProgress(store: CenterStore, { task, run }: PublicationTaskList["ta
     const result: PublicationPlanProgress = { planId, title, state: "pending", items: [] };
     if (child) {
       result.runId = child.id;
+      result.source = child.source;
       result.owned = link.owned;
       result.updatedAt = child.updatedAt;
       result.state = completedWithoutDownloads(child) ? "completed" : child.state;
       result.reason = child.reason;
       result.items = items.filter(item => item.runId === child.id).sort((a, b) => a.ordinal - b.ordinal).map(item => {
         const stages = new Map<string, PublicationPlanStage>();
-        for (const { id, stage, state, reason } of attempts.filter(attempt => attempt.itemId === item.id).sort(byAttempt))
-          stages.set(stage, { id, stage, state, reason });
-        for (const { id, platform, accountId, state, reason } of publications.filter(attempt => attempt.itemId === item.id).sort(byAttempt))
-          stages.set(`publish:${platform}:${accountId}`, { id, stage: "publication", platform, state, reason });
+        for (const { id, stage, state, reason, updatedAt, externalTaskId } of attempts.filter(attempt => attempt.itemId === item.id).sort(byAttempt))
+          stages.set(stage, { id, stage, state, reason, updatedAt, externalIdHint: maskExternalId(externalTaskId) });
+        for (const { id, platform, accountId, state, reason, updatedAt, externalId } of publications.filter(attempt => attempt.itemId === item.id).sort(byAttempt))
+          stages.set(`publish:${platform}:${accountId}`, {
+            id, stage: "publication", platform, state, reason, updatedAt, externalIdHint: maskExternalId(externalId),
+          });
         const title = typeof item.material?.title === "string" ? item.material.title : child.snapshot.creationDraft?.title;
         return { id: item.id, ordinal: item.ordinal, title, state: item.state, reason: item.reason, stages: [...stages.values()] };
       });

@@ -120,7 +120,7 @@ function App() {
     const r = await window.rainfall.call(method, input);
     if (!r.ok) {
       if (refreshSnapshot) notify(r.error.message);
-      throw Object.assign(Error(r.error.message),{code:r.error.code});
+      throw Object.assign(Error(r.error.message),{code:r.error.code,activeRunId:r.error.activeRunId});
     }
     if (refreshSnapshot) await refresh();
     return r.value;

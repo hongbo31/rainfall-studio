@@ -25,7 +25,10 @@ const itemStatus: Record<FanqieDownloadBatchItem["state"], string> = {
   needs_review: "待核对",
   failed: "未上传",
 };
-const issueText = (issue: string) => fanqieDownloadIssues[issue] ?? "请打开番茄账号窗口核对当前步骤。";
+const issueText = (issue: string, title?: string) => {
+  const message = fanqieDownloadIssues[issue] ?? "请打开番茄账号窗口核对当前步骤。";
+  return issue === "FANQIE_COVER_READBACK_REQUIRED" && title ? `歌曲《${title}》：${message}` : message;
+};
 
 export default function FanqieDownloadUpload({ accountId, onBusy }: { accountId: string; onBusy: (busy: boolean) => void }) {
   const [preview, setPreview] = useState<FanqieDownloadPreview>();
@@ -130,9 +133,9 @@ export default function FanqieDownloadUpload({ accountId, onBusy }: { accountId:
     }
   };
 
-  const showDiagnostics = async () => {
+  const showDiagnostics = async (scanOnly = false) => {
     try {
-      const reply = await window.rainfall.fanqieUpload("openDownloadDiagnostics", { accountId });
+      const reply = await window.rainfall.fanqieUpload("openDownloadDiagnostics", { accountId, scan: scanOnly });
       if (!reply.ok) throw Error(fanqieDownloadIssues[reply.error.code] ?? reply.error.message);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : issueText("FANQIE_DIAGNOSTICS_OPEN_FAILED"));
@@ -160,7 +163,10 @@ export default function FanqieDownloadUpload({ accountId, onBusy }: { accountId:
     <section className="fanqie-downloads" aria-label="下载目录歌曲">
       <div className="section-title fanqie-download-heading">
         <h3>下载目录歌曲</h3>
-        <button type="button" disabled={loading || running} onClick={() => { setError(""); setScan(value => value + 1); }}>重新扫描</button>
+        <div>
+          {preview?.hasDiagnostics && <button type="button" disabled={loading || running} onClick={() => void showDiagnostics(true)}>打开扫描日志</button>}
+          <button type="button" disabled={loading || running} onClick={() => { setError(""); setScan(value => value + 1); }}>重新扫描</button>
+        </div>
       </div>
       {loading && <p role="status">正在扫描下载目录…</p>}
       {preview?.rootIssue && <p className="notice" role="alert">{issueText(preview.rootIssue)}</p>}
@@ -186,12 +192,17 @@ export default function FanqieDownloadUpload({ accountId, onBusy }: { accountId:
       {batch.cleanupPending && <p role="status">{issueText("FANQIE_DOWNLOAD_CLEANUP_PENDING")}</p>}
       {batch.round !== undefined && <p className="muted">第 {batch.round} 批 · {batch.remaining ?? 0} 首待处理</p>}
       {signature?.hint && !batch.issue && <p className="muted">{signature.hint}</p>}
-      {batch.issue && <p className="notice" role="alert">{issueText(batch.issue)}</p>}
+      {batch.issue && <p className="notice" role="alert">
+        {issueText(batch.issue)}
+        {batch.issue === "FANQIE_COVER_READBACK_REQUIRED" && batch.items.some(item => item.state === "needs_review") && <>
+          <br />待核对歌曲：{batch.items.filter(item => item.state === "needs_review").map(item => item.title).join("、")}
+        </>}
+      </p>}
       <ul className="fanqie-download-list" aria-label="投稿结果" tabIndex={0}>
         {batch.items.map(item => <li key={item.id}>
           <strong>{item.title}</strong><span>{item.singer}</span>
           <small>{item.round ? `第 ${item.round} 批 · ` : ""}{item.officialStatus ?? itemStatus[item.state]}{item.workId ? ` · 作品 ID ${item.workId}` : ""}</small>
-          {item.issue && <small>{issueText(item.issue)}</small>}
+          {item.issue && <small>{issueText(item.issue, item.title)}</small>}
         </li>)}
       </ul>
     </section>}

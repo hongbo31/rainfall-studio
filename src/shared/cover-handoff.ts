@@ -21,15 +21,15 @@ export function recordingCoverPrompt(input: {
   title: string; artist?: string; genre?: string; mood?: string; coverStyle?: string; lyrics?: string;
 }, version: "A" | "B") {
   const short = (value: string | undefined, limit: number) =>
-    Array.from((value ?? "").replace(/[\s\p{Cc}]+/gu, " ").trim()).slice(0, limit).join("").trimEnd();
+    Array.from((value ?? "").replace(/[\p{P}\p{S}\p{Cf}\p{Cc}]/gu, " ").replace(/\s+/gu, " ").trim()).slice(0, limit).join("").trimEnd();
   const lyrics = (input.lyrics ?? "").split(/\r?\n/u).map(line =>
-    line.replace(/^\s*(?:\[[^\]]+\]|【[^】]+】)\s*/u, "").trim()).filter(Boolean);
+    line.replace(/[\p{P}\p{S}\p{Cf}\p{Cc}]/gu, " ").replace(/\s+/gu, " ").trim()).filter(Boolean);
   const cues = [
     ["艺人", short(input.artist, 16)], ["曲风", short(input.genre, 38)], ["色调与风格", short(input.coverStyle, 24)],
     ["情绪", short(input.mood, 12)], ["歌词意象", short([...new Set(lyrics)].slice(0, 3).join("，"), 48)],
   ];
   const direction = version === "B" ? "以另一处场景构图" : "选取一个具体场景";
-  return [`为歌曲《${short(input.title, 32)}》绘制方形封面`, `${direction}，无文字、标志或水印`,
+  return [`为歌曲${short(input.title, 32)}绘制方形封面`, `${direction}，画面中不得出现任何文字、字母、数字、标点、符号、Logo或水印`,
     ...cues.filter(([, value]) => value).map(([label, value]) => `${label} ${value}`)].join("。") + "。";
 }
 export function coverAssetRole(variant?: CoverVariant) {

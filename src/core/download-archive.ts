@@ -12,7 +12,7 @@ import { safeWorkFilenameStem } from "../shared/work-analysis";
 import { workVersionTitle } from "../shared/work-versions";
 import { digest as fileDigest } from "./assets";
 import type { Repository, Row } from "./database";
-import { createDownloadCollisionFolder, downloadSupportFolders, ensureDownloadSubfolder, reserveSongDownloadFolder } from "./download-filenames";
+import { downloadSupportFolders, ensureDownloadSubfolder } from "./download-filenames";
 import { listPlatformConfigurations } from "./platform-config";
 import { CenterStore } from "./plan-center/storage";
 import type { Studio } from "./studio";
@@ -37,6 +37,20 @@ type ArchiveFile = { ext: string; sha256: string; write: (target: string) => voi
 const digest = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
 const config = (repo: Repository): Configuration => repo.maybe("settings", configurationKey)?.value ?? initial;
 const comparePath = (value: string) => process.platform === "win32" ? value.toLowerCase() : value;
+
+function archiveTitleForMaterials(directory: string, baseTitle: string,
+  materials: { role: ArchiveRole; file: ArchiveFile }[]) {
+  for (let suffix = 1; suffix < 10_000; suffix++) {
+    const title = suffix === 1 ? baseTitle : `${baseTitle} (${suffix})`;
+    const conflict = materials.some(({ role, file }) => {
+      const support = downloadSupportFolders[role as keyof typeof downloadSupportFolders];
+      const target = path.join(support ? path.join(directory, support) : directory, `${title}.${file.ext}`);
+      return fs.existsSync(target) && fileDigest(target) !== file.sha256;
+    });
+    if (!conflict) return title;
+  }
+  throw Error("DOWNLOAD_FILENAME_COLLISION_LIMIT");
+}
 
 function safeName(value: string, fallback: string, limit = 55) {
   const cleaned = value.normalize("NFC").trim().replace(/[<>:"/\\|?*\u0000-\u001f]/gu, "-");
@@ -86,7 +100,7 @@ export function resolveDownloadArchiveRoot(repo: Repository) {
   return checkRoot(folder.root, folder.rootIdentity).root;
 }
 
-export async function saveConfiguredDownload<T extends object>(repo: Repository, filename: string, prepare: (file: string) => T | Promise<T>) {
+export async function saveConfiguredDownload<T extends object>(repo: Repository, filename: string, prepare: (file: string) => T | Promise<T>, folderName?: string) {
   const requireRoot = () => {
     const root = resolveDownloadArchiveRoot(repo);
     if (!root) throw Error("DOWNLOAD_ROOT_REQUIRED");
@@ -101,15 +115,18 @@ export async function saveConfiguredDownload<T extends object>(repo: Repository,
   try {
     const result = await prepare(temporary);
     const destinationRoot = requireRoot();
-    let target = path.join(destinationRoot, filename);
+    const outputRoot = folderName ? ensureDownloadSubfolder(destinationRoot, folderName) : destinationRoot;
+    let target = path.join(outputRoot, filename);
     try { fs.copyFileSync(temporary, target, fs.constants.COPYFILE_EXCL); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw Error("DOWNLOAD_WRITE_FAILED");
-      try {
-        target = path.join(createDownloadCollisionFolder(destinationRoot, name), name + ext);
-        fs.copyFileSync(temporary, target, fs.constants.COPYFILE_EXCL);
-      } catch {
-        throw Error("DOWNLOAD_WRITE_FAILED");
+      const hash = fileDigest(temporary);
+      if (hash === fileDigest(target)) return { ...result, path: target };
+      target = path.join(outputRoot, `${name} ${hash.slice(0, 8)}${ext}`);
+      try { fs.copyFileSync(temporary, target, fs.constants.COPYFILE_EXCL); }
+      catch (suffixError) {
+        if ((suffixError as NodeJS.ErrnoException).code !== "EEXIST" || fileDigest(target) !== hash)
+          throw Error("DOWNLOAD_FILE_CONFLICT");
       }
     }
     return { ...result, path: target };
@@ -177,8 +194,48 @@ function recordingArchiveFolders(repo: Repository, accountName: string, artist: 
   const secondSinger = artist.secondSinger?.name?.trim() || firstSinger;
   return {
     A: downloadFolderName(accountName, firstSinger, template?.name),
-    B: downloadFolderName(accountName, secondSinger, template?.name),
+    B: secondFolderName(downloadFolderName(accountName, firstSinger, template?.name), downloadFolderName(accountName, secondSinger, template?.name)),
   };
+}
+
+function recordingFolders(repo: Repository, settings: Configuration, accountId: string, artist: Row): DownloadArchiveFolder[] {
+  const account = repo.maybe("accounts", accountId);
+  if (!account?.name?.trim()) throw Error("DOWNLOAD_ACCOUNT_REQUIRED");
+  const names = recordingArchiveFolders(repo, account.name, artist);
+  const base = { accountId, ...configuredRoot(settings) };
+  return [
+    { ...base, name: names.A, audioVersion: "A" },
+    { ...base, name: names.B, audioVersion: "B" },
+  ];
+}
+
+export function resolveWorkDownloadFolder(repo: Repository, workId: string, version: "A" | "B" = "A") {
+  const settings = config(repo);
+  if (!settings.root) return undefined;
+  const work = repo.maybe("works", workId);
+  if (!work) return undefined;
+  const artist = repo.maybe("accountLocalArtists", work.artistId) ?? repo.maybe("artists", work.artistId);
+  if (!artist) return undefined;
+  const accountId = artist.accountId && repo.maybe("accounts", artist.accountId)
+    ? artist.accountId : accountFallback(repo, settings);
+  if (!accountId) return undefined;
+  return recordingFolders(repo, settings, accountId, artist).find(folder => folder.audioVersion === version)?.name;
+}
+
+export function resolveNamedDownloadFolder(repo: Repository, musicianName: string | null, templateName: string | null) {
+  if (!musicianName?.trim()) return undefined;
+  const settings = config(repo);
+  if (!settings.root) return undefined;
+  const accountId = accountFallback(repo, settings);
+  if (!accountId) return undefined;
+  const matches = repo.all("accountLocalArtists").filter(artist => {
+    const singer = primarySinger(artist);
+    const template = artist.promptTemplateId ? repo.maybe("promptTemplates", artist.promptTemplateId) : undefined;
+    return artist.accountId === accountId && singer === musicianName.trim().normalize("NFC") && (template?.name ?? null) === templateName;
+  });
+  if (matches.length !== 1) return undefined;
+  const artist = matches[0];
+  return recordingFolders(repo, settings, accountId, artist)[0]?.name;
 }
 
 export function findRecordingArchiveArtist(repo: Repository, folders: { A: string; B: string }) {
@@ -212,21 +269,13 @@ function configuredRoot(settings: Configuration) {
   return { root: settings.root, rootIdentity: settings.rootIdentity };
 }
 
-function makeFolder(repo: Repository, settings: Configuration, accountId: string, artistId: string): DownloadArchiveFolder {
-  const account = repo.maybe("accounts", accountId);
-  if (!account?.name?.trim()) throw Error("DOWNLOAD_ACCOUNT_REQUIRED");
-  const artist = repo.maybe("accountLocalArtists", artistId) ?? repo.maybe("artists", artistId);
-  if (!artist?.name?.trim()) throw Error("DOWNLOAD_ARTIST_REQUIRED");
-  const template = artist.promptTemplateId ? repo.maybe("promptTemplates", artist.promptTemplateId) : undefined;
-  return { accountId, ...configuredRoot(settings), name: downloadFolderName(account.name, artist.name, template?.name) };
-}
-
 function workflowFolders(settings: Configuration, accountId: string, snapshot: PlanCenterPlan["workflowSnapshot"]): DownloadArchiveFolder[] {
   if (!snapshot) throw Error("DOWNLOAD_ARTIST_REQUIRED");
   const { accountName, artist, secondSinger, template } = snapshot;
-  const primary = { accountId, ...configuredRoot(settings), name: downloadFolderName(accountName, artist.singer, template?.name) };
+  const primaryName = downloadFolderName(accountName, artist.singer, template?.name);
+  const primary = { accountId, ...configuredRoot(settings), name: primaryName };
   if (!secondSinger) return [primary];
-  const secondaryName = downloadFolderName(accountName, secondSinger.name, template?.name);
+  const secondaryName = secondFolderName(primaryName, downloadFolderName(accountName, secondSinger.name, template?.name));
   return [
     { ...primary, audioVersion: "A" },
     { ...primary, audioVersion: "B", name: secondFolderName(primary.name, secondaryName) },
@@ -238,15 +287,12 @@ function ensureFolder(raw: DownloadArchiveFolder) {
   const { root } = checkRoot(folder.root, folder.rootIdentity);
   if (folder.name === "." || folder.name === ".." || /[<>:"/\\|?*\u0000-\u001f]/u.test(folder.name))
     throw Error("DOWNLOAD_FOLDER_INVALID");
-  const directory = path.join(root, folder.name);
   try {
-    try { fs.mkdirSync(directory); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
-    const info = fs.lstatSync(directory);
-    if (!info.isDirectory() || info.isSymbolicLink() || comparePath(fs.realpathSync.native(directory)) !== comparePath(directory))
+    const info = fs.lstatSync(root);
+    if (!info.isDirectory() || info.isSymbolicLink() || comparePath(fs.realpathSync.native(root)) !== comparePath(root))
       throw Error("DOWNLOAD_FOLDER_INVALID");
-    fs.accessSync(directory, fs.constants.W_OK);
-    return directory;
+    fs.accessSync(root, fs.constants.W_OK);
+    return root;
   } catch (error) {
     if (error instanceof Error && error.message === "DOWNLOAD_FOLDER_INVALID") throw error;
     throw Error("DOWNLOAD_FOLDER_UNAVAILABLE");
@@ -276,7 +322,11 @@ export function preparePlanDownloads(repo: Repository, plan: PlanCenterPlan): Do
     if (!fallback) throw Error("DOWNLOAD_ACCOUNT_REQUIRED");
     accountIds.add(fallback);
   }
-  const folders = [...accountIds].map(accountId => makeFolder(repo, settings, accountId, plan.artistId));
+  const folders = [...accountIds].flatMap(accountId => {
+    const artist = repo.maybe("accountLocalArtists", plan.artistId) ?? repo.maybe("artists", plan.artistId);
+    if (!artist) throw Error("DOWNLOAD_ARTIST_REQUIRED");
+    return recordingFolders(repo, settings, accountId, artist);
+  });
   for (const folder of folders) ensureFolder(folder);
   return folders;
 }
@@ -307,11 +357,15 @@ function archiveFiles(s: Studio, work: Row) {
 }
 
 const archiveFolderKey = (folder: DownloadArchiveFolder) => digest([
-  comparePath(path.join(folder.root, folder.name)), folder.rootIdentity,
+  comparePath(folder.root), folder.rootIdentity, folder.accountId, folder.audioVersion ?? "",
 ].join("\0"));
 
 function archiveVersions(work: Row, specific: DownloadArchiveFolder["audioVersion"]): ("A" | "B")[] {
-  if (specific) return [specific];
+  if (specific) {
+    const audio = work.assets?.["audio_" + specific];
+    const cover = specific === "B" ? work.assets?.cover_B : work.assets?.cover;
+    return audio || cover ? [specific] : [];
+  }
   const versions = (["A", "B"] as const).filter(version => work.assets?.["audio_" + version]
     || (version === "B" ? work.assets?.cover_B : work.assets?.cover && !work.assets?.audio_B));
   return versions.length ? versions : ["A"];
@@ -355,10 +409,11 @@ export function archiveWorkDownloads(s: Studio, workId: string, folders: Downloa
   const fingerprint = digest(JSON.stringify([destinations, work.title, work.alternateTitle,
     [...assets].map(([role, { ext, sha256 }]) => [role, ext, sha256])]));
   const directories = [...new Map(destinations.map(folder => {
-    const directory = ensureFolder(folder);
-    return [comparePath(directory), { directory, folder }];
+    const directory = ensureDownloadSubfolder(ensureFolder(folder), folder.name);
+    return [comparePath(directory) + "\0" + (folder.audioVersion ?? ""), { directory, folder }];
   })).values()];
-  if (!verifyExisting && previous?.fingerprint === fingerprint && previous.files.every(file => fs.existsSync(file))) return previous.files;
+  if (!verifyExisting && previous?.fingerprint === fingerprint && previous.files.every(file => fs.existsSync(file)))
+    return previous.files;
   const legacyFolders = new Set(previous?.legacyFolders ?? (previous?.placements ? [] : previous?.folders.map(archiveFolderKey) ?? []));
   const placements = { ...previous?.placements };
   const files: string[] = [];
@@ -367,6 +422,23 @@ export function archiveWorkDownloads(s: Studio, workId: string, folders: Downloa
   const save = (file: ArchiveFile, target: string) => {
     writeOnce(target, file.sha256, () => file.write(target));
     files.push(target);
+  };
+  const saveFlatOrReuse = (file: ArchiveFile, target: string) => {
+    if (fs.existsSync(target) && fileDigest(target) === file.sha256) {
+      files.push(target);
+      return;
+    }
+    const old = previous?.files.find(candidate => path.extname(candidate).slice(1).toLowerCase() === file.ext &&
+      fs.existsSync(candidate) && fileDigest(candidate) === file.sha256);
+    if (old) {
+      files.push(old);
+      return;
+    }
+    if (fs.existsSync(target)) {
+      const parsed = path.parse(target);
+      target = path.join(parsed.dir, `${parsed.name} ${file.sha256.slice(0, 8)}${parsed.ext}`);
+    }
+    save(file, target);
   };
   persist();
   for (const { directory, folder } of directories) {
@@ -398,25 +470,20 @@ export function archiveWorkDownloads(s: Studio, workId: string, folders: Downloa
         return file ? [{ role, file }] : [];
       });
       if (!materials.length) continue;
-      const title = safeWorkFilenameStem(workVersionTitle({ title: work.title, alternateTitle: work.alternateTitle }, audio));
+      const baseTitle = safeWorkFilenameStem(workVersionTitle({ title: work.title, alternateTitle: work.alternateTitle }, audio));
+      const title = archiveTitleForMaterials(directory, baseTitle, materials);
       const key = digest(JSON.stringify([folderKey, version, title]));
       const existing = placements[key];
-      // A late companion can join the recording. Replacements get a new directory.
       const contents = Object.fromEntries(materials.map(({ role, file }) => [role === cover ? "cover" : role, file.ext + ":" + file.sha256]));
-      const changed = existing && Object.entries(existing.contents).some(([role, signature]) => contents[role] !== signature);
-      const reserved = !existing ? reserveSongDownloadFolder(directory, title) : undefined;
-      try {
-        const output = reserved?.directory ?? (changed ? createDownloadCollisionFolder(directory, title)
-          : existing.subfolder ? ensureDownloadSubfolder(directory, existing.subfolder) : directory);
-        placements[key] = { subfolder: path.relative(directory, output), contents };
-        persist();
-        for (const { role, file } of materials) {
-          const support = downloadSupportFolders[role as keyof typeof downloadSupportFolders];
-          const target = support ? ensureDownloadSubfolder(output, support) : output;
-          save(file, path.join(target, title + "." + file.ext));
-        }
-      } finally {
-        reserved?.release();
+      // Each recording version and its companions share the account/singer/template directory.
+      // writeOnce reuses identical content and fails closed on an unexpected conflict.
+      const output = directory;
+      placements[key] = { subfolder: "", contents };
+      persist();
+      for (const { role, file } of materials) {
+        const support = downloadSupportFolders[role as keyof typeof downloadSupportFolders];
+        const target = support ? ensureDownloadSubfolder(output, support) : output;
+        saveFlatOrReuse(file, path.join(target, title + "." + file.ext));
       }
     }
   }
@@ -439,9 +506,13 @@ export function archivePublicationDownloads(s: Studio, selections: { workId: str
     const current = known.filter(folder => usesConfiguredRoot(folder, settings));
     // Retain the singer names from the plan when the download directory changes.
     const singers = new Map([...known, ...current].flatMap(folder => folder.audioVersion ? [[folder.audioVersion, folder] as const] : []));
-    const folders = singers.size
-      ? [...singers.values()].map(folder => ({ ...folder, ...configuredRoot(settings) }))
-      : [current[0] ?? makeFolder(s.repo, settings, accountId, work.artistId)];
+    let folders: DownloadArchiveFolder[];
+    if (singers.size) folders = [...singers.values()].map(folder => ({ ...folder, ...configuredRoot(settings) }));
+    else {
+      const artist = s.repo.maybe("accountLocalArtists", work.artistId) ?? s.repo.maybe("artists", work.artistId);
+      if (!artist) continue;
+      folders = recordingFolders(s.repo, settings, accountId, artist);
+    }
     archiveWorkDownloads(s, workId, folders);
   }
 }
@@ -457,9 +528,12 @@ export function archiveImportedCertificate(s: Studio, workId: string) {
   const settings = config(s.repo);
   if (!settings.root) return [];
   const previous: WorkArchive | undefined = s.repo.maybe("settings", workKey(workId))?.value;
-  if (previous?.folders.length) return archiveWorkDownloads(s, workId);
-  const accountId = accountFallback(s.repo, settings);
+  const savedVersionFolders = previous?.folders.filter(folder => folder.audioVersion) ?? [];
+  if (savedVersionFolders.length) return archiveWorkDownloads(s, workId, savedVersionFolders.map(folder => ({ ...folder, ...configuredRoot(settings) })));
+  const accountId = previous?.folders[0]?.accountId ?? accountFallback(s.repo, settings);
   if (!accountId) return [];
   const { artistId } = s.get("works", workId);
-  return archiveWorkDownloads(s, workId, [makeFolder(s.repo, settings, accountId, artistId)]);
+  const artist = s.repo.maybe("accountLocalArtists", artistId) ?? s.repo.maybe("artists", artistId);
+  if (!artist) throw Error("DOWNLOAD_ARTIST_REQUIRED");
+  return archiveWorkDownloads(s, workId, recordingFolders(s.repo, settings, accountId, artist));
 }

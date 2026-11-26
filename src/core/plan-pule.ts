@@ -9,6 +9,7 @@ import {planPuleAttempt,planPuleAssetProgress,planPuleAudioLimit,planPuleHistory
   puleBrowserBeforeSongIds,puleBrowserLookupStates,puleBrowserSongPair,puleSubmissionText,readSunoBrowserReceipt,sunoBrowserWavsComplete,
   withinPuleSubmissionWindow,type PlanPuleCustomDraft,type PlanPuleReceipt,type PlanPuleRetention,type PlanPuleTask} from '../shared/plan-pule';
 import {parseDraft} from '../shared/creation';
+import {cleanPuleGeneratedText} from '../shared/pule-browser';
 import {workVersionTitle} from '../shared/work-versions';
 import {creationWorkFields} from './creation-tasks';
 import {workflowCreationDraft} from './plan-workflow';
@@ -28,19 +29,19 @@ const arrangements=['木吉他与钢琴','轻快放克贝斯','温柔民谣指�
 function makeBrief(run:PlanCenterRun,item:PlanCenterItem) {
   const date=DateTime.fromISO(run.createdAt).setZone('Asia/Shanghai').toISODate()!;
   const days=Math.round((Date.parse(date)-Date.UTC(2026,10,12))/86400000);
-  const themes=run.snapshot.theme.split(/\r?\n/).map(theme=>theme.trim()).filter(Boolean);
-  if(!themes.length&&run.snapshot.storyContext?.storyBeat.trim())themes.push(run.snapshot.storyContext.storyBeat);
+  const themes=run.snapshot.theme.split(/\r?\n/).map(cleanPuleGeneratedText).filter(Boolean);
+  if(!themes.length&&run.snapshot.storyContext?.storyBeat.trim())themes.push(cleanPuleGeneratedText(run.snapshot.storyContext.storyBeat));
   if(!themes.length)throw Error('THEME_REQUIRED');
   const index=(length:number,offset=0)=>((days+offset)%length+length)%length;
   const theme=themes[index(themes.length)];
-  const scene=scenes[index(scenes.length,item.ordinal-1)];
-  const style=run.snapshot.styleTemplate.trim()||'华语流行';
-  const sound=arrangements[index(arrangements.length,item.ordinal)];
+  const scene=cleanPuleGeneratedText(scenes[index(scenes.length,item.ordinal-1)]);
+  const style=cleanPuleGeneratedText(run.snapshot.styleTemplate)||'华语流行';
+  const sound=cleanPuleGeneratedText(arrangements[index(arrangements.length,item.ordinal)]);
   return {
     theme,scene,
-    prompt:'创作一首原创完整简体中文人声歌曲。主题是'+theme.slice(0,90)+'，场景是'+scene+
+    prompt:cleanPuleGeneratedText('创作一首原创完整简体中文人声歌曲。主题是'+theme.slice(0,90)+'，场景是'+scene+
       '，写一个具体动作和一个情绪变化。风格为'+style.slice(0,100)+'，编曲采用'+sound+
-      '。有清晰主歌和可传唱副歌，歌名简短，歌词适合演唱。',
+      '。有清晰主歌和可传唱副歌，歌名简短，歌词适合演唱。'),
   };
 }
 
@@ -150,7 +151,7 @@ function recordBrowserRecovery(s:Studio,raw:unknown){
     const trackingId='pule-browser:'+songIds[0], receipt=planPuleReceipt.parse({trackingId,songIds});
     try{assertNewBrowserReceipt(planTask(s,input),receipt);}
     catch(error){if(error instanceof Error&&error.message==='MUSIC_RECEIPT_INVALID')return note('ambiguous');throw error;}
-    const recovered=service.reconcile({attemptId:attempt.id,status:'succeeded',evidenceId:trackingId,externalTaskId:trackingId,result:receipt});
+    const recovered=service.reconcile({attemptId:attempt.id,status:'succeeded',evidenceId:trackingId,externalTaskId:trackingId,result:receipt,source:'provider',actor:'pule-browser-history'});
     s.repo.audit('planCenter.puleBrowser.recovered',attempt.id,{runId:run.id,checks:input.check+1,
       reason:attempt.result?.browserError,evidenceId:trackingId});
     return recovered;
@@ -166,9 +167,12 @@ function recordRecovery(s:Studio,raw:unknown){
     const attempt=rows.stageAttempts.find(row=>row.id===input.attemptId&&row.itemId===item?.id&&row.runId===run?.id&&row.stage==='music_submit');
     const draft=run&&item&&recoveryDraft(run,item);
     if(!run||!draft||workflowBrowserMusic(run.snapshot.workflow)||attempt?.state!=='unknown')throw Error('RECONCILE_NOT_REQUIRED');
-    const note=(outcome:keyof typeof recoveryReasons)=>service.record({
-      attemptId:attempt.id,status:'unknown',reason:recoveryReasons[outcome],
-      result:{recoveryChecks:recoveryChecks(attempt.result)+1},
+    const check=recoveryChecks(attempt.result)+1;
+    service.record({attemptId:attempt.id,status:'unknown',reason:attempt.reason,
+      result:{...attempt.result,recoveryChecks:check}});
+    const note=(outcome:keyof typeof recoveryReasons)=>service.reconcile({
+      attemptId:attempt.id,status:outcome==='not_found'?'not_found':'pending',evidenceId:`pule-history-check:${check}`,
+      source:'provider',actor:'pule-history',reason:recoveryReasons[outcome],
     });
     if(input.outcome!=='found')return note(input.outcome);
     const songs=input.songs;
@@ -187,7 +191,7 @@ function recordRecovery(s:Studio,raw:unknown){
     if(conflict)return note('ambiguous');
     if(run.snapshot.workflow?.graph&&run.snapshot.workflowSnapshot?.secondSinger)return note('pair_order_unavailable');
     return service.reconcile({attemptId:attempt.id,status:'succeeded',evidenceId:'yourmusic-history:'+digest([...ids].sort()),
-      result:planPuleReceipt.parse({songIds:ids})});
+      result:planPuleReceipt.parse({songIds:ids}),source:'provider',actor:'yourmusic-history'});
   });
 }
 
@@ -216,14 +220,20 @@ function planTask(s:Studio,scope:PlanPuleTask) {
   const defaults=plan.artistSnapshot?.defaults;
   const inputDraft=workflowCreationDraft(run,item);
   const custom:PlanPuleCustomDraft|undefined=inputDraft&&{
-    ...inputDraft,instrumental,duration:Math.min(360,Number(defaults?.duration??180)),
+    ...inputDraft,
+    title:cleanPuleGeneratedText(inputDraft.title),
+    ...(inputDraft.alternateTitle?{alternateTitle:cleanPuleGeneratedText(inputDraft.alternateTitle)}:{}),
+    lyrics:cleanPuleGeneratedText(inputDraft.lyrics),
+    style:cleanPuleGeneratedText(inputDraft.style),
+    instrumental,duration:Math.min(360,Number(defaults?.duration??180)),
   };
+  if(custom&&(!custom.title||!custom.style))throw Error('MUSIC_OUTPUT_TEXT_INVALID');
   const brief=custom?{theme:custom.title,scene:'',prompt:custom.style}:makeBrief(run,item);
   const style=plan.styleTemplate.trim()||String(defaults?.genre||'华语流行');
-  const instrumentalPrompt={positiveStyle:[style,defaults?.instruments,defaults?.mood,brief.theme.slice(0,120),brief.scene,'纯器乐演奏']
-    .filter(Boolean).join('，').slice(0,1000),negativeStyle:'vocals, spoken word',durationTarget:Math.min(360,Number(defaults?.duration??180)),voiceArrangement:'instrumental'};
+  const instrumentalPrompt={positiveStyle:cleanPuleGeneratedText([style,defaults?.instruments,defaults?.mood,brief.theme.slice(0,120),brief.scene,'纯器乐演奏']
+    .filter(Boolean).join(' ')).slice(0,1000),negativeStyle:cleanPuleGeneratedText('vocals spoken word'),durationTarget:Math.min(360,Number(defaults?.duration??180)),voiceArrangement:'instrumental'};
   const draft=instrumental&&!custom?parseDraft({
-    title:Array.from(Array.from(brief.theme).slice(0,18).join('')+' · '+brief.scene).slice(0,40).join(''),
+    title:cleanPuleGeneratedText(Array.from(Array.from(brief.theme).slice(0,18).join('')+' · '+brief.scene).slice(0,40).join('')),
     topic:brief.theme.slice(0,500),storyBeat:brief.scene,language:String(defaults?.language||'中文'),
     style:style.slice(0,200),instrumental:true,sections:[],hook:null,vocalPlan:[],continuityNotes:'',
     musicPrompts:{yourmusic:instrumentalPrompt,suno:instrumentalPrompt},

@@ -15,13 +15,14 @@ import QishuiPublisher from '../components/QishuiPublisher';
 import LoadingIndicator from '../components/LoadingIndicator';
 import {usePlanCenterData} from '../use-plan-center-data';
 import type {PlanWorkflowPublicationStatus} from '../../shared/plan-workflow-publication';
-import {musicAssetProgressLabel,planExecutionMessage as message,planStageLabels as stageLabels} from '../plan-execution-labels';
+import {musicAssetProgressLabel,needsOutcomeCheck,noStageReason,planExecutionMessage as message,planStageLabels as stageLabels,
+ planStageStatus,showsStageDiagnostics,textProviderCreditsRequired} from '../plan-execution-labels';
 import {isLocalPublicationWorkflow,workflowPublicationPlatforms} from '../../shared/plan-workflow-graph';
 import {browserMusicProviders,workflowBrowserMusic} from '../../shared/plan-workflow-fields';
 import {planRunActive} from '../../shared/plan-center';
 import {canResumeLyricResponse} from '../../shared/lyric-writing';
 import {workflowNodesCatalog} from '../../shared/platform-directory';
-import type {PlanCenterPlan, PlanCenterPlanInput, PlanCenterRunDetail, PlanCenterRun, PlanCenterStageAttempt, PlanRunSummary} from '../../shared/plan-center';
+import type {PlanCenterPlan, PlanCenterPlanInput, PlanCenterReconcileObservation, PlanCenterRunDetail, PlanCenterRun, PlanCenterStageAttempt, PlanRunSummary} from '../../shared/plan-center';
 
 const runSources: Record<PlanCenterRun['source'], string> = {
  publication_task:'任务中心', scheduled:'定时', directory:'目录', debug:'调试', manual:'手动',
@@ -30,9 +31,63 @@ const timeFormat = new Intl.DateTimeFormat('zh-CN', {
  timeZone:'Asia/Shanghai', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hourCycle:'h23',
 });
 const formatTime=(stamp:string)=>timeFormat.format(new Date(stamp));
+const observationSources:Record<PlanCenterReconcileObservation['source'],string>={
+ user:'用户记录', system:'系统核对', provider:'供应商回执',
+};
+const observationStatuses:Record<PlanCenterReconcileObservation['status'],string>={
+ succeeded:'确认成功', failed:'确认失败', not_found:'暂未查到结果', pending:'仍待核对',
+};
+function StageReconciliationObservations({observations}:{observations:PlanCenterReconcileObservation[]}) {
+ return <section className="plan-reconciliation-observations" aria-label="核对记录">
+  <h4>核对记录</h4>
+  <ol>
+   {observations.map((observation,index)=>{
+    const {status,source,observedAt,actor,evidenceId,reason}=observation;
+    const validTime=Number.isFinite(Date.parse(observedAt));
+    const maskIdentifier=(value:string)=>value.length>1?`…${value.slice(-Math.min(4,Math.floor(value.length/2)))}`:'…';
+    const maskedEvidence=maskIdentifier(evidenceId);
+    return <li key={`${observedAt}:${index}`}>
+     <p><strong>{observationStatuses[status]}</strong> · {observationSources[source]} · {validTime
+      ? <time dateTime={observedAt}>{formatTime(observedAt)}</time> : '时间未记录'}</p>
+     <p>证据 ID <code>{maskedEvidence}</code>{actor&&actor!=='local-user'&&` · 操作者 ${maskIdentifier(actor)}`}</p>
+     {reason&&<p>{message(reason)}</p>}
+    </li>;
+   })}
+  </ol>
+ </section>;
+}
+function ManualReconciliationEntry({busy,onSave}:{busy:boolean;onSave:(status:PlanCenterReconcileObservation['status'],reason:string)=>void}) {
+ const [status,setStatus]=useState<PlanCenterReconcileObservation['status']>('not_found');
+ const [reason,setReason]=useState('');
+ return <details className="plan-manual-reconciliation">
+  <summary>记录人工核对</summary>
+  <form onSubmit={event=>{event.preventDefault();if(reason.trim())onSave(status,reason.trim());}}>
+   <label>核对结论<select value={status} onChange={event=>setStatus(event.target.value as PlanCenterReconcileObservation['status'])}>
+    <option value="not_found">暂未查到</option><option value="pending">仍在处理中</option>
+    <option value="succeeded">已确认成功</option><option value="failed">已确认失败</option>
+   </select></label>
+   <label>核对依据<textarea required maxLength={2000} value={reason} onChange={event=>setReason(event.target.value)}
+    placeholder="写明查看了哪个供应商页面、回执或任务记录"/></label>
+   <p>此记录只保存核对过程，不会改变阶段状态或允许重试。</p>
+   <button type="submit" disabled={busy||!reason.trim()}>保存核对记录</button>
+  </form>
+ </details>;
+}
+function stageDiagnostics(createdAt:string,updatedAt:string,taskId?:string,localJob=false){
+ const started=Date.parse(createdAt),updated=Date.parse(updatedAt);
+ const minutes=Math.max(0,Math.floor((Date.now()-started)/60_000));
+ const elapsed=minutes===0?'不足 1 分钟':minutes<60?`${minutes} 分钟`:`${Math.floor(minutes/60)} 小时 ${minutes%60} 分钟`;
+ const displayId=taskId&&(localJob||taskId.length<=8?taskId:`${taskId.slice(0,4)}…${taskId.slice(-4)}`);
+ return [
+  `${localJob?'作词任务':'外部任务'} ${displayId||'未记录'}`,
+  Number.isFinite(started)&&`距阶段开始 ${elapsed}`,
+  Number.isFinite(updated)&&`本地记录更新 ${formatTime(updatedAt)}`,
+ ].filter(Boolean).join(' · ');
+}
 const archiveSetupIssues = ['DOWNLOAD_ROOT_REQUIRED','DOWNLOAD_ROOT_INVALID','DOWNLOAD_ROOT_UNAVAILABLE','DOWNLOAD_ROOT_CHANGED'];
 const modelSetupIssues = ['TEXT_ROUTE_REQUIRED','IMAGE_ROUTE_REQUIRED','MUSIC_ROUTE_REQUIRED','TEXT_PROFILE_OR_PRICE_REQUIRED','WORKFLOW_TEXT_PROVIDER_REQUIRED','WORKFLOW_MUSIC_PROVIDER_REQUIRED'];
 type RetryConfirmation = {plan:PlanCenterPlan; run:PlanCenterRun; attempt:PlanCenterStageAttempt};
+type SunoRegenerationConfirmation = {plan:PlanCenterPlan; runId:string; reason:string};
 type PendingAction = {kind:'edit'; id:string} | {kind:'save'|'command'|'retry-cleanup'};
 const errorCode=(error:unknown)=>error instanceof Error?(error as Error & {code?:string}).code??error.message:'';
 const providerTextNeedsNewRun=(run:PlanCenterRun,attempt:PlanCenterStageAttempt)=>
@@ -48,8 +103,19 @@ function retryStageLabel(run:PlanCenterRun,attempt:PlanCenterStageAttempt){
  return '重试此阶段';
 }
 function isLatestFailedStage(attempt:PlanCenterStageAttempt,attempts:PlanCenterStageAttempt[]){
- return ['failed','not_found'].includes(attempt.state)&&!attempts.some(other=>
+ return attempt.state==='failed'&&!attempts.some(other=>
   other.itemId===attempt.itemId&&other.stage===attempt.stage&&(other.ordinal>attempt.ordinal||other.state==='succeeded'));
+}
+const sunoRepeatablePostGenerationFailures=new Set(['SUNO_CN_RENAME_MENU_UNAVAILABLE','SUNO_CN_RENAME_UNCONFIRMED']);
+function sunoRegenerationFailure(detail:PlanCenterRunDetail,runId:string){
+ if(detail.run.id!==runId||detail.run.state!=='blocked'||detail.run.stopRequested||detail.run.snapshot.count!==1||
+  workflowBrowserMusic(detail.run.snapshot.workflow)?.provider!=='suno_cn')return;
+ const outstanding=detail.stageAttempts.filter(attempt=>attempt.runId===runId&&['dispatching','waiting','unknown'].includes(attempt.state));
+ if(outstanding.length!==1||outstanding[0].stage!=='music_submit'||outstanding[0].state!=='unknown'||
+  !outstanding[0].reason||!sunoRepeatablePostGenerationFailures.has(outstanding[0].reason))return;
+ const receipt=outstanding[0].result;
+ if(typeof receipt?.trackingId!=='string'||!receipt.trackingId.startsWith('suno-cn:')||!Array.isArray(receipt.songIds)||receipt.songIds.length!==2)return;
+ return outstanding[0].reason;
 }
 function artistIdentity(artistId:string,catalog:any){return Object.entries(catalog?.dot?.artistRefs??{}).find(([,id])=>id===artistId)?.[0]??'';}
 export default function PlanCenter({initialRunId=""}:{initialRunId?:string}){
@@ -65,6 +131,7 @@ export default function PlanCenter({initialRunId=""}:{initialRunId?:string}){
  const [detail,setDetail]=useState<PlanCenterPlan|null>(null);
  const [deleting,setDeleting]=useState<PlanCenterPlan|null>(null);
  const [retryConfirm,setRetryConfirm]=useState<RetryConfirmation|null>(null);
+ const [sunoRegenerationConfirm,setSunoRegenerationConfirm]=useState<SunoRegenerationConfirmation|null>(null);
  const inFlight=useRef(false);
  const startRequests=useRef(new Map<string,{summaryHash:string;requestId:string}>());
  const detailDialog=useRef<HTMLElement>(null);
@@ -137,6 +204,9 @@ export default function PlanCenter({initialRunId=""}:{initialRunId?:string}){
   });
  };
  const runItems=runDetail?.items??[];
+ const lastFailureReason=currentRun?.lastFailureReason??runDetail?.stageAttempts.filter(attempt=>
+  ['failed','unknown'].includes(attempt.state)&&!!attempt.reason).sort((left,right)=>
+   Date.parse(left.updatedAt)-Date.parse(right.updatedAt)).at(-1)?.reason;
  const savePlan=(plan:PlanCenterPlanInput,expectedRevision:number|null,close:()=>void)=>act(async()=>{
   const {artistSnapshot: _artistSnapshot,workflowSnapshot: _workflowSnapshot,...draft}=plan;
   await call('planCenter.save',{plan:{...draft,enabled:false,needsConfiguration:[]},expectedRevision});
@@ -157,15 +227,6 @@ export default function PlanCenter({initialRunId=""}:{initialRunId?:string}){
   setDetail(await call('planCenter.read',{id:plan.id}));
   setSelected(runId);setDotExport(null);
  });
- const openBlockedExecution=(plan:PlanCenterPlan,summary:PlanRunSummary)=>act(async()=>{
-  const {run,items,stageAttempts:attempts}:PlanCenterRunDetail=await call('planCenter.runDetail',{runId:summary.id});
-  items.sort((a,b)=>a.ordinal-b.ordinal);
-  const blockedItem=items.find(item=>['blocked','unknown','failed','not_found'].includes(item.state));
-  const attempt=attempts.find(attempt=>attempt.itemId===blockedItem?.id&&
-   attempt.state===blockedItem.state&&isLatestFailedStage(attempt,attempts)&&!providerTextNeedsNewRun(run,attempt));
-  if(attempt)setRetryConfirm({plan,run,attempt});
-  else {setDetail(plan);viewRun(run.id);}
- },{reload:false});
  const confirmBlockedExecution=(confirmation:RetryConfirmation)=>act(async()=>{
   await call('planCenter.retry',{attemptId:confirmation.attempt.id});
   setDetail(confirmation.plan);
@@ -183,13 +244,38 @@ export default function PlanCenter({initialRunId=""}:{initialRunId?:string}){
   const previous=startRequests.current.get(plan.id);
   const requestId=previous?.summaryHash===preview.summaryHash?previous.requestId:crypto.randomUUID();
   startRequests.current.set(plan.id,{summaryHash:preview.summaryHash,requestId});
-  const run=await call('planCenter.run',{id:plan.id,expectedRevision:preview.planRevision,summaryHash:preview.summaryHash,
-   requestId,source:plan.workflow&&!graph?'debug':'manual',
-   ...(graph&&!isLocalPublicationWorkflow(graph)?{confirmGeneration:true}:{}),
-   ...(workflowPublicationPlatforms(graph).length?{confirmPublication:true}:{})});
+  let run:PlanCenterRun;
+  try {
+   run=await call('planCenter.run',{id:plan.id,expectedRevision:preview.planRevision,summaryHash:preview.summaryHash,
+    requestId,source:plan.workflow&&!graph?'debug':'manual',
+    ...(graph&&!isLocalPublicationWorkflow(graph)?{confirmGeneration:true}:{}),
+    ...(workflowPublicationPlatforms(graph).length?{confirmPublication:true}:{})});
+  } catch(error) {
+   const activeRunId=error instanceof Error?(error as Error&{activeRunId?:string}).activeRunId:undefined;
+   if(activeRunId){
+    setDetail(plan);viewRun(activeRunId);
+    try {
+     const previous:PlanCenterRunDetail=await call('planCenter.runDetail',{runId:activeRunId});
+     const reason=sunoRegenerationFailure(previous,activeRunId);
+     if(reason){setSunoRegenerationConfirm({plan,runId:activeRunId,reason});return;}
+    } catch { /* Keep the original active-run error when its details are unavailable. */ }
+   }
+   throw error;
+  }
   startRequests.current.delete(plan.id);
   setDetail(plan);
   viewRun(run.id);
+ });
+ const confirmSunoRegeneration=(confirmation:SunoRegenerationConfirmation)=>act(async()=>{
+  const preview:{planRevision:number;summaryHash:string;summary:{routeIssue?:string}}=await call('planCenter.preview',{id:confirmation.plan.id});
+  if(preview.planRevision!==confirmation.plan.revision){await dashboard.refresh();throw Error('PLAN_CONFIRMATION_STALE');}
+  const graph=confirmation.plan.workflow?.graph;
+  const run:PlanCenterRun=await call('planCenter.run',{id:confirmation.plan.id,expectedRevision:preview.planRevision,
+   summaryHash:preview.summaryHash,requestId:crypto.randomUUID(),source:confirmation.plan.workflow&&!graph?'debug':'manual',
+   ...(graph&&!isLocalPublicationWorkflow(graph)?{confirmGeneration:true}:{}),
+   ...(workflowPublicationPlatforms(graph).length?{confirmPublication:true}:{}),
+   retrySunoRunId:confirmation.runId,confirmSunoRegeneration:true});
+  setSunoRegenerationConfirm(null);setDetail(confirmation.plan);viewRun(run.id);
  });
  const addTarget=()=>{if(!editing)return;patch({publishTargets:[...editing.publishTargets,{platform:'qqmusic',accountId:'',enabled:true,album:{mode:'new',title:''}}]})};
  const query=search.trim().toLocaleLowerCase();
@@ -253,7 +339,7 @@ export default function PlanCenter({initialRunId=""}:{initialRunId?:string}){
        <td><div className="plan-row-actions">
         {running&&!blockedRun?stopButton(running,'停止'):<button type="button" disabled={busy}
          aria-describedby={showGenerationCost||showPublicationConsent?'plan-execution-notice':undefined}
-         onClick={()=>blockedRun?openBlockedExecution(plan,blockedRun):void startExecution(plan)}>立刻执行</button>}
+         onClick={()=>void startExecution(plan)}>立刻执行</button>}
         <button type="button" disabled={busy} aria-busy={opening} onClick={()=>void openEdit(plan)}>
          {opening?<LoadingIndicator label="正在读取…" />:'编辑'}
         </button>
@@ -330,10 +416,12 @@ export default function PlanCenter({initialRunId=""}:{initialRunId?:string}){
       <h3>{taskExecution?'任务执行记录':runIndex<0?'执行记录':`第 ${detailRuns.length-runIndex} 次执行`}</h3>
       {!taskExecution&&planRunActive(currentRun)&&stopButton(currentRun)}
      </div>
-     <p className="plan-detail-meta"><time dateTime={currentRun.createdAt}>{formatTime(currentRun.createdAt)}</time>
-      <span>{runSources[currentRun.source]}</span></p>
-     <p>{message(currentRun.state)} · 配置快照 v{currentRun.planRevision}{!localRun&&` · ${currentRun.snapshot.count} 首`}</p>
-     {cleanupNote?<p role="status">{message(cleanupNote)}</p>:currentRun.reason&&<p>{message(currentRun.reason)}</p>}
+     <p className="plan-detail-meta">
+      {Number.isFinite(Date.parse(currentRun.createdAt))&&<time dateTime={currentRun.createdAt}>{formatTime(currentRun.createdAt)}</time>}
+      <span>{runSources[currentRun.source]??'来源未记录'}</span></p>
+     <p>{message(currentRun.state)} · 配置快照 v{currentRun.planRevision}{!localRun&&` · 已记录 ${runItems.length} 项`}</p>
+     {cleanupNote?<p role="status">{message(cleanupNote)}</p>:lastFailureReason?<p>上次失败原因：{message(lastFailureReason)}</p>:currentRun.reason?<p>{message(currentRun.reason)}</p>:
+      ['blocked','failed'].includes(currentRun.state)&&<p>{noStageReason}</p>}
      {runDetail?.fanqieDiagnostics&&
       <button type="button" disabled={busy} onClick={()=>void act(()=>call('planCenter.openFanqieDiagnostics',{runId:currentRun.id}),{reload:false})}>
        打开执行日志
@@ -360,7 +448,7 @@ export default function PlanCenter({initialRunId=""}:{initialRunId?:string}){
      {!currentRun.stopRequested&&resumableBatches.map(runId=><p key={runId} role="status">番茄批次待核对 · {message(fanqieBatch.find((job:any)=>job.runId===runId)?.reason)}
       <button disabled={busy} onClick={()=>void act(()=>call('planCenter.retryFanqie',{runId}))}>继续番茄批次</button>
      </p>)}
-     {runItems.map(item=><div className="plan-item-detail" key={item.id}><h3>{currentRun.snapshot.creationDraft?.title??(typeof item.material?.title==='string'?item.material.title:'独立主题 '+item.ordinal)}</h3><p>{message(item.state)} {message(item.reason)}</p>
+     {runItems.map(item=><div className="plan-item-detail" key={item.id}><h3>{currentRun.snapshot.creationDraft?.title??(typeof item.material?.title==='string'?item.material.title:'独立主题 '+item.ordinal)}</h3><p>{message(item.state)} · {item.reason?message(item.reason):['blocked','failed','unknown','not_found'].includes(item.state)?noStageReason:''}</p>
       {!currentRun.stopRequested&&workflowPublication?.qishui.filter(job=>job.workId===item.workId).map(job=>
        <QishuiPublisher key={`${job.runId}:${job.accountId}:${job.workId}`} plan={job} />)}
       {currentRun.snapshot.workflow&&item.material?.source==='workflow'&&<details><summary>AI作词结果</summary>
@@ -390,10 +478,19 @@ export default function PlanCenter({initialRunId=""}:{initialRunId?:string}){
       (reviewFailure||lyricScoreFailure(a)||a.state==='succeeded'||a.state==='unknown'||a.reason==='TEXT_CONTENT_FILTERED');
        const mayRetry=!currentRun.stopRequested&&isLatestFailedStage(a,runDetail.stageAttempts);
        const assetProgress=a.stage==='music_assets'&&a.state==='waiting'&&musicAssetProgressLabel(a.reason);
+       const checkOutcome=needsOutcomeCheck(a.state,a.reason)||a.reason==='TEXT_USAGE_UNKNOWN';
+       const creditsRequired=a.reason===textProviderCreditsRequired;
+       const diagnostics=(checkOutcome||showsStageDiagnostics(a.state,a.reason))&&
+        stageDiagnostics(a.createdAt,a.updatedAt,a.externalTaskId,a.stage==='lyric_write');
        return <React.Fragment key={a.id}>
         <div className="plan-stage-row">
-         <span>{stageLabels[a.stage]??a.stage} · {assetProgress||[message(a.state),message(a.reason)].filter(Boolean).join(' ')}
-          {a.externalTaskId&&` · ${a.stage==='lyric_write'?'作词任务':'外部任务'} ${a.externalTaskId}`}</span>
+         <span>{stageLabels[a.stage]??a.stage} · <span className={checkOutcome?'plan-stage-check':undefined}>{assetProgress||planStageStatus(a.state,a.reason)}</span>
+          {!assetProgress&&!creditsRequired&&a.reason&&` · ${message(a.reason)}`}
+          {!diagnostics&&a.externalTaskId&&` · ${a.stage==='lyric_write'?'作词任务':'外部任务'} ${a.externalTaskId}`}</span>
+         {creditsRequired&&<div className="plan-error plan-credit-alert" role="alert">
+          <p>{message(a.reason)}</p>
+          <button type="button" onClick={()=>go('accounts','models')}>打开配置中心核对文本 API</button>
+         </div>}
          {mayRetry&&(providerTextNeedsNewRun(currentRun,a)
           ? <HelpNote label="重新执行">停止本次计划后重新执行。文本阶段暂不支持单独重试，新执行需重新核对额度。</HelpNote>
           : <button disabled={busy} onClick={()=>{
@@ -401,17 +498,35 @@ export default function PlanCenter({initialRunId=""}:{initialRunId?:string}){
            else void act(()=>call('planCenter.retry',{attemptId:a.id}));
           }}>
           {retryStageLabel(currentRun,a)}</button>)}
-         {a.state==='unknown'&&(currentRun.snapshot.workflow?.graph&&a.stage==='music_submit'
+         {a.state==='unknown'&&checkOutcome&&(currentRun.snapshot.workflow?.graph&&a.stage==='music_submit'
           ? currentBrowserMusic
            ? <button type="button" onClick={()=>go('platform-accounts',currentBrowserMusic.provider)}>
               打开{browserMusicProviders[currentBrowserMusic.provider].label}账号管理</button>
            : <button disabled={busy} onClick={()=>void act(()=>call('planCenter.checkMusicReceipt',{attemptId:a.id}))}>核对生成回执</button>
-          : <HelpNote label="等待对账">结果未知，请核对原供应商任务。</HelpNote>)}
+          : <HelpNote label="核对结果">请在原供应商账号核对是否已收到请求及该次结果。</HelpNote>)}
         </div>
-        {typeof a.result?.browserError==='string'&&<p className="muted">谱乐网页诊断 · {message(a.result.browserError)}</p>}
+        {(diagnostics||typeof a.result?.browserError==='string'||!!a.observations?.length)&&<details className="plan-stage-diagnostics">
+         <summary>阶段诊断</summary>
+         {diagnostics&&<p>{diagnostics}</p>}
+         {!a.reason&&<p>{noStageReason}</p>}
+         {typeof a.result?.browserError==='string'&&<p>{message(a.result.browserError)}</p>}
+         {!!a.observations?.length&&<StageReconciliationObservations observations={a.observations}/>}
+        </details>}
+        {checkOutcome&&['unknown','dispatching','waiting'].includes(a.state)&&<ManualReconciliationEntry busy={busy}
+         onSave={(status,reason)=>void act(()=>call('planCenter.recordReconciliation',{attemptId:a.id,status,reason}))}/>}
       {reviewAvailable&&a.externalTaskId&&<PlanLyricReview jobId={a.externalTaskId}/>}
        </React.Fragment>;
-      })}{runDetail?.publishAttempts.filter(a=>a.itemId===item.id).map(a=><p key={a.id}>{a.platform} / {a.accountId} · {message(a.state)} {message(a.reason)}</p>)}<ProviderPlanStatus status={execution?.providerText?.find((job:any)=>job.itemId===item.id)}/><PlanRunAssets item={item} run={currentRun} catalog={runDetail?.catalog} status={execution} busy={busy} act={act}/></div>)}
+      })}{runDetail?.publishAttempts.filter(a=>a.itemId===item.id).map(a=>{
+       const checkOutcome=needsOutcomeCheck(a.state,a.reason);
+       const diagnostics=showsStageDiagnostics(a.state,a.reason)&&stageDiagnostics(a.createdAt,a.updatedAt,a.externalId);
+       return <React.Fragment key={a.id}>
+        <p>{names[a.platform]??a.platform} / {a.accountId} · <span className={checkOutcome?'plan-stage-check':undefined}>{planStageStatus(a.state,a.reason,'publication')}</span>
+         {a.reason&&` · ${message(a.reason)}`}</p>
+        {diagnostics&&<details className="plan-stage-diagnostics"><summary>阶段诊断</summary>
+         <p>{diagnostics}</p>{!a.reason&&<p>{noStageReason}</p>}
+        </details>}
+       </React.Fragment>;
+      })}<ProviderPlanStatus status={execution?.providerText?.find((job:any)=>job.itemId===item.id)}/><PlanRunAssets item={item} run={currentRun} catalog={runDetail?.catalog} status={execution} busy={busy} act={act}/></div>)}
      {currentRun.snapshot.material.source==='dot'&&<div className="plan-dot-export">
       <button disabled={busy} onClick={()=>void act(async()=>setDotExport(await call('planCenter.exportDotRequests')))}>导出 dot 请求清单</button>
       {dotExport&&<p role="status">本地请求清单：<code>{dotExport.file}</code> · {dotExport.requestCount} 项 · 桥投影 {dotExport.bridgeProjection?.state??'未配置'}</p>}
@@ -468,6 +583,20 @@ export default function PlanCenter({initialRunId=""}:{initialRunId?:string}){
    {errorNotice}
    <div className="plan-editor-footer"><button type="button" disabled={busy} onClick={()=>setEditing(null)}>取消</button><button className="primary" disabled={busy||!editing.artistId} aria-busy={saving} type="submit">{saving?<LoadingIndicator label="正在保存…" />:'保存计划'}</button></div>
   </form></section></div>}
+  {sunoRegenerationConfirm&&<div className="plan-modal-backdrop">
+   <section className="plan-confirm" role="dialog" aria-modal="true" aria-labelledby="suno-regeneration-title">
+    <h2 id="suno-regeneration-title">重新生成苏诺之音歌曲？</h2>
+    <h3>{sunoRegenerationConfirm.plan.title}</h3>
+    <p>上次失败原因：{message(sunoRegenerationConfirm.reason)}</p>
+    <p>上次已发出生成请求并找到歌曲。重新执行会再生成一组歌曲，可能再次消耗积分并在苏诺之音账号中留下重复作品；原执行记录和失败原因会保留。</p>
+    {errorNotice}
+    <div className="plan-editor-footer">
+     <button type="button" disabled={busy} onClick={()=>{setSunoRegenerationConfirm(null);setError('');}}>返回执行记录</button>
+     <button type="button" className="primary" disabled={busy} onClick={()=>void confirmSunoRegeneration(sunoRegenerationConfirm)}>
+      {busy?<LoadingIndicator label="正在重新执行…" />:'确认重新生成'}</button>
+    </div>
+   </section>
+  </div>}
   {retryConfirm&&<div className="plan-modal-backdrop">
    <section className="plan-confirm" role="dialog" aria-modal="true" aria-labelledby="plan-retry-title">
     <h2 id="plan-retry-title">继续本次执行？</h2>

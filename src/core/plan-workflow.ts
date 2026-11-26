@@ -190,7 +190,7 @@ export function tickPlanLyrics(s: Studio, run: PlanCenterRun, item: PlanCenterIt
   const existing = next.attemptId ? center.list().stageAttempts.find(row => row.id === next.attemptId) : undefined;
   if (run.stopRequested && existing && !existing.externalTaskId) {
     if (existing.state === "unknown") center.reconcile({
-      attemptId: existing.id, status: "not_found", evidenceId: existing.id,
+      attemptId: existing.id, status: "not_found", evidenceId: existing.id, source: "system", actor: "plan-workflow",
     });
     else if (existing.state === "dispatching") center.record({
       attemptId: existing.id, status: "failed", reason: "WORKFLOW_LYRICS_STOPPED",
@@ -205,13 +205,13 @@ export function tickPlanLyrics(s: Studio, run: PlanCenterRun, item: PlanCenterIt
     if (job.state === "complete" && !run.stopRequested) {
       const reason = job.targetScore !== undefined && !meetsLyricTarget(lyricResultVersion(job)?.review, job.targetScore)
         ? "LYRIC_BEST_DRAFT_ADOPTED" : undefined;
-      if (existing.state === "unknown") center.reconcile({ ...record, status: "succeeded", reason });
+      if (existing.state === "unknown") center.reconcile({ ...record, status: "succeeded", reason, source: "provider", actor: "lyric-writing" });
       else center.record({ ...record, status: "succeeded", reason });
     } else if (job.state === "unknown") {
       if (existing.state !== "unknown") center.record({ attemptId: existing.id, status: "unknown", reason: job.reason ?? "TEXT_OUTCOME_UNKNOWN" });
     } else if (["blocked", "rejected", "stopped", "complete"].includes(job.state)) {
       const reason = job.reason ?? (run.stopRequested || job.state === "stopped" ? "WORKFLOW_LYRICS_STOPPED" : "LYRIC_SCORE_BELOW_THRESHOLD");
-      if (existing.state === "unknown") center.reconcile({ ...record, status: "failed", reason });
+      if (existing.state === "unknown") center.reconcile({ ...record, status: "failed", reason, source: "provider", actor: "lyric-writing" });
       else center.record({ ...record, status: "failed", reason });
     }
     return;

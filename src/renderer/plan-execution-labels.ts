@@ -19,6 +19,38 @@ const musicAssetProgress:Record<string,string>={
 export const musicAssetProgressLabel=(reason?:string)=>reason?musicAssetProgress[reason]:undefined;
 export const planExecutionMessage=(s?:string)=>s?(musicAssetProgressLabel(s)??reasons[s]??fanqieDownloadIssues[s]??states[s]??s):'';
 export const planStageLabels:Record<string,string>={dot:'获取素材',text_generate:'生成文本',text_score:'文本评分',lyric_write:'AI作词',music_submit:'提交音乐生成',music_assets:'下载歌曲',cover:'封面图片',materials:'归档作品'};
+
+const beforeDispatch = new Set([
+ 'TEXT_DISPATCH_BLOCKED', 'TEXT_REQUEST_PREPARATION_FAILED', 'TEXT_CREDENTIAL_SCOPE', 'TEXT_CREDENTIAL_FORMAT',
+ 'STOPPED_BEFORE_MUSIC_DISPATCH',
+]);
+const uncertainOutcome = new Set([
+ 'TEXT_OUTCOME_UNKNOWN', 'TEXT_PROCESS_INTERRUPTED', 'MUSIC_OUTCOME_UNKNOWN',
+ 'WORKFLOW_SUNO_CN_BROWSER_RECEIPT_UNKNOWN', 'WORKFLOW_PULE_BROWSER_RECEIPT_UNKNOWN',
+ 'RESTART_RECONCILE_REQUIRED',
+]);
+export const textProviderCreditsRequired = 'TEXT_PROVIDER_CREDITS_REQUIRED';
+const confirmedUnsent = (state: string, reason?: string) =>
+ state === 'confirmed_unsent' || (!!reason && beforeDispatch.has(reason));
+export function needsOutcomeCheck(state: string, reason?: string) {
+ if (reason === textProviderCreditsRequired || confirmedUnsent(state, reason)) return false;
+ return state === 'unknown' || state === 'not_found' || !!reason && uncertainOutcome.has(reason);
+}
+export function planStageStatus(state: string, reason?: string, stage?: string) {
+ if (reason === textProviderCreditsRequired) return '文本 API 余额或可用额度不足';
+ if (confirmedUnsent(state, reason)) return '已确认请求未发送';
+ if (reason === 'TEXT_USAGE_UNKNOWN') return '用量待核对 · 请确认计费结果';
+ if (state === 'not_found') return '暂未查到结果 · 不代表请求未受理';
+ if (stage === 'publication' && needsOutcomeCheck(state, reason)) return '投稿回执待核对 · 请核对平台状态';
+ if (needsOutcomeCheck(state, reason)) return '请求可能已发送 · 请核对原供应商任务';
+ if (state === 'dispatching') return '正在处理请求';
+ if (state === 'submitted') return '平台已受理 · 等待结果';
+ if (state === 'reviewing') return '平台已受理 · 审核中';
+ return planExecutionMessage(state);
+}
+export const noStageReason = '暂无原因记录';
+export const showsStageDiagnostics = (state: string, reason?: string) =>
+ needsOutcomeCheck(state, reason) || ['waiting', 'failed', 'submitted', 'reviewing'].includes(state);
 Object.assign(states,{ready:'待执行',waiting_workflow:'待上一轮完成'});
 Object.assign(reasons, {
  DOWNLOAD_ACCOUNT_REQUIRED:'请在计划中选择发布账号，或在账号管理设置唯一的默认发布账号',
@@ -59,6 +91,8 @@ Object.assign(reasons, {
  WORKFLOW_SUNO_CN_WAV_RECOVERY_REQUIRED:'苏诺之音已生成歌曲，原 WAV 未归档，请核对原歌曲',
  SUNO_CN_RENAME_MENU_UNAVAILABLE:'苏诺之音歌曲已生成，无法打开 B 版改名菜单',
  SUNO_CN_RENAME_UNCONFIRMED:'苏诺之音歌曲已生成，B 版改名未确认',
+ SUNO_RETRY_CONFIRMATION_REQUIRED:'重新生成苏诺之音歌曲需要明确确认',
+ SUNO_RETRY_SCOPE:'该执行不符合苏诺之音重新生成条件，请核对原账号记录',
  SUNO_CN_WAV_MENU_UNAVAILABLE:'苏诺之音歌曲已生成，无法打开原 WAV 下载菜单',
  SUNO_CN_WAV_PREPARE_FAILED:'苏诺之音未能准备原 WAV，请核对原歌曲',
  SUNO_CN_WAV_UNAVAILABLE:'等待苏诺之音准备原 WAV 超时',
@@ -104,6 +138,17 @@ Object.assign(reasons, {
  WORKFLOW_PUBLICATION_CONFIRMATION_REQUIRED:'请确认本次按连线准备平台发布',
  WORKFLOW_PUBLICATION_PENDING:'等待本批作品生成与归档，随后准备发布',
  FANQIE_DOWNLOADS_EMPTY:'下载目录中没有可上传的歌曲，本次已停止',
+ DOWNLOAD_ROOT_REQUIRED:'请先在配置中心设置下载目录',
+ DOWNLOAD_ROOT_INVALID:'配置的下载目录不可用，请重新选择目录',
+ DOWNLOAD_ROOT_UNAVAILABLE:'读取下载目录失败，请检查磁盘连接和目录权限',
+ DOWNLOAD_ROOT_CHANGED:'下载目录已变化，请在配置中心重新选择',
+ DOWNLOAD_FOLDER_UNAVAILABLE:'无法读取歌手文件夹，请检查目录权限',
+ FANQIE_DOWNLOAD_ACCOUNT_REQUIRED:'请先选择番茄音乐发布账号',
+ FANQIE_DOWNLOAD_ACCOUNT_AMBIGUOUS:'多个番茄账号的目录前缀重复，请先区分账号名称',
+ FANQIE_DOWNLOAD_ACCOUNT_FOLDER_NOT_FOUND:'下载根目录未找到当前番茄账号文件夹，请检查下载目录和账号名称',
+ FANQIE_DOWNLOAD_ARTIST_FOLDER_NOT_RECOGNIZED:'找到账号文件夹，但没有匹配到配置的歌手文件夹',
+ FANQIE_DOWNLOAD_AUDIO_NOT_FOUND:'找到账号和歌手文件夹，但其中没有 WAV 或 MP3 文件',
+ FANQIE_DOWNLOAD_SCAN_FAILED:'下载目录扫描没有完成，请查看扫描日志',
  FANQIE_DIRECTORY_CONTRACT_PENDING:'番茄合同待核对或签署',
  FANQIE_DIRECTORY_RECONCILING:'正在核对番茄回执',
  FANQIE_DIRECTORY_RUN_FAILED:'番茄目录上传失败',
@@ -113,12 +158,16 @@ Object.assign(reasons, {
  WORKFLOW_PUBLICATION_SUBMITTED:'平台已接收本次投稿',
  WORKFLOW_QISHUI_USER_REQUIRED:'汽水音乐待处理。请打开下方对应作品的发布步骤',
  WORKFLOW_QISHUI_USER_RECORDED:'汽水音乐提交已由用户记录',
+ TEXT_PROVIDER_CREDITS_REQUIRED:'文本 API 账户余额或可用额度不足，本次 AI 作词已停止。请充值或提高额度，再到配置中心核对 API Key 与计费设置后重新运行。',
  TEXT_PROFILE_OR_PRICE_REQUIRED:'请检查文本模型和计费配置',
  PREVIOUS_WORKFLOW_PENDING:'等待上一轮生成完成',
  WORKFLOW_TWO_RECORDINGS_REQUIRED:'谱乐 AI 只返回了一版音频，请核对原任务',
  WORKFLOW_ARCHIVE_RECORDINGS_CHANGED:'归档前录音发生变更，请恢复原音频后重试归档',
  WORKFLOW_LYRICS_TOO_LONG:'歌词超过谱乐 AI 的 5000 字符上限，请重试 AI 作词',
  TEXT_DISPATCH_BLOCKED:'文本请求发出前被拦截，请核对模型配置',
+ TEXT_CREDENTIAL_SCOPE:'文本请求的凭据与模型配置不匹配，请核对配置',
+ TEXT_CREDENTIAL_FORMAT:'文本 API 凭据格式无效，请核对配置',
+ TEXT_REQUEST_PREPARATION_FAILED:'准备文本请求时失败，请核对模型配置',
  TEXT_RESPONSE_METADATA_INVALID:'模型回复缺少有效回执或结束信息',
  TEXT_RESPONSE_RECEIPT_MISSING:'模型回复缺少回执编号',
  TEXT_HTTP_RESPONSE_INVALID:'模型服务返回异常 HTTP 状态',

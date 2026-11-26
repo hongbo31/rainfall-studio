@@ -4,14 +4,14 @@ import { createHash, randomUUID } from "node:crypto";
 import type { BrowserContext, Frame, Page } from "playwright-core";
 import {
   assertFanqieDownloadTrack,
-  type FanqieDownloadArchive, type FanqieDownloadScope, type FanqieDownloadTrack,
+  type FanqieDownloadArchive, type FanqieDownloadScanDiagnostics, type FanqieDownloadScope, type FanqieDownloadTrack,
 } from "../../core/fanqie-downloads";
 import { digest } from "../../core/assets";
 import { FanqieDownloadCleanupQueue, hasPendingFanqieCleanup } from "../../core/fanqie-download-cleanup";
 import { songDownloadCollisionStem } from "../../core/download-filenames";
 import { verifyFanqieMaterials } from "../../core/fanqie";
 import type { FanqieAuthorizationPreference, FanqieInput } from "../../shared/fanqie";
-import { checkFanqieNewUpload, type FanqieCatalog, type FanqieCatalogQuery, type FanqieCatalogRow } from "../../shared/fanqie-catalog";
+import { checkFanqieNewUpload, fanqieTitleKey, type FanqieCatalog, type FanqieCatalogQuery, type FanqieCatalogRow } from "../../shared/fanqie-catalog";
 import {
   defaultFanqieDirectoryPreferences, defaultFanqieDirectoryRelease, isFanqieDownloadActive,
   type FanqieDirectoryPreferences, type FanqieDownloadBatch, type FanqieDownloadBatchItem,
@@ -32,7 +32,7 @@ export type FanqieDownloadBinding = { batchId:string; id:string; sourceIdentity:
 export type FanqieUploadJob = {
   id:string; title:string; phase:"uploading"|"unknown"|"contract_pending"|"recorded";
   accountKey:string; recordingSha256:string; pending:string|null; updatedAt:string; reason?:string;
-  officialRecord?:FanqieCatalogRow; input:FanqieInput; baselineIds:string[]; download?:FanqieDownloadBinding;
+  officialRecord?:FanqieCatalogRow; archiveObservedAt?:string; input:FanqieInput; baselineIds:string[]; download?:FanqieDownloadBinding;
 };
 
 type Configuration = {
@@ -113,9 +113,16 @@ function roundReceipts(journal:Journal,catalog:FanqieCatalog,allowGenerated:bool
   return {fullySigned:pending.size===0};
 }
 
-export function checkFanqieUploadTitle(catalog:FanqieCatalog,title:string,originalTitle?:string) {
-  const primary = checkFanqieNewUpload(catalog,title);
-  return primary.allowed && originalTitle ? checkFanqieNewUpload(catalog,originalTitle) : primary;
+export function checkFanqieUploadTitle(catalog:FanqieCatalog,title:string,originalTitle?:string,
+  retryJob?:FanqieUploadJob) {
+  let candidateCatalog=catalog;
+  const saved=retryJob?.officialRecord;
+  if(retryJob&&!retryJob.archiveObservedAt&&saved){
+    const matching=catalog.rows.filter(row=>row.id===saved.id&&row.title===saved.title);
+    if(matching.length===1)candidateCatalog={...catalog,rows:catalog.rows.filter(row=>row.id!==saved.id),total:catalog.total-1};
+  }
+  const primary = checkFanqieNewUpload(candidateCatalog,title);
+  return primary.allowed && originalTitle ? checkFanqieNewUpload(candidateCatalog,originalTitle) : primary;
 }
 
 function publicSong({id,folder,audioName,title,singer,issue,release}:FanqieDownloadTrack):FanqieDownloadSong {
@@ -123,7 +130,7 @@ function publicSong({id,folder,audioName,title,singer,issue,release}:FanqieDownl
 }
 
 function canRetryDownload(job:FanqieUploadJob,track:FanqieDownloadTrack) {
-  return job.phase==="unknown"&&!job.officialRecord&&!!job.pending&&job.pending!==finalIntent&&
+  return job.phase!=="uploading"&&!job.archiveObservedAt&&
     job.title===track.title&&job.download?.id===track.id&&job.download.originalTitle===track.originalTitle&&
     job.download.sourceIdentity===track.source?.audio.identity;
 }
@@ -137,6 +144,7 @@ export class FanqieDirectoryRun {
   private directoryEditor?:SignatureScope&{page:Page;contractId?:string};
   private readonly workPages = new Map<Page,WorkPage>();
   private readonly cleanup:FanqieDownloadCleanupQueue<Journal>;
+  private latestScanId?:string;
   constructor(private readonly options:Options) {
     this.cleanup=new FanqieDownloadCleanupQueue(options.stateDirectory);
   }
@@ -163,10 +171,23 @@ export class FanqieDirectoryRun {
     journal.hasDiagnostics=true;
     return new FanqieDirectoryTrace(folder,(label,error)=>this.options.session.mark(label,error)).round(number);
   }
-  async showDiagnostics() {
+  private scanLog(id:string) {
+    this.latestScanId=id;
+    return new FanqieDirectoryTrace(this.runFolder(id),(label,error)=>this.options.session.mark(label,error)).round(0);
+  }
+  private async recordScanStages(trace:FanqieDirectoryTracePort,diagnostics?:FanqieDownloadScanDiagnostics) {
+    for(const stage of diagnostics?.stages??[]){
+      await trace.trace(`directory:scan:${stage.step}`,stage.phase,undefined,undefined,
+        stage.phase==="error"?Error(stage.code??"FANQIE_DOWNLOAD_SCAN_FAILED"):undefined,stage.counts);
+    }
+  }
+  async showDiagnostics(scanOnly=false) {
     const journal=this.read();
-    if(!journal?.hasDiagnostics||!this.options.openDiagnostics)throw Error("FANQIE_JOB_NOT_FOUND");
-    await this.options.openDiagnostics(this.runFolder(journal.id));
+    const id=scanOnly?this.latestScanId??this.options.plan?.id:journal?.hasDiagnostics?journal.id:this.latestScanId??this.options.plan?.id;
+    if(!id||!this.options.openDiagnostics)throw Error("FANQIE_JOB_NOT_FOUND");
+    const file=path.join(this.runFolder(id),"trace.jsonl");
+    if(!fs.existsSync(file))throw Error("FANQIE_JOB_NOT_FOUND");
+    await this.options.openDiagnostics(file);
     return true;
   }
   private signatureFor(journal:Journal) {
@@ -191,10 +212,20 @@ export class FanqieDirectoryRun {
   }
   private async previewInputs(generation:number) {
     this.options.guard(generation);
+    const diagnosticId=this.options.plan?.id??randomUUID();
+    const trace=this.scanLog(diagnosticId);
     let archive:FanqieDownloadArchive,rootIssue:string|undefined;
-    try { archive=await this.scan(); }
+    await trace.trace("directory:scan:core-response","begin");
+    try {
+      archive=await this.scan();
+      await this.recordScanStages(trace,archive.scanDiagnostics);
+      if(archive.scanDiagnostics?.failureCode)rootIssue=archive.scanDiagnostics.failureCode;
+      await trace.trace("directory:scan:core-response","ok",undefined,undefined,undefined,
+        {candidateCount:archive.items.length});
+    }
     catch(error){
       const code=failCode(error);
+      await trace.trace("directory:scan:core-response","error",undefined,undefined,error);
       if(!code.startsWith("DOWNLOAD_ROOT_")&&code!=="DOWNLOAD_FOLDER_UNAVAILABLE")throw error;
       rootIssue=code;
       archive={fingerprint:code,items:[]};
@@ -208,13 +239,19 @@ export class FanqieDirectoryRun {
         song.issue=job.officialRecord?"FANQIE_OFFICIAL_RECORD_ALREADY_EXISTS":"FANQIE_RECONCILIATION_REQUIRED";
       return song;
     });
+    const issueCounts=items.reduce<Record<string,number>>((counts,song)=>{
+      if(song.issue)counts[song.issue]=(counts[song.issue]??0)+1;
+      return counts;
+    },{});
+    await trace.trace("directory:scan:upload-history-filter","ok",undefined,undefined,undefined,
+      {candidateCount:items.length,readyCount:items.filter(item=>!item.issue).length,issueCounts});
     const preferences=config?.directoryPreferences??defaultFanqieDirectoryPreferences;
     const journal=this.read();
     const preview:FanqieDownloadPreview={
       fingerprint:hash([archive.fingerprint,config,items]),items,rootIssue,batch:journal?this.publicBatch(journal):null,
-      configurationRequired:!config?.authorizationPreference,limit:preferences.limit,signContract:preferences.signContract,
+      configurationRequired:!config?.authorizationPreference,limit:preferences.limit,signContract:preferences.signContract,hasDiagnostics:true,
     };
-    return {archive,config,preview,previous:journal};
+    return {archive,config,preview,previous:journal,diagnosticId};
   }
   async preview() {
     return (await this.previewInputs(this.options.generation())).preview;
@@ -282,10 +319,21 @@ export class FanqieDirectoryRun {
       !items.every(item=>{
         const job=receipts.get(item.id),source=tracks.get(item.id)?.source;
         return item.state==="uploaded"&&item.workId&&source&&job?.accountKey===journal.accountKey&&
+          (item.archiveObserved===true||!!job.archiveObservedAt)&&
           (job.phase==="contract_pending"||job.phase==="recorded")&&job.pending===null&&
           job.title===item.title&&job.officialRecord?.title===item.title&&job.officialRecord.id===item.workId&&
           job.download?.sourceIdentity===source.audio.identity;
       }))throw Error("FANQIE_SAVED_WORK_READBACK_REQUIRED");
+  }
+  private markArchiveObserved(journal:Journal,trackIds:readonly string[]) {
+    const observedAt=new Date().toISOString();
+    const ids=new Set(trackIds);
+    for(const item of journal.items)if(ids.has(item.id))item.archiveObserved=true;
+    for(const job of this.options.jobs())if(job.download?.batchId===journal.id&&ids.has(job.download.id)){
+      job.archiveObservedAt??=observedAt;
+      this.options.save(job);
+    }
+    this.save(journal);
   }
   async pumpDownloadCleanup(now:number) {
     const generation=this.options.generation();
@@ -317,23 +365,27 @@ export class FanqieDirectoryRun {
     await this.options.plan?.check();
     this.options.guard(generation);
   }
-  private async start({archive,config,preview}:Awaited<ReturnType<FanqieDirectoryRun["previewInputs"]>>,
+  private async start({archive,config,preview,diagnosticId}:Awaited<ReturnType<FanqieDirectoryRun["previewInputs"]>>,
     preferences:FanqieDirectoryPreferences,generation:number,paused?:Journal) {
     if(!config?.authorizationPreference)throw Error("FANQIE_CONFIGURATION_REQUIRED");
     const songs=preview.items.filter(song=>!song.issue);
     const ids=new Set(songs.map(song=>song.id));
     const plan=this.options.plan;
     const journal:Journal={
-      id:plan?.id??randomUUID(),state:"uploading",accountKey:plan?.accountKey??paused?.accountKey??"",
+      id:plan?.id??diagnosticId,state:"uploading",accountKey:plan?.accountKey??paused?.accountKey??"",
       configurationHash:hash(config),archiveRoot:archive.root,prepareContracts:true,
       requireSecurityVerification:true,
       tracks:archive.items.filter(track=>ids.has(track.id)),preferences,
       items:songs.map(song=>({...song,state:"queued"})),
     };
     const trace=this.log(journal,0);
-    const scan={candidateCount:preview.items.length,readyCount:songs.length,batchLimit:preferences.limit};
+    const issueCounts=preview.items.reduce<Record<string,number>>((counts,song)=>{
+      if(song.issue)counts[song.issue]=(counts[song.issue]??0)+1;
+      return counts;
+    },{});
+    const scan={candidateCount:preview.items.length,readyCount:songs.length,batchLimit:preferences.limit,issueCounts};
     if(!songs.length){
-      const error=Error("FANQIE_DOWNLOADS_EMPTY");
+      const error=Error(preview.items.length?"FANQIE_DOWNLOADS_NONE_READY":"FANQIE_DOWNLOADS_EMPTY");
       await trace.trace("directory:scan","error",undefined,undefined,error,scan);
       throw error;
     }
@@ -392,13 +444,15 @@ export class FanqieDirectoryRun {
           const queued=journal.items.filter(item=>item.state==="queued").map(item=>({item,track:tracks.get(item.id)!}));
           const queryCandidates=(start:number,end:number)=>queued.slice(start,end)
             .flatMap(({track})=>titleQueries(track.title,track.originalTitle));
+          const existing=this.options.jobs();
+          const retryFor=(track:FanqieDownloadTrack)=>existing.find(job=>canRetryDownload(job,track));
           let checkedThrough=preferences.limit;
           let observed=await inspect(queryCandidates(0,checkedThrough));
           const account=observed;
           journal.accountKey=account.report.accountKey;
           if(!singers){
             const names=[...new Set(queued.flatMap(({track})=>{
-              const duplicate=checkFanqieUploadTitle(observed.catalog,track.title,track.originalTitle);
+              const duplicate=checkFanqieUploadTitle(observed.catalog,track.title,track.originalTitle,retryFor(track));
               return !duplicate.allowed&&duplicateReasons.has(duplicate.reason)?[]:[fanqieRosterNameKey(track.singer)];
             }))];
             singers=names.length?await this.options.session.resolveDirectorySingers(context,()=>{
@@ -407,7 +461,6 @@ export class FanqieDirectoryRun {
           }
           const staged:{item:FanqieDownloadBatchItem;track:FanqieDownloadTrack;input:FanqieDirectorySong;job:FanqieUploadJob}[]=[];
           const formTitles=new Set<string>();
-          const existing=this.options.jobs();
           const sessionId=randomUUID();
           let roundMode:Round["mode"];
           for(const [index,{item,track}] of queued.entries()){
@@ -423,18 +476,20 @@ export class FanqieDirectoryRun {
             const slot=staged.length;
             await trace.trace("directory:materials","begin",undefined,slot);
             try {
-              const duplicate=checkFanqieUploadTitle(observed.catalog,track.title,track.originalTitle);
+              const retryJob=retryFor(track);
+              const duplicate=checkFanqieUploadTitle(observed.catalog,track.title,track.originalTitle,retryJob);
               if(!duplicate.allowed)throw Error(duplicate.reason);
               const singer=singers.get(fanqieRosterNameKey(track.singer));
               if(!singer)throw Error("FANQIE_ARTIST_SEARCH_UNVERIFIED");
               if("issue" in singer)throw Error(singer.issue);
               this.verifyTrack(track,snapshot.get(track.id));
-              const {input,audioSha256}=await this.prepare(track,config,account,journal,existing,sessionId,guard,context);
+              const {input,audioSha256,previousRecord}=await this.prepare(track,config,account,journal,existing,sessionId,guard,context);
               input.singerArtistId=singer.artistId;
               const id=hash({account:journal.accountKey,audio:input.assets.audio.sha256});
               const job:FanqieUploadJob={
                 id,title:track.title,phase:"uploading",pending:"opening-form",updatedAt:new Date().toISOString(),
                 accountKey:journal.accountKey,recordingSha256:input.assets.audio.sha256,input,
+                ...(previousRecord?{officialRecord:previousRecord}:{}),
                 baselineIds:observed.catalog.rows.map(row=>row.id),
                 download:{batchId:journal.id,id:track.id,sourceIdentity:track.source!.audio.identity,
                   audioSha256,originalTitle:track.originalTitle},
@@ -457,29 +512,32 @@ export class FanqieDirectoryRun {
           for(const {item} of staged){item.state="uploading";item.round=number;}
           this.save(journal);
           for(const {job} of staged)this.options.save(job);
+          const activeStaged=()=>staged.filter(({item})=>journal.active?.trackIds.includes(item.id));
           let finalPreflight=false;
           const pending=async(checkpoint:string,index?:number)=>{
             sessionGuard();guard();
             if(checkpoint==="first-step:preflight"){
               if(hash(this.options.configuration())!==journal.configurationHash)throw Error("FANQIE_CONFIGURATION_CHANGED");
               const latest=await this.snapshot(journal);
-              for(const {track,input} of staged){
+              const currentStaged=activeStaged();
+              if(!currentStaged.length)throw Error("FANQIE_ALL_SONGS_REJECTED");
+              for(const {track,input} of currentStaged){
                 this.verifyTrack(track,latest.get(track.id));
                 await (this.options.verify??verifyFanqieMaterials)(input);
               }
-              const fresh=await inspect(staged.flatMap(({track})=>titleQueries(track.title,track.originalTitle)));
+              const fresh=await inspect(currentStaged.flatMap(({track})=>titleQueries(track.title,track.originalTitle)));
               if(fresh.accountId!==account.accountId)throw Error("FANQIE_CATALOG_SCOPE_CHANGED");
-              for(const {track} of staged){
-                const duplicate=checkFanqieUploadTitle(fresh.catalog,track.title,track.originalTitle);
+              for(const {track,job} of currentStaged){
+                const duplicate=checkFanqieUploadTitle(fresh.catalog,track.title,track.originalTitle,job);
                 if(!duplicate.allowed)throw Error(duplicate.reason);
               }
-              for(const {job} of staged)job.baselineIds=fresh.catalog.rows.map(row=>row.id);
+              for(const {job} of currentStaged)job.baselineIds=fresh.catalog.rows.map(row=>row.id);
               finalPreflight=true;
             }
             if(this.options.plan)await this.checkPlan(generation);
             if(checkpoint===finalIntent&&!finalPreflight)throw Error("FANQIE_UPLOAD_AUTHORIZATION_REQUIRED");
-            for(const entry of index===undefined?staged:[staged[index]]){
-              if(!entry)throw Error("FANQIE_BATCH_SCOPE_CHANGED");
+            for(const entry of index===undefined?activeStaged():[staged[index]]){
+              if(!entry||!journal.active?.trackIds.includes(entry.item.id))throw Error("FANQIE_BATCH_SCOPE_CHANGED");
               assertFanqieDownloadTrack(entry.track);
               entry.job.pending=checkpoint;
               this.options.save(entry.job);
@@ -491,16 +549,54 @@ export class FanqieDirectoryRun {
             guard:()=>{sessionGuard();guard();},
             checkStopped:this.options.plan?()=>this.checkPlan(generation):undefined,
             intent:pending,trace:trace.trace,watch:trace.watch,
+            archiveObserved:async indexes=>{
+              const ids=indexes.map(index=>{
+                const entry=staged[index];
+                if(!entry)throw Error("FANQIE_BATCH_SCOPE_CHANGED");
+                return entry.item.id;
+              });
+              this.markArchiveObserved(journal,ids);
+            },
+            verifyUnsubmitted:async index=>{
+              const entry=staged[index];
+              if(!entry||!journal.active?.trackIds.includes(entry.item.id))throw Error("FANQIE_BATCH_SCOPE_CHANGED");
+              if(entry.item.archiveObserved||entry.item.workId||entry.job.archiveObservedAt)
+                throw Error("FANQIE_SAVED_WORK_READBACK_REQUIRED");
+              const account=await inspect(titleQueries(entry.track.title,entry.track.originalTitle));
+              if(account.accountId!==entry.input.scope.accountId||account.report.accountKey!==journal.accountKey)
+                throw Error("FANQIE_CATALOG_SCOPE_CHANGED");
+              const titleKeys=new Set([entry.track.title,entry.track.originalTitle,entry.input.title]
+                .filter((title):title is string=>!!title).map(fanqieTitleKey));
+              const newMatches=account.catalog.rows.filter(row=>!entry.job.baselineIds.includes(row.id)&&
+                titleKeys.has(fanqieTitleKey(row.title)));
+              if(newMatches.length){
+                await trace.trace("directory:submission-rejection:receipt-check","error",editor,index,
+                  Error("FANQIE_SAVED_WORK_READBACK_REQUIRED"),{songTitle:entry.track.title,newRecordCount:newMatches.length});
+                throw Error("FANQIE_SAVED_WORK_READBACK_REQUIRED");
+              }
+              await trace.trace("directory:submission-rejection:receipt-check","ok",editor,index,undefined,
+                {songTitle:entry.track.title,newRecordCount:0});
+            },
+            rejectUnsubmittedSong:async index=>{
+              const entry=staged[index];
+              if(!entry)throw Error("FANQIE_BATCH_SCOPE_CHANGED");
+              await this.recycleRejectedSong(journal,entry.item.id,index,trace,generation);
+            },
           });
           this.directoryEditor={id:journal.id,round:number,page:editor};
+          // The editor is the exact Fanqie page used by this batch. Track it even
+          // when the browser session was already open or the page left the home route.
+          if(!editor.isClosed())this.workPages.set(editor,{id:journal.id,url:editor.url()});
           step="directory:receipts";
           await trace.trace(step,"begin",editor);
-          const after=await inspect(staged.map(({item})=>({title:item.title,waitForReceipt:true})));
+          const remainingStaged=staged.filter(({item})=>journal.active?.trackIds.includes(item.id));
+          if(!remainingStaged.length)throw Error("FANQIE_ALL_SONGS_REJECTED");
+          const after=await inspect(remainingStaged.map(({item})=>({title:item.title,waitForReceipt:true})));
           this.observeReceipts(journal,after,false);
           this.save(journal);
-          const submittedCount=staged.filter(({item})=>item.state==="uploaded").length;
-          const receiptsComplete=submittedCount===staged.length;
-          if(receiptsComplete)await trace.trace(step,"ok",editor,undefined,undefined,{batchSize:staged.length,submittedCount});
+          const submittedCount=remainingStaged.filter(({item})=>item.state==="uploaded").length;
+          const receiptsComplete=submittedCount===remainingStaged.length;
+          if(receiptsComplete)await trace.trace(step,"ok",editor,undefined,undefined,{batchSize:remainingStaged.length,submittedCount});
           await this.recycleUploaded(journal,trace,generation,{page:editor});
           if(!receiptsComplete)throw Error("FANQIE_SAVED_WORK_READBACK_REQUIRED");
         });
@@ -543,6 +639,70 @@ export class FanqieDirectoryRun {
   private verifyTrack(track:FanqieDownloadTrack,selected?:FanqieDownloadTrack) {
     assertFanqieDownloadTrack(track);
     if(!selected||hash(selected)!==hash(track))throw Error("FANQIE_DOWNLOADS_CHANGED");
+  }
+  private async recycleRejectedSong(journal:Journal,id:string,songIndex:number,trace:FanqieDirectoryTracePort,generation:number) {
+    const active=journal.active;
+    const item=journal.items.find(candidate=>candidate.id===id);
+    const track=journal.tracks?.find(candidate=>candidate.id===id);
+    const job=this.options.jobs().find(candidate=>candidate.download?.batchId===journal.id&&candidate.download?.id===id);
+    const trash=this.options.trashDownload;
+    if(!active||!active.trackIds.includes(id)||!item||item.state!=="uploading"||!track?.source||!journal.archiveRoot||!trash||
+      !job||job.phase!=="uploading"||(job.pending!==finalIntent&&job.pending!=="first-step:submission-rejection:confirm-delete")||
+      item.archiveObserved||item.workId||job.archiveObservedAt)
+      throw Error("FANQIE_BATCH_SCOPE_CHANGED");
+    await trace.trace("directory:submission-rejection:recycle","begin",undefined,songIndex,undefined,{songTitle:item.title});
+    try {
+      const current=await this.scan();
+      const root=path.resolve(journal.archiveRoot);
+      if(!current.root||pathKey(root)!==pathKey(path.resolve(current.root)))throw Error("DOWNLOAD_ROOT_CHANGED");
+      if(current.scanDiagnostics?.failureCode)throw Error("FANQIE_DOWNLOAD_SCAN_FAILED");
+      this.verifyTrack(track,new Map(current.items.map(candidate=>[candidate.id,candidate])).get(id));
+      const library=path.resolve(fs.realpathSync.native(this.options.root));
+      const libraryPrefix=pathKey(library.endsWith(path.sep)?library:library+path.sep);
+      const accountFolder=path.resolve(root,track.folder);
+      const recordingFolder=path.resolve(path.dirname(track.source.audio.file));
+      const relativeFolder=path.relative(accountFolder,recordingFolder);
+      const collisionTitle=path.basename(relativeFolder)===relativeFolder?songDownloadCollisionStem(relativeFolder):undefined;
+      const expectedFolder=relativeFolder===""||!!collisionTitle&&
+        pathKey(collisionTitle.normalize("NFC"))===pathKey(path.parse(track.audioName).name.normalize("NFC"));
+      if(pathKey(path.dirname(accountFolder))!==pathKey(root)||!expectedFolder)
+        throw Error("FANQIE_RECYCLE_FILE_SCOPE");
+      const protectedFiles=new Set<string>();
+      for(const candidate of [...journal.tracks,...current.items]){
+        if(candidate.id!==id){
+          for(const file of candidate.relatedFiles??[])protectedFiles.add(pathKey(path.resolve(file)));
+          for(const source of Object.values(candidate.source??{}))if(source)protectedFiles.add(pathKey(path.resolve(source.file)));
+        }
+        if(candidate.source?.proof)protectedFiles.add(pathKey(path.resolve(candidate.source.proof.file)));
+      }
+      const sources=[track.source.audio,track.source.lyrics,track.source.cover].filter((source):source is NonNullable<typeof source>=>!!source);
+      const sourceKeys=sources.map(source=>pathKey(path.resolve(source.file)));
+      if(new Set(sourceKeys).size!==sourceKeys.length)throw Error("FANQIE_RECYCLE_FILE_SCOPE");
+      for(const source of sources){
+        const candidate=path.resolve(source.file),key=pathKey(candidate),relative=path.relative(root,candidate);
+        if(pathKey(path.dirname(candidate))!==pathKey(recordingFolder)||
+          relative===""||relative.startsWith("..")||path.isAbsolute(relative)||
+          candidate===library||key.startsWith(libraryPrefix)||protectedFiles.has(key))
+          throw Error("FANQIE_RECYCLE_FILE_SCOPE");
+      }
+      for(const source of sources){
+        this.options.guard(generation);
+        await recycleFanqieFile(source,trash,()=>this.options.guard(generation));
+        await trace.trace("directory:submission-rejection:recycle:"+
+          (source===track.source.audio?"audio":source===track.source.lyrics?"lyrics":"cover"),
+        "ok",undefined,songIndex,undefined,{songTitle:item.title});
+      }
+      item.state="failed";
+      item.issue="FANQIE_SUBMISSION_VALIDATION_REJECTED";
+      active.trackIds=active.trackIds.filter(trackId=>trackId!==id);
+      this.save(journal);
+      this.options.archive(job);
+      await trace.trace("directory:submission-rejection:recycle","ok",undefined,songIndex,undefined,
+        {songTitle:item.title,deletedMaterialCount:sources.length});
+    }catch(error){
+      await trace.trace("directory:submission-rejection:recycle","error",undefined,songIndex,error,{songTitle:item.title});
+      throw Error("FANQIE_REJECTED_MATERIALS_CLEANUP_FAILED",{cause:error});
+    }
   }
   private async prepare(track:FanqieDownloadTrack,config:Configuration,account:CatalogAccount,journal:Journal,
     existing:FanqieUploadJob[],sessionId:string,guard:()=>void,context:BrowserContext) {
@@ -592,7 +752,7 @@ export class FanqieDirectoryRun {
       this.options.archive(prior);
       existing.splice(existing.indexOf(prior),1);
     }
-    return {input,audioSha256};
+    return {input,audioSha256,previousRecord:prior?.officialRecord};
   }
   private observeReceipts(journal:Journal,account:CatalogAccount,reconcile:boolean,editorOpen=false) {
     const ids=journal.active?new Set(journal.active.trackIds):undefined;
@@ -607,8 +767,10 @@ export class FanqieDirectoryRun {
         continue;
       }
       if(job.accountKey!==journal.accountKey||job.input.scope.accountId!==account.accountId)throw Error("FANQIE_BATCH_SCOPE_CHANGED");
-      const records=account.catalog.rows.filter(row=>row.title===job.title&&
-        (job.officialRecord?job.officialRecord.id===row.id:job.pending===finalIntent&&!job.baselineIds.includes(row.id)));
+      const titled=account.catalog.rows.filter(row=>row.title===job.title);
+      const newRecords=job.pending===finalIntent?titled.filter(row=>!job.baselineIds.includes(row.id)):[];
+      const savedRecord=job.officialRecord&&titled.find(row=>row.id===job.officialRecord!.id);
+      const records=newRecords.length?newRecords:savedRecord?[savedRecord]:[];
       if(records.length!==1){
         if(reconcile&&!job.officialRecord&&job.pending&&job.pending!==finalIntent&&!editorOpen&&
           checkFanqieUploadTitle(account.catalog,job.title,job.download?.originalTitle).allowed){
@@ -879,6 +1041,7 @@ export class FanqieDirectoryRun {
     const signingTraces=new Map<Page,{url:string;detach:()=>void}>();
     let verifiedPopup:{page:Page;url:string}|undefined;
     let observed=this.hasSignatureEvidence(journal,active),busy=false,stopped=false,nextCheck=0,nextPlanCheck=0,sawGeneration=false;
+    if(observed&&journal.requireSecurityVerification)this.markArchiveObserved(journal,active.trackIds);
     const verifiedStage=journal.prepareContracts&&active.signContract===false?"verify_generated_contract":"complete_signing";
     const watchSigningDocument=(popup:Page,url:string)=>{
       if(signingTraces.get(popup)?.url===url)return;
@@ -995,6 +1158,7 @@ export class FanqieDirectoryRun {
               const evidence=this.signatureFile(journal,active);
               if(!this.hasSignatureEvidence(journal,active))
                 fs.writeFileSync(evidence,JSON.stringify({...binding,stage:candidate.stage,observedAt:new Date().toISOString()}),{flag:"wx"});
+              if(candidate.stage==="security_verification")this.markArchiveObserved(journal,active.trackIds);
               observed=true;
               verifiedPopup={page:candidate.popup,url:candidate.url};
               this.workPages.set(candidate.popup,{id:journal.id,url:candidate.url,signing:true});
@@ -1051,7 +1215,11 @@ export class FanqieDirectoryRun {
     // Older plan runs could record cleanup without a recycle-bin handler.
     if(!files&&(active.materialsRecycled==="after_upload"||active.materialsRecycled===true&&!this.options.plan))return [];
     const activeIds=new Set(active.trackIds);
-    const uploaded=journal.items.filter(item=>activeIds.has(item.id)&&item.state==="uploaded"&&item.workId);
+    const batchJobs=new Map(this.options.jobs().filter(job=>job.download?.batchId===journal.id)
+      .map(job=>[job.download!.id,job]));
+    const archivedIds=new Set(journal.items.filter(item=>item.archiveObserved===true||
+      !!batchJobs.get(item.id)?.archiveObservedAt).map(item=>item.id));
+    const uploaded=journal.items.filter(item=>activeIds.has(item.id)&&archivedIds.has(item.id)&&item.state==="uploaded"&&item.workId);
     if(!uploaded.length)return [];
     if(new Set(uploaded.map(item=>item.workId)).size!==uploaded.length)
       throw Error("FANQIE_SAVED_WORK_READBACK_REQUIRED");
@@ -1063,7 +1231,7 @@ export class FanqieDirectoryRun {
       const library=pathKey(fs.realpathSync.native(this.options.root));
       const libraryPrefix=library.endsWith(path.sep)?library:library+path.sep;
       const accepted=new Set(uploaded.map(item=>item.id));
-      const confirmedIds=new Set([...accepted,...journal.items.filter(item=>item.state==="uploaded"&&
+      const confirmedIds=new Set([...accepted,...journal.items.filter(item=>archivedIds.has(item.id)&&item.state==="uploaded"&&
         item.round!==undefined&&item.round<active.number).map(item=>item.id)]);
       const confirmed=new Map(journal.tracks.filter(track=>confirmedIds.has(track.id)).map(track=>[track.id,track]));
       const unfinished=[
@@ -1131,4 +1299,5 @@ export class FanqieDirectoryRun {
       throw Error(cleanupFailed,{cause:error});
     }
   }
+
 }

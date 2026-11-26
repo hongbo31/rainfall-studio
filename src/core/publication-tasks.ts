@@ -273,7 +273,18 @@ export class PublicationTaskService {
           this.note({ ...run, linked: [...run.linked, { id, planId: nextId, owned: true }] }, "waiting", progress(nextId));
         });
       } catch (error) {
-        this.recordPlanFailure(run, nextId, errorDetail(error));
+        const activeRunId = error instanceof Error
+          ? (error as Error & { activeRunId?: string }).activeRunId : undefined;
+        if (activeRunId && /^[A-Za-z0-9._:-]{1,500}$/u.test(activeRunId)) {
+          if (run.source === "scheduled") {
+            this.note({ ...run, skippedPlanIds: [...skippedPlans, nextId] }, "running",
+              "定时已跳过计划 " + describePlan(run, nextId) + " · 另一次执行尚未结束");
+          } else {
+            const linked = run.linked.filter(link => link.planId !== nextId);
+            this.note({ ...run, linked: [...linked, { id: activeRunId, planId: nextId, owned: false }] }, "waiting",
+              "沿用计划已有执行 · " + describePlan(run, nextId));
+          }
+        } else this.recordPlanFailure(run, nextId, errorDetail(error));
       }
       return;
     }

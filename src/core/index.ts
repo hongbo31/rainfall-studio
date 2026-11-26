@@ -433,6 +433,8 @@ if (port) {
             ok: false,
             error: {
               code,
+              ...(typeof e.activeRunId === "string" && /^[A-Za-z0-9._:-]{1,500}$/.test(e.activeRunId)
+                ? { activeRunId: e.activeRunId } : {}),
               message:
                 "操作未完成：" +
                 code +

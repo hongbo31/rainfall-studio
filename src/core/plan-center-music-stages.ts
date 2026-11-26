@@ -12,7 +12,7 @@ export function tickPlanMusic(s:Studio,run:PlanCenterRun,item:PlanCenterItem){
  const record=(a:PlanCenterStageAttempt,status:'succeeded'|'failed'|'unknown'|'waiting',result:Record<string,unknown>,why?:string)=>{
   if(['succeeded','failed','not_found'].includes(a.state))return;
   const input={attemptId:a.id,status,evidenceId:state?.operationId??state?.childRunId??'existing-work:'+item.workId,result,...(why?{reason:why}:{})};
-  if(a.state==='unknown'&&status!=='unknown'&&status!=='waiting')service.reconcile({...input,status,evidenceId:input.evidenceId});else if(a.state!=='unknown')service.record(input);
+  if(a.state==='unknown'&&status!=='unknown'&&status!=='waiting')service.reconcile({...input,status,evidenceId:input.evidenceId,source:'provider',actor:'music-provider'});else if(a.state!=='unknown')service.record(input);
  };
  if(!run.stopRequested){
   const next=service.next({runId:run.id,itemId:item.id});

@@ -4,7 +4,7 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import sharp from "sharp";
 import type { Download, Page } from "playwright-core";
-import { reserveSongDownloadFolder, songDownloadCollisionStem } from "../core/download-filenames";
+import { ensureDownloadSubfolder, songDownloadCollisionStem } from "../core/download-filenames";
 import { COVER_IMAGE_POLICY, coverResolutionSchema, recordingCoverPrompt } from "../shared/cover-handoff";
 import type { ImageChoice, ImageSelection } from "../shared/platform-image";
 import {
@@ -118,20 +118,31 @@ export function readPlanPuleWave(download: Download, directory: string, guard: (
   }, deadline);
 }
 
-function saveWave(download: Download, directory: string, stem: string, guard: () => void, deadline?: number, transferFailure?: string) {
+const fileSha256 = (file: string | Buffer) => createHash("sha256").update(typeof file === "string" ? fs.readFileSync(file) : file).digest("hex");
+
+function saveWave(download: Download, directory: string, stem: string, songId: string, guard: () => void,
+  deadline?: number, transferFailure?: string) {
   return withDownloadedFile(download, directory, async temporary => {
     await waveSize(temporary);
     guard();
-    const reserved = reserveSongDownloadFolder(directory, stem);
-    try {
-      const folderIdentity = identity(reserved.directory, true);
-      const name = stem + ".wav";
-      const destination = path.join(reserved.directory, name);
-      await fsp.copyFile(temporary, destination, fs.constants.COPYFILE_EXCL);
-      return { wav: { name, path: destination }, folderIdentity };
-    } finally {
-      reserved.release();
+    const folderIdentity = identity(directory, true);
+    const contentHash = fileSha256(temporary);
+    const names = [stem + ".wav", `${stem} ${createHash("sha256").update(songId).digest("hex").slice(0, 8)}.wav`];
+    for (const name of names) {
+      const destination = path.join(directory, name);
+      if (fs.existsSync(destination)) {
+        if (fileSha256(destination) === contentHash) return { wav: { name, path: destination }, folderIdentity };
+        continue;
+      }
+      try {
+        await fsp.copyFile(temporary, destination, fs.constants.COPYFILE_EXCL);
+        return { wav: { name, path: destination }, folderIdentity };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        if (fileSha256(destination) === contentHash) return { wav: { name, path: destination }, folderIdentity };
+      }
     }
+    throw Error("PULE_DOWNLOAD_FILE_CONFLICT");
   }, deadline, transferFailure);
 }
 
@@ -143,7 +154,10 @@ async function saveCompanion(directory: string, name: string, contents: string |
     guard();
     await fsp.writeFile(temporary, contents, { flag: "wx" });
     guard();
-    await fsp.copyFile(temporary, destination, fs.constants.COPYFILE_EXCL);
+    try { await fsp.copyFile(temporary, destination, fs.constants.COPYFILE_EXCL); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST" || fileSha256(destination) !== fileSha256(temporary)) throw error;
+    }
     return { name, path: destination };
   } catch (error) {
     if (error instanceof Error && taskErrorCode.test(error.message)) throw error;
@@ -348,7 +362,8 @@ export function createPuleBrowserJobs(port: Ports) {
     guard();
     try {
       // Request the provider's square output and use the artist's export size locally.
-      bytes = await port.credentials.generatePlanCover(profile, prompt, async () => {
+      bytes = await port.credentials.generatePlanCover(profile,
+        `${prompt}\n画面中不得出现任何可见文字、字母、数字、标点、符号、Logo或水印。`, async () => {
         guard();
         update(task, { coverAttempts: [...(task.record.job.coverAttempts ?? []), recording.version] });
         dispatched = true;
@@ -433,9 +448,7 @@ export function createPuleBrowserJobs(port: Ports) {
       const output = (version: PuleVersion) => {
         if (readArchiveIdentity() !== archiveIdentity) throw Error("DOWNLOAD_ROOT_CHANGED");
         try {
-          const name = scope.archiveFolderNames[version];
-          if (name === "." || name === ".." || !name || path.basename(name) !== name) throw Error("PULE_OUTPUT_UNAVAILABLE");
-          const folder = scopedDirectory(archiveRoot, name);
+          const folder = ensureDownloadSubfolder(archiveRoot, scope.archiveFolderNames[version]);
           const key = process.platform === "win32" ? folder.toLowerCase() : folder;
           const previousIdentity = destinationIdentities.get(key);
           if (!previousIdentity && !fs.lstatSync(folder, { throwIfNoEntry: false })) {
@@ -498,7 +511,7 @@ export function createPuleBrowserJobs(port: Ports) {
                   throw Error("PULE_RESULT_UNCLEAR");
                 const folder = output(version);
                 const stem = safeWorkFilenameStem(title);
-                const { wav, folderIdentity } = await saveWave(download, folder, stem, () => guardOutput(version),
+                const { wav, folderIdentity } = await saveWave(download, folder, stem, songId, () => guardOutput(version),
                   suno ? performance.now() + sunoDownloadTime : deadline, suno ? "PULE_DOWNLOAD_FAILED" : undefined);
                 const recordingFolder = path.dirname(wav.path);
                 recordingFolders.set(wav.path, folderIdentity);
@@ -509,7 +522,7 @@ export function createPuleBrowserJobs(port: Ports) {
                   ...(outputDirectories && { outputDirectories: { ...outputDirectories, [version]: recordingFolder } }) });
                 if (lyricsText !== undefined) {
                   const guard = () => guardRecording(version, wav.path);
-                  const lyrics = await saveCompanion(recordingFolder, stem + ".txt", lyricsText, guard, "PULE_LYRICS_SAVE_FAILED");
+                  const lyrics = await saveCompanion(recordingFolder, path.parse(wav.path).name + ".txt", lyricsText, guard, "PULE_LYRICS_SAVE_FAILED");
                   update(task, { files: [...files, { ...recording, lyrics }] });
                 }
               },

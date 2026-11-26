@@ -24,7 +24,29 @@ export type FanqieDownloadTrack = FanqieDownloadSong & {
   relatedFiles?: string[];
   source?: { audio: FanqieDownloadFile; cover: FanqieDownloadFile; lyrics?: FanqieDownloadFile; proof?: FanqieDownloadFile };
 };
-export type FanqieDownloadArchive = { fingerprint: string; items: FanqieDownloadTrack[]; root?: string };
+export type FanqieDownloadScanCounts = {
+  configuredArtistCount?: number;
+  rootEntryCount?: number;
+  accountDirectoryCount?: number;
+  matchedArtistDirectoryCount?: number;
+  scannedArtistDirectoryCount?: number;
+  audioCandidateCount?: number;
+  candidateCount?: number;
+  readyCount?: number;
+  issueCounts?: Record<string, number>;
+};
+export type FanqieDownloadScanStage = {
+  step: "account-settings" | "download-root" | "root-enumeration" | "account-folders" |
+    "artist-folders" | "audio-files" | "material-validation" | "result";
+  phase: "begin" | "ok" | "error";
+  counts?: FanqieDownloadScanCounts;
+  code?: string;
+};
+export type FanqieDownloadScanDiagnostics = { stages: FanqieDownloadScanStage[]; failureCode?: string };
+export type FanqieDownloadArchive = {
+  fingerprint: string; items: FanqieDownloadTrack[]; root?: string;
+  scanDiagnostics?: FanqieDownloadScanDiagnostics;
+};
 const ScopeSchema = z.strictObject({ folder: z.string().min(1).max(255), id: z.string().regex(/^[a-f0-9]{64}$/u) });
 export type FanqieDownloadScope = z.infer<typeof ScopeSchema>;
 const ArchiveRequest = PlatformAccountIdSchema.extend({ scope: ScopeSchema.optional() });
@@ -64,7 +86,11 @@ export function assertFanqieDownloadTrack(track: FanqieDownloadTrack) {
 type Singer = { name: string; part: string; artistId: string; profile?: ArtistProfile; instrumental: boolean; folder: string; release: FanqieDirectoryRelease };
 
 function singerForFolder(folder: string, rest: string, singers: Singer[]) {
-  const matching = singers.filter(singer => key(rest).startsWith(key(singer.part) + "_") && rest.slice(singer.part.length + 1).trim());
+  // The archive folder contract is `<account>_<singer>_<prompt>`. Prompt names
+  // may themselves contain underscores, so match the longest configured singer
+  // prefix and require a non-empty prompt suffix instead of splitting by `_`.
+  const matching = singers.filter(singer => key(rest).startsWith(key(singer.part) + "_") &&
+    rest.slice(singer.part.length + 1).trim());
   const longest = Math.max(0, ...matching.map(singer => singer.part.length));
   const possible = matching.filter(singer => singer.part.length === longest);
   const exact = possible.filter(singer => key(folder) === key(singer.folder) || key(folder) === key(singer.folder + "_B"));
@@ -80,10 +106,7 @@ function singerForFolder(folder: string, rest: string, singers: Singer[]) {
     if (!sameDetails) return { name: saved.name, issue: "FANQIE_DOWNLOAD_SINGER_AMBIGUOUS" };
     return { name: saved.name, saved };
   }
-  const separator = rest.indexOf("_");
-  if (separator <= 0 || !rest.slice(separator + 1).trim()) return;
-  const name = rest.slice(0, separator).trim();
-  return name ? { name } : undefined;
+  return undefined;
 }
 
 function readArchiveDirectory(directory: string) {
@@ -214,55 +237,117 @@ function scanRecordings(directory: string, entries: fs.Dirent[], folder: string,
 export function readFanqieDownloadArchive(studio: Pick<Studio, "repo" | "mode">, raw: unknown): FanqieDownloadArchive {
   if (studio.mode !== "production") throw Error("PRODUCTION_REQUIRED");
   const { accountId, scope } = ArchiveRequest.parse(raw);
-  const account = studio.repo.maybe("accounts", accountId);
-  if (!account || account.provider !== "fanqie" || !account.name?.trim()) throw Error("FANQIE_DOWNLOAD_ACCOUNT_REQUIRED");
-  const root = resolveDownloadArchiveRoot(studio.repo);
-  if (!root) throw Error("DOWNLOAD_ROOT_REQUIRED");
-  const prefix = downloadAccountPart(account.name) + "_";
-  const accounts = studio.repo.all("accounts").filter(row => row.id !== accountId && row.name?.trim());
-  const otherPrefixes = accounts.map(row => ({ prefix: key(downloadAccountPart(row.name)) + "_", fanqie: row.provider === "fanqie" }));
-  if (otherPrefixes.some(row => row.fanqie && row.prefix === key(prefix))) throw Error("FANQIE_DOWNLOAD_ACCOUNT_AMBIGUOUS");
-  const singers: Singer[] = studio.repo.all("accountLocalArtists").filter(row => row.accountId === accountId).flatMap(row => {
-    const profile: ArtistProfile | undefined = row.profile;
-    const prompt = row.promptTemplateId ? studio.repo.maybe("promptTemplates", row.promptTemplateId)?.name : undefined;
-    const originalSinger = row.musicType === "cover" ? fanqieOriginalSingerSchema.safeParse(row.originalSinger).data : undefined;
-    const originalWorkId = row.songAttribute === "multi_version" ? fanqieOriginalWorkIdSchema.safeParse(row.originalWorkId).data : undefined;
-    const release: FanqieDirectoryRelease = {
-      musicType: artistMusicTypeSchema.safeParse(row.musicType).data ?? defaultFanqieDirectoryRelease.musicType,
-      songAttribute: artistSongAttributeSchema.safeParse(row.songAttribute).data ?? defaultFanqieDirectoryRelease.songAttribute,
-      ai: typeof row.isAiWork === "boolean" ? row.isAiWork : defaultFanqieDirectoryRelease.ai,
-      proofRequired: row.hasCopyrightProof === true,
-      ...(originalSinger ? { originalSinger } : {}),
-      ...(originalWorkId ? { originalWorkId } : {}),
-      ...(profile?.contractMode ? { contractMode: profile.contractMode === "non_exclusive" ? "nonexclusive" as const : "exclusive" as const } : {}),
-    };
-    const names: string[] = [profile?.singer ?? row.name, row.secondSinger?.name].filter(name => typeof name === "string" && name.trim());
-    return [...new Set(names)].map(name => ({
-      name: name.trim(), part: downloadSingerPart(name), artistId: row.id, profile,
-      instrumental: artistSongType(row.defaults) === "instrumental", folder: downloadFolderName(account.name, name, prompt), release,
-    }));
-  });
   const items: FanqieDownloadTrack[] = [];
-  const seenTitles = new Set<string>();
-  let directories: fs.Dirent[];
-  try { directories = fs.readdirSync(root, { withFileTypes: true }); }
-  catch { throw Error("DOWNLOAD_ROOT_UNAVAILABLE"); }
-  for (const entry of directories.sort((a, b) => byName(a.name, b.name))) {
-    const folder = key(entry.name);
-    if ((scope && entry.name !== scope.folder) || !entry.isDirectory() || entry.isSymbolicLink() || !folder.startsWith(key(prefix)) ||
-      otherPrefixes.some(row => row.prefix.length > prefix.length && folder.startsWith(row.prefix))) continue;
-    const singer = singerForFolder(entry.name, entry.name.normalize("NFC").slice(prefix.length), singers);
-    if (!singer) continue;
-    for (const track of scanFolder(root, entry.name, singer)) {
-      const title = fanqieTitleKey(track.title);
-      if (!track.issue && seenTitles.has(title)) {
-        items.push({ ...track, source: undefined, issue: "FANQIE_DOWNLOAD_SAME_TITLE" });
-        continue;
-      }
-      if (!track.issue) seenTitles.add(title);
-      items.push(track);
+  const diagnostics: FanqieDownloadScanDiagnostics = { stages: [] };
+  const counts: FanqieDownloadScanCounts = {};
+  let root: string | undefined;
+  let activeStep: FanqieDownloadScanStage["step"] = "account-settings";
+  const record = (step: FanqieDownloadScanStage["step"], phase: FanqieDownloadScanStage["phase"], code?: string) => {
+    activeStep = step;
+    diagnostics.stages.push({ step, phase, counts: { ...counts,
+      ...(counts.issueCounts ? { issueCounts: { ...counts.issueCounts } } : {}) }, ...(code ? { code } : {}) });
+  };
+  const summarizeIssues = (rows: FanqieDownloadTrack[]) => rows.reduce<Record<string, number>>((result, item) => {
+    if (item.issue) result[item.issue] = (result[item.issue] ?? 0) + 1;
+    return result;
+  }, {});
+  try {
+    record("account-settings", "begin");
+    const account = studio.repo.maybe("accounts", accountId);
+    if (!account || account.provider !== "fanqie" || !account.name?.trim()) throw Error("FANQIE_DOWNLOAD_ACCOUNT_REQUIRED");
+    const prefix = downloadAccountPart(account.name) + "_";
+    const accounts = studio.repo.all("accounts").filter(row => row.id !== accountId && row.name?.trim());
+    const otherPrefixes = accounts.map(row => ({ prefix: key(downloadAccountPart(row.name)) + "_", fanqie: row.provider === "fanqie" }));
+    if (otherPrefixes.some(row => row.fanqie && row.prefix === key(prefix))) throw Error("FANQIE_DOWNLOAD_ACCOUNT_AMBIGUOUS");
+    const singers: Singer[] = studio.repo.all("accountLocalArtists").filter(row => row.accountId === accountId).flatMap(row => {
+      const profile: ArtistProfile | undefined = row.profile;
+      const prompt = row.promptTemplateId ? studio.repo.maybe("promptTemplates", row.promptTemplateId)?.name : undefined;
+      const originalSinger = row.musicType === "cover" ? fanqieOriginalSingerSchema.safeParse(row.originalSinger).data : undefined;
+      const originalWorkId = row.songAttribute === "multi_version" ? fanqieOriginalWorkIdSchema.safeParse(row.originalWorkId).data : undefined;
+      const release: FanqieDirectoryRelease = {
+        musicType: artistMusicTypeSchema.safeParse(row.musicType).data ?? defaultFanqieDirectoryRelease.musicType,
+        songAttribute: artistSongAttributeSchema.safeParse(row.songAttribute).data ?? defaultFanqieDirectoryRelease.songAttribute,
+        ai: typeof row.isAiWork === "boolean" ? row.isAiWork : defaultFanqieDirectoryRelease.ai,
+        proofRequired: row.hasCopyrightProof === true,
+        ...(originalSinger ? { originalSinger } : {}),
+        ...(originalWorkId ? { originalWorkId } : {}),
+        ...(profile?.contractMode ? { contractMode: profile.contractMode === "non_exclusive" ? "nonexclusive" as const : "exclusive" as const } : {}),
+      };
+      const names: string[] = [profile?.singer ?? row.name, row.secondSinger?.name].filter(name => typeof name === "string" && name.trim());
+      return [...new Set(names)].map(name => ({
+        name: name.trim(), part: downloadSingerPart(name), artistId: row.id, profile,
+        instrumental: artistSongType(row.defaults) === "instrumental", folder: downloadFolderName(account.name, name, prompt), release,
+      }));
+    });
+    counts.configuredArtistCount = singers.length;
+    record("account-settings", "ok");
+
+    record("download-root", "begin");
+    root = resolveDownloadArchiveRoot(studio.repo) ?? undefined;
+    if (!root) throw Error("DOWNLOAD_ROOT_REQUIRED");
+    record("download-root", "ok");
+
+    record("root-enumeration", "begin");
+    let directories: fs.Dirent[];
+    try { directories = fs.readdirSync(root, { withFileTypes: true }); }
+    catch { throw Error("DOWNLOAD_ROOT_UNAVAILABLE"); }
+    counts.rootEntryCount = directories.length;
+    record("root-enumeration", "ok");
+
+    record("account-folders", "begin");
+    const accountDirectories = directories.filter(entry => entry.isDirectory() && !entry.isSymbolicLink() &&
+      key(entry.name).startsWith(key(prefix)) &&
+      !otherPrefixes.some(row => row.prefix.length > prefix.length && key(entry.name).startsWith(row.prefix)));
+    counts.accountDirectoryCount = accountDirectories.length;
+    if (!accountDirectories.length) throw Error("FANQIE_DOWNLOAD_ACCOUNT_FOLDER_NOT_FOUND");
+    record("account-folders", "ok");
+
+    const seenTitles = new Set<string>();
+    record("artist-folders", "begin");
+    const recognizedFolders: { entry: fs.Dirent; singer: NonNullable<ReturnType<typeof singerForFolder>> }[] = [];
+    for (const entry of accountDirectories.sort((a, b) => byName(a.name, b.name))) {
+      if (scope && entry.name !== scope.folder) continue;
+      const singer = singerForFolder(entry.name, entry.name.normalize("NFC").slice(prefix.length), singers);
+      if (!singer) continue;
+      recognizedFolders.push({ entry, singer });
     }
+    counts.matchedArtistDirectoryCount = recognizedFolders.length;
+    if (!recognizedFolders.length) throw Error("FANQIE_DOWNLOAD_ARTIST_FOLDER_NOT_RECOGNIZED");
+    record("artist-folders", "ok");
+
+    record("audio-files", "begin");
+    for (const { entry, singer } of recognizedFolders) {
+      for (const track of scanFolder(root, entry.name, singer)) {
+        counts.audioCandidateCount = (counts.audioCandidateCount ?? 0) + 1;
+        const title = fanqieTitleKey(track.title);
+        if (!track.issue && seenTitles.has(title)) {
+          items.push({ ...track, source: undefined, issue: "FANQIE_DOWNLOAD_SAME_TITLE" });
+          continue;
+        }
+        if (!track.issue) seenTitles.add(title);
+        items.push(track);
+      }
+      counts.scannedArtistDirectoryCount = (counts.scannedArtistDirectoryCount ?? 0) + 1;
+    }
+    counts.candidateCount = items.length;
+    const selected = scope ? items.filter(item => item.id === scope.id) : items;
+    if (scope && !selected.length) throw Error("FANQIE_DOWNLOADS_CHANGED");
+    if (!selected.length) throw Error("FANQIE_DOWNLOAD_AUDIO_NOT_FOUND");
+    record("audio-files", "ok");
+
+    record("material-validation", "begin");
+    counts.readyCount = selected.filter(item => !item.issue && !!item.source).length;
+    counts.issueCounts = summarizeIssues(selected);
+    record("material-validation", "ok");
+    record("result", "ok");
+    return { root, items: selected, fingerprint: hash({ accountId, root, items: selected }), scanDiagnostics: diagnostics };
+  } catch (error) {
+    const code = error instanceof Error && /^[A-Z0-9_]{1,100}$/u.test(error.message) ? error.message : "FANQIE_DOWNLOAD_SCAN_FAILED";
+    diagnostics.failureCode = code;
+    counts.candidateCount = items.length;
+    counts.readyCount = items.filter(item => !item.issue && !!item.source).length;
+    counts.issueCounts = summarizeIssues(items);
+    record(activeStep, "error", code);
+    return { root, items, fingerprint: hash({ accountId, scope, failure: code, items }), scanDiagnostics: diagnostics };
   }
-  const selected = scope ? items.filter(item => item.id === scope.id) : items;
-  return { root, items: selected, fingerprint: hash({ accountId, root, items: selected }) };
 }

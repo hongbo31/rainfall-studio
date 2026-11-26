@@ -324,9 +324,9 @@ export class FanqieUploadBroker {
       return this.directory.preview();
     }
     if(action==='openDownloadDiagnostics'){
-      empty.parse(input);
+      const request=z.strictObject({scan:z.boolean().optional()}).parse(input);
       this.guard(this.options.generation());
-      return this.directory.showDiagnostics();
+      return this.directory.showDiagnostics(request.scan===true);
     }
     if(action==='reconcileDownloads'){
       const continuation=continueDownloads.or(empty.transform(()=>undefined)).parse(input);

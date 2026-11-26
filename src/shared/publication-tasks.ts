@@ -52,10 +52,16 @@ export type PublicationTaskRun = {
   dispatch?: PublicationDispatch; state: PublicationRunState; detail: string; startedAt: string; updatedAt: string;
   logs: { at: string; state: PublicationRunState; detail: string }[];
 };
-export type PublicationPlanStage = Pick<PlanCenterStageAttempt, "id" | "stage" | "state" | "reason"> |
-  (Pick<PlanCenterPublishAttempt, "id" | "platform" | "state" | "reason"> & { stage: "publication" });
+export type PublicationPlanStage = (
+  Pick<PlanCenterStageAttempt, "id" | "stage" | "state" | "reason"> |
+  (Pick<PlanCenterPublishAttempt, "id" | "platform" | "state" | "reason"> & { stage: "publication" })
+) & {
+  updatedAt?: string;
+  /** Already masked by Core for use in the task summary. */
+  externalIdHint?: string;
+};
 export type PublicationPlanProgress = {
-  planId: string; title: string; runId?: string; owned?: boolean; updatedAt?: string; reason?: string;
+  planId: string; title: string; runId?: string; source?: PlanCenterRun["source"]; owned?: boolean; updatedAt?: string; reason?: string;
   state: PlanCenterRun["state"] | "pending" | "queued" | "skipped";
   items: { id: string; ordinal: number; title?: string; state: string; reason?: string; stages: PublicationPlanStage[] }[];
 };

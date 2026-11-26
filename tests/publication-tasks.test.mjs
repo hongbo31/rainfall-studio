@@ -352,7 +352,7 @@ test("two tasks sharing a plan have distinct executions and stop their own run",
   assert.equal(f.store.get("run", secondRun.linked[0].id).stopRequested, false);
 });
 
-for (const first of ["task", "plan"]) test(`the same plan runs independently when the ${first} starts first`, t => {
+for (const first of ["task", "plan"]) test(`cross-center start reuses or rejects the active plan run when the ${first} starts first`, t => {
   const f = planLinkFixture(t), plan = f.plan("两个中心共用的计划");
   const task = f.send("save", { task: f.task([plan.id]), expectedRevision: null });
   const planCommand = (method, input) => mod.exports.executePlanCenter(f.studio, "planCenter." + method, input);
@@ -362,32 +362,32 @@ for (const first of ["task", "plan"]) test(`the same plan runs independently whe
     const parent = f.send("start", { id: task.id, expectedRevision: task.revision, requestId: randomUUID() });
     f.tick();
     const child = f.send("history", { id: task.id })[0].linked[0];
-    assert.ok(child?.owned);
+    assert.ok(child);
     return { parent, child: f.store.get("run", child.id) };
   };
   const earlierTask = first === "task" ? startTask() : undefined;
-  const standalone = planCommand("run", request);
+  const earlierPlan = first === "plan" ? planCommand("run", request) : undefined;
   const { parent, child } = earlierTask ?? startTask();
-  assert.notEqual(standalone.id, child.id);
-  assert.deepEqual([standalone.planId, child.planId], [plan.id, plan.id]);
-  assert.deepEqual([standalone.source, child.source], ["manual", "publication_task"]);
-  assert.equal(planCommand("run", request).id, standalone.id);
-  assert.throws(() => planCommand("run", { ...request, requestId: randomUUID() }), /ACTIVE_RUN/);
-  const items = f.center.list().items;
-  assert.equal(new Set(items.map(item => item.expectedExternalItemId)).size, 2);
-  assert.deepEqual(planCommand("history", { id: plan.id }).runs.map(run => run.id), [standalone.id]);
-  assert.equal(planCommand("dashboard", {})[0].active.id, standalone.id);
-  assert.equal(f.send("list", { expandedTaskId: task.id }).tasks[0].planProgress[0].runId, child.id);
-  assert.throws(() => planCommand("stop", { runId: child.id }), /PLAN_TASK_OWNED_RUN/);
+  const activeRun = earlierTask ? child : earlierPlan;
+  assert.equal(child.id, activeRun.id);
+  assert.equal(child.planId, plan.id);
+  assert.equal(f.center.list().runs.filter(run => run.planId === plan.id && ["running", "waiting", "blocked", "stopping"].includes(run.state)).length, 1);
+  assert.deepEqual(planCommand("history", { id: plan.id }).runs.map(run => run.id), [activeRun.id]);
+  assert.equal(planCommand("dashboard", {})[0].active.id, activeRun.id);
+  assert.equal(f.send("list", { expandedTaskId: task.id }).tasks[0].planProgress[0].runId, activeRun.id);
   if (first === "task") {
-    planCommand("stop", { runId: standalone.id });
-    assert.equal(f.store.get("run", standalone.id).state, "stopped");
-    assert.deepEqual(f.store.get("run", child.id), child);
-    assert.equal(f.send("history", { id: task.id })[0].state, "waiting");
-  } else {
+    let conflict;
+    try { planCommand("run", { ...request, requestId: randomUUID() }); } catch (error) { conflict = error; }
+    assert.equal(conflict?.message, "ACTIVE_RUN");
+    assert.equal(conflict?.activeRunId, activeRun.id);
+    assert.ok(f.send("history", { id: task.id })[0].linked[0].owned);
+    assert.throws(() => planCommand("stop", { runId: activeRun.id }), /PLAN_TASK_OWNED_RUN/);
     f.send("stop", { id: parent.id });
-    assert.equal(f.store.get("run", child.id).state, "stopped");
-    assert.deepEqual(f.store.get("run", standalone.id), standalone);
+    assert.equal(f.store.get("run", activeRun.id).state, "stopped");
+  } else {
+    assert.equal(f.send("history", { id: task.id })[0].linked[0].owned, false);
+    f.send("stop", { id: parent.id });
+    assert.deepEqual(f.store.get("run", activeRun.id), activeRun);
   }
 });
 
@@ -405,7 +405,7 @@ test("starting a task leaves a blocked standalone plan run available for its own
   assert.equal(f.send("history", { id: task.id })[0].linked.length, 1);
 });
 
-test("a scheduled task can start a plan already running independently in Plan Center", t => {
+test("a scheduled task skips a plan already running independently in Plan Center", t => {
   const f = planLinkFixture(t), plan = f.plan("独立执行与定时执行共用的计划");
   const { summaryHash } = f.center.preview({ id: plan.id });
   const direct = f.center.run({ id: plan.id, expectedRevision: plan.revision, summaryHash, source: "manual", requestId: randomUUID() });
@@ -413,11 +413,30 @@ test("a scheduled task can start a plan already running independently in Plan Ce
     execution: { kind: "scheduled", unit: "hour", minute: 31 } }, expectedRevision: null });
   f.clock("2026-11-20T04:31:01Z");
   f.tick();
+  f.tick();
   const [run] = f.send("history", { id: task.id });
   assert.equal(run.source, "scheduled");
-  assert.deepEqual(run.linked.map(link => link.planId), [plan.id]);
-  assert.notEqual(run.linked[0].id, direct.id);
+  assert.deepEqual(run.linked, []);
+  assert.deepEqual(run.skippedPlanIds, [plan.id]);
   assert.deepEqual(f.store.get("run", direct.id), direct);
+});
+
+test("a scheduled task skips a plan when the atomic start detects a late active-run conflict", t => {
+  const f = planLinkFixture(t), plan = f.plan("事务竞争中的计划");
+  const activeRunId = randomUUID();
+  f.center.runForPublication = () => {
+    const error = new Error("ACTIVE_RUN");
+    error.activeRunId = activeRunId;
+    throw error;
+  };
+  const task = f.send("save", { task: { ...f.task([plan.id]),
+    execution: { kind: "scheduled", unit: "hour", minute: 31 } }, expectedRevision: null });
+  f.clock("2026-11-20T04:31:01Z");
+  f.tick();
+  const [run] = f.send("history", { id: task.id });
+  assert.deepEqual(run.linked, []);
+  assert.deepEqual(run.skippedPlanIds, [plan.id]);
+  assert.match(run.detail, /定时已跳过计划/);
 });
 
 test("a scheduled task skips a plan occupied by another task and runs its other plans in order", t => {

@@ -5,10 +5,17 @@ import sharp from 'sharp';
 import type {Frame,Page} from 'playwright-core';
 import {fanqieOrigin} from '../../shared/fanqie';
 import {directoryInlineError, directoryPageError} from './directory-validation';
+import {fanqieBrowserFailureCode} from './browser-errors';
 
 type Event = 'begin'|'ok'|'error';
-const countKeys = ['candidateCount','readyCount','batchLimit','batchSize','submittedCount'] as const;
-export type FanqieDirectoryTraceDetails = Partial<Record<typeof countKeys[number],number>>;
+const countKeys = ['configuredArtistCount','rootEntryCount','accountDirectoryCount','matchedArtistDirectoryCount',
+  'scannedArtistDirectoryCount','audioCandidateCount','candidateCount','readyCount','batchLimit','batchSize','submittedCount',
+  'accountIdentityChecks','submissionRejectionWaitMs','noticeCount','matchCount','retryLimit','removedCount',
+  'newRecordCount','deletedMaterialCount'] as const;
+export type FanqieDirectoryTraceDetails = Partial<Record<typeof countKeys[number],number>> & {
+  songTitle?:string;
+  issueCounts?:Record<string,number>;
+};
 export type FanqieDirectoryTracePort = {
   trace:(step:string,phase:Event,page?:Page,songIndex?:number,error?:unknown,details?:FanqieDirectoryTraceDetails)=>Promise<void>|void;
   watch:(page:Page)=>()=>void;
@@ -25,7 +32,7 @@ type PageErrorRegion = {x:number;y:number;width:number;height:number;caption:num
 type VisibleError = {code:typeof visibleErrorCodes[number];control?:string;region?:PageErrorRegion};
 type Step = { step:string; songIndex:number|null };
 type PageSteps = {open:Step[];recent:Step};
-type TraceEntry = Step & { event:Event; code?:string; field?:string; details?:FanqieDirectoryTraceDetails };
+type TraceEntry = Step & { event:Event; code?:string; field?:string; details?:FanqieDirectoryTraceDetails; failure?:{name:string;message:string;causeName?:string;browserCode?:string;httpStatus?:number;playwrightOperation?:string;waitApi?:string;timeoutBudgetMs?:number} };
 type SigningScope = {url:string; state:'active'|'navigated'|'detached'};
 type SigningRegion = {x:number;y:number;width:number;height:number;caption:number;error:boolean};
 type SigningError = {code:typeof signingErrorCodes[number];region?:SigningRegion};
@@ -99,7 +106,37 @@ function safeDetails(details?:FanqieDirectoryTraceDetails){
     const value=details[key];
     if(typeof value==='number'&&Number.isSafeInteger(value)&&value>=0)counts[key]=value;
   }
+  if(typeof details.songTitle==='string'){
+    const title=details.songTitle.replace(/[\u0000-\u001f\u007f]/gu,' ').trim().slice(0,80);
+    if(title)counts.songTitle=title;
+  }
+  if(details.issueCounts&&typeof details.issueCounts==='object'){
+    const issueCounts:Record<string,number>={};
+    for(const [code,value] of Object.entries(details.issueCounts).slice(0,24)){
+      if(/^[A-Z0-9_]{1,80}$/u.test(code)&&typeof value==='number'&&Number.isSafeInteger(value)&&value>0)
+        issueCounts[code]=value;
+    }
+    if(Object.keys(issueCounts).length)counts.issueCounts=issueCounts;
+  }
   if(Object.keys(counts).length)return counts;
+}
+
+function safeFailure(error:unknown) {
+  if (!(error instanceof Error)) return {name:'UnknownError',message:'非 Error 异常'};
+  const cause=error.cause instanceof Error?error.cause:undefined;
+  const rawMessage=cause?`${error.message}；${cause.name}: ${cause.message}`:error.message;
+  const browserCode=/\bnet::(ERR_[A-Z0-9_]+)\b/u.exec(rawMessage)?.[1];
+  const httpStatus=/\bHTTP(?: response)?(?: status)?\s*(\d{3})\b/iu.exec(rawMessage)?.[1];
+  const playwrightOperation=/^(page|frame|locator|frameLocator)\.(goto|waitForNavigation|waitForURL|waitForLoadState|waitForResponse|waitForRequest|waitForSelector|waitFor|click|dblclick|fill|type|press|check|uncheck|selectOption|setInputFiles|evaluate|screenshot)\b/u.exec(rawMessage)?.[0];
+  const waitApi=/\bwaiting for (getByText|getByRole|getByLabel|getByPlaceholder|getByTestId|locator|frameLocator)\b/u.exec(rawMessage)?.[1];
+  const timeoutBudgetMs=/\bTimeout\s+(\d{1,7})ms exceeded\b/u.exec(rawMessage)?.[1];
+  const message=rawMessage
+    .replace(/https?:\/\/[^\s"'<>]+/giu,'[URL]')
+    .replace(/[A-Z]:\\[^\s"'<>]+/giu,'[本地路径]')
+    .replace(/(?:\bartist_id=)[^&\s]+/giu,'artist_id=[已隐藏]')
+    .replace(/(['"“”])[^'"“”\r\n]{2,120}\1/gu,'[文本已隐藏]')
+    .replace(/\s+/gu,' ').trim().slice(0,320);
+  return {name:error.name.slice(0,80),message:message||'异常没有提供说明',...(cause?{causeName:cause.name.slice(0,80)}:{}),...(browserCode?{browserCode}:{}),...(httpStatus?{httpStatus:Number(httpStatus)}:{}),...(playwrightOperation?{playwrightOperation}:{}),...(waitApi?{waitApi}:{}),...(timeoutBudgetMs?{timeoutBudgetMs:Number(timeoutBudgetMs)}:{})};
 }
 
 // Preserve layout and error styling while suppressing text and media, including
@@ -180,8 +217,8 @@ function screenshotBlock(page?:Page,signing?:SigningScope){
 
 function operationError(error:unknown,signing?:SigningScope){
   if(error instanceof Error){
-    if(error.name==='TimeoutError')return 'FANQIE_BROWSER_TIMEOUT';
-    if(error.message.includes('strict mode violation'))return 'FANQIE_CONTROL_AMBIGUOUS';
+    const browserFailure=fanqieBrowserFailureCode(error);
+    if(browserFailure!=='FANQIE_BROWSER_OPERATION_FAILED')return browserFailure;
     if(signing?signingOperationCodes.has(error.message):/^FANQIE_[A-Z0-9_]{1,80}$/u.test(error.message))return error.message;
   }
   return 'FANQIE_BROWSER_OPERATION_FAILED';
@@ -529,7 +566,8 @@ export class FanqieDirectoryTrace {
             }
           }
         }
-        return this.append(number,{...location,event:phase,code:phase==='error'?operationError(error,signing):undefined,details:safeDetails(details)},
+        return this.append(number,{...location,event:phase,code:phase==='error'?operationError(error,signing):undefined,
+          failure:phase==='error'?safeFailure(error):undefined,details:safeDetails(details)},
           page,signing?{signing:{scope:signing}}:undefined);
       },
       watch:page=>acquire(page,watchers),

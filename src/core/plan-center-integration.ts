@@ -116,6 +116,7 @@ export function executePlanCenter(s:Studio,method:string,raw:unknown){
    return service.run(input);
   }
   case 'planCenter.checkMusicReceipt':return requestPlanPuleRecovery(s,PlanCenterRetrySchema.parse(raw).attemptId,'graph');
+  case 'planCenter.recordReconciliation':return service.recordManualObservation(raw);
   case 'planCenter.stop':{
    const {runId}=PlanCenterStopSchema.parse(raw);
    if(new CenterStore(s.repo).get('run',runId)?.source==='publication_task')throw Error('PLAN_TASK_OWNED_RUN');
@@ -128,7 +129,7 @@ export function executePlanCenter(s:Studio,method:string,raw:unknown){
     if(attempt?.stage==='text_score'&&typeof attempt.result?.evaluationRunId==='string'){
      const owner=rows.runs.find(r=>r.id===attempt.runId);
      if(owner?.stopRequested)throw Error('STOP_REQUESTED');
-     if(!['failed','not_found'].includes(attempt.state))throw Error('RECONCILE_REQUIRED');
+     if(attempt.state!=='failed')throw Error('RECONCILE_REQUIRED');
      const flow=s.productionFlowService(),child=flow.context(attempt.result.evaluationRunId).run;
      if(!child.plan.managedByPlanCenter||child.plan.managedOwnerKey!==attempt.id)throw Error('MANAGED_SCORE_SCOPE');
      flow.retry({id:child.id,expectedRevision:child.revision});
@@ -204,7 +205,7 @@ export function tickPlanCenter(s:Studio){
          evaluatedMaterial:{draftId:evaluation.candidate.id,title:evaluation.candidate.draft.title,
            lyrics:evaluation.candidate.pair.lyrics,musicPrompt:evaluation.candidate.pair.musicPrompt,pairHash:evaluation.candidate.pairHash}};
        const record={attemptId:attempt.id,status:'succeeded' as const,evidenceId:evaluation.score.operationId??evaluation.id,result:proof};
-       if(attempt.state==='unknown')service.reconcile({...record,status:'succeeded'});else service.record(record);
+       if(attempt.state==='unknown')service.reconcile({...record,status:'succeeded',source:'provider',actor:'text-evaluation'});else service.record(record);
      }else if(evaluation.state==='unknown'){
        if(attempt.state!=='unknown')service.record({attemptId:attempt.id,status:'unknown',externalTaskId:evaluation.operationId??evaluation.id,reason:'TEXT_OUTCOME_UNKNOWN',result});
      }else if(evaluation.state==='failed'||evaluation.state==='blocked'){

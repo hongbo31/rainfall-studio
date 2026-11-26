@@ -25,8 +25,10 @@ export async function prepareFanqieWorkMaterials(root:string,source:Pick<FanqieW
  fs.mkdirSync(folder,{recursive:true});
  const stem=String(source.title).replace(/[<>:"/\\|?*\x00-\x1f]/g,'_').replace(/[. ]+$/,'').slice(0,80)||'歌曲';
  const copyMP3=directoryUpload&&path.extname(source.audio.file).toLowerCase()==='.mp3';
- const files={audio:path.join(folder,stem+(copyMP3?'.mp3':'.wav')),cover:path.join(folder,stem+'-封面.jpg'),
-  ...(source.instrumental?{}:{lyrics:path.join(folder,stem+'-歌词.txt')})};
+ // Keep the same title stem for all attachment roles. Extensions distinguish the
+ // audio, image and lyric files without adding role suffixes to uploaded names.
+ const files={audio:path.join(folder,stem+(copyMP3?'.mp3':'.wav')),cover:path.join(folder,stem+'.jpg'),
+  ...(source.instrumental?{}:{lyrics:path.join(folder,stem+'.txt')})};
  if(copyMP3)fs.copyFileSync(source.audio.file,files.audio,fs.constants.COPYFILE_EXCL);
  else await run(ffmpeg,['-nostdin','-v','error','-n','-protocol_whitelist','file,pipe','-i',source.audio.file,'-map','0:a:0','-vn','-c:a','pcm_s16le','-ar',String(rate),'-ac','2',files.audio],{windowsHide:true,timeout:120000,maxBuffer:1024*1024});
  guard();

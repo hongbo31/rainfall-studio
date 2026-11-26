@@ -62,8 +62,8 @@ async function readPage(page: AccountDocument, guard: () => void, query: FanqieC
   });
   if (query.id) parameters.set('product_id', query.id);
 
-  const text = await page.locator('body').evaluate(async (_, {profile, request}) => {
-    if (location.href !== profile) return null;
+  const read = () => page.locator('body').evaluate(async (_, {profile, request}) => {
+    if (location.href !== profile) return {kind:'scope'} as const;
     const result = await fetch(request, {
       method: 'GET', credentials: 'same-origin', redirect: 'error', cache: 'no-store',
       headers: {
@@ -73,13 +73,28 @@ async function readPage(page: AccountDocument, guard: () => void, query: FanqieC
         'X-Fm-Browser-Name': navigator.appCodeName,
       },
       signal: AbortSignal.timeout(12000),
-    }).catch(() => null);
-    return result?.ok ? result.text() : null;
+    }).catch(error => ({error: error instanceof Error ? `${error.name}: ${error.message}` : 'Fetch failed'}));
+    if ('error' in result) return {kind:'network', detail:result.error} as const;
+    if (!result.ok) return {kind:'http', status:result.status, contentType:result.headers.get('content-type') ?? ''} as const;
+    return {kind:'response', text:await result.text()} as const;
   }, {profile: profileUrl, request: listPath + '?' + parameters}, {timeout: 14000});
+  let response: Awaited<ReturnType<typeof read>>;
+  for (let attempt = 1; ; attempt++) {
+    guard();
+    response = await read();
+    guard();
+    const transient = response.kind === 'network' || response.kind === 'http' && response.status >= 500;
+    if (!transient || attempt >= 3) break;
+    await delay(500 * attempt);
+  }
   guard();
   if (page.url() !== profileUrl) throw Error('FANQIE_CATALOG_SCOPE_CHANGED');
-  if (text === null) throw Error('FANQIE_CATALOG_LOOKUP_FAILED');
-  try { return parseResponse(text); }
+  if (response.kind === 'scope') throw Error('FANQIE_CATALOG_SCOPE_CHANGED');
+  if (response.kind === 'network') throw Error('FANQIE_CATALOG_LOOKUP_FAILED', {cause: Error(response.detail)});
+  if (response.kind === 'http') throw Error('FANQIE_CATALOG_LOOKUP_FAILED', {
+    cause: Error(`番茄作品查询接口返回 HTTP ${response.status}${response.contentType ? ` (${response.contentType})` : ''}`),
+  });
+  try { return parseResponse(response.text); }
   catch (error) {
     if (error instanceof SyntaxError) throw Error('FANQIE_CATALOG_LOOKUP_UNVERIFIED');
     throw error;

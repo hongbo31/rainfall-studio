@@ -58,7 +58,7 @@ export function tickProviderPlanText(s:Studio,run:PlanCenterRun,item:PlanCenterI
  const record=(a:PlanCenterStageAttempt,status:'succeeded'|'failed'|'unknown'|'waiting',result:Record<string,unknown>,evidenceId?:string,reason?:string)=>{
   if(['succeeded','failed','not_found'].includes(a.state))return;
   const input={attemptId:a.id,status,result,...(evidenceId?{evidenceId}:{}),...(reason?{reason}:{})};
-  if(a.state==='unknown'&&(status==='succeeded'||status==='failed'))center.reconcile({...input,status,evidenceId:evidenceId??'provider-job:'+String(result.providerJobId)});else center.record(input);
+  if(a.state==='unknown'&&(status==='succeeded'||status==='failed'))center.reconcile({...input,status,evidenceId:evidenceId??'provider-job:'+String(result.providerJobId),source:'provider',actor:'provider-plan-text'});else center.record(input);
  };
  let generation=attempts().find(a=>a.stage==='text_generate');
  if(run.stopRequested){

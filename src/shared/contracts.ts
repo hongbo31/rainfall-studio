@@ -1,7 +1,7 @@
 export type Mode = "production" | "simulation";
 export type RpcResult =
   | { ok: true; value: any }
-  | { ok: false; error: { code: string; message: string } };
+  | { ok: false; error: { code: string; message: string; activeRunId?: string } };
 export interface Bridge {
   fanqieCatalog(action:'open'|'read'|'status'|'syncProfile',input?:unknown):Promise<RpcResult>;
   fanqieUpload(action:'configuration'|'saveConfiguration'|'publishBatch'|'authorizeExisting'|'publishConfigured'|'publishWork'|'status'|'pick'|'selectWork'|'check'|'prepare'|'upload'|'reconcile'|'recoverOpening'|'previewDownloads'|'publishDownloads'|'reconcileDownloads'|'downloadStatus'|'openDownloadDiagnostics',input?:unknown):Promise<RpcResult>;

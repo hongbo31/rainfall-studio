@@ -486,6 +486,11 @@ export class LyricWritingService {
         return this.visible(this.save({ ...job, reservedMicros: 0, state: job.stopRequested ? "stopped" : "blocked",
           reason: job.stopRequested ? null : result.reason }));
       }
+      if (result.status === "confirmed_unsent") {
+        return this.visible(this.save({ ...job, reservedMicros: 0,
+          state: job.stopRequested ? "stopped" : "blocked",
+          reason: job.stopRequested ? null : result.reason ?? "TEXT_REQUEST_PREPARATION_FAILED" }));
+      }
       const matches = result.providerModel !== null && job.price.responseModelIds.includes(result.providerModel);
       let cost: number | null = null;
       if (matches && result.usage) {
