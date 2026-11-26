@@ -112,6 +112,14 @@ export class PublicationTaskService {
     });
   }
   history(id: string) { return this.runs(id); }
+  pruneLogsBefore(cutoff: number) {
+    for (const run of this.runs()) {
+      const previous = Array.isArray(run.logs) ? run.logs : [];
+      const logs = previous.filter(entry => typeof entry?.at === "string" && Date.parse(entry.at) >= cutoff);
+      if (logs.length === previous.length) continue;
+      this.repo.transaction(() => this.putRun({ ...run, logs }));
+    }
+  }
   save(raw: unknown) {
     const input = PublicationTaskSaveSchema.parse(raw);
     return this.repo.transaction(() => {

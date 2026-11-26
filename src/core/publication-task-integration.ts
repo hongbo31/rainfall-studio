@@ -8,6 +8,7 @@ import {
 import { readSunoBrowserReceipt } from "../shared/plan-pule";
 import { workflowBrowserMusic } from "../shared/plan-workflow-fields";
 import { isLocalPublicationWorkflow, workflowPublicationPlatforms } from "../shared/plan-workflow-graph";
+import { diagnosticRetentionMs, diagnosticRetentionSweepMs } from "../shared/diagnostic-retention";
 import { fanqieDownloadIssues } from "../shared/fanqie-downloads";
 import { stopPlanExecution } from "./plan-center-integration";
 import { CenterStore } from "./plan-center/storage";
@@ -245,8 +246,16 @@ function taskService(s: Studio) {
   }) };
 }
 
+const lastPublicationLogRetention=new WeakMap<Studio,number>();
 export function tickPublicationTasks(s: Studio) {
-  if (s.mode === "production") taskService(s).service.tick();
+  if (s.mode !== "production") return;
+  const service=taskService(s).service,now=s.now().getTime();
+  if(now-(lastPublicationLogRetention.get(s)??0)>=diagnosticRetentionSweepMs){
+    try{service.pruneLogsBefore(now-diagnosticRetentionMs);}
+    catch{console.warn("PUBLICATION_TASK_LOG_RETENTION_INCOMPLETE");}
+    finally{lastPublicationLogRetention.set(s,now);}
+  }
+  service.tick();
 }
 
 export function callPublicationTasks(s: Studio, method: string, input: unknown) {

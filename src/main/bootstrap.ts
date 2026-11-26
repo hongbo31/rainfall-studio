@@ -62,6 +62,8 @@ import {createPlanPuleRunner} from './plan-pule';
 import {createUnifiedPublishBroker,createTmeAiTransportProvider} from './tme/unified-publish';
 import {externalReceiptBarrier,persistExternalReceiptBarrier,persistExternalReceiptStop} from './tme/external-receipt-barrier';
 import {installNativeDiagnostics} from './native-diagnostics';
+import {cleanupExpiredDiagnostics} from './diagnostic-retention';
+import {diagnosticRetentionSweepMs} from '../shared/diagnostic-retention';
 import {chooseInboxBridgeProject} from './inbox-bridge';
 import {chooseDirectoryTaskSource} from './directory-tasks';
 import { DownloadArchiveRevisionSchema, downloadArchiveErrors, isConfiguredDownloadKind } from '../shared/download-archive';
@@ -634,6 +636,20 @@ async function rpc(method: string, input: any = {}) {
     child.postMessage({ id, method, input });
   });
 }
+function scheduleDiagnosticRetention(){
+  let running=false;
+  const sweep=async()=>{
+    if(running)return;
+    running=true;
+    try{
+      const report=await cleanupExpiredDiagnostics(root);
+      if(report.failures)console.warn('DIAGNOSTIC_RETENTION_INCOMPLETE',report.failures);
+    }catch{console.warn('DIAGNOSTIC_RETENTION_INCOMPLETE');}
+    finally{running=false;}
+  };
+  void sweep();
+  setInterval(()=>void sweep(),diagnosticRetentionSweepMs).unref();
+}
 function trusted(event: Invocation) {
   if (event === browserCaller) return;
   if (
@@ -1127,6 +1143,7 @@ app
       return;
     }
     lease = await acquireWorkspaceLease(root);
+    if(!offlineAcceptance)scheduleDiagnosticRetention();
     startCore();
     await ready;
     protocol.handle("app", (request) => {

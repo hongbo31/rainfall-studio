@@ -41,6 +41,38 @@ type SigningCapture = {scope:SigningScope;region?:SigningRegion};
 type ScreenshotEvidence = {signing?:SigningCapture;alert?:PageErrorRegion};
 type PageWatcher = {references:number;flush:()=>Promise<void>;stop:()=>void};
 const activeWrites=new Map<string,Promise<void>>();
+function traceKey(file:string){const resolved=path.resolve(file);return process.platform==='win32'?resolved.toLowerCase():resolved;}
+
+/** Remove expired diagnostic rows while serializing against this trace's pending writes. */
+export function pruneFanqieTraceFile(file:string,cutoff:number):Promise<boolean>{
+  const resolved=path.resolve(file),key=traceKey(resolved),previous=activeWrites.get(key)??Promise.resolve();
+  const operation=previous.then(()=>{
+    let stat:fs.Stats;
+    try{stat=fs.lstatSync(resolved);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return false;throw error;}
+    if(!stat.isFile()||stat.isSymbolicLink())return false;
+    const source=fs.readFileSync(resolved,'utf8');
+    const lines=source.split(/\r?\n/u).filter(Boolean),retained:string[]=[];
+    for(const line of lines){
+      try{
+        const row=JSON.parse(line) as {at?:unknown};
+        const at=typeof row.at==='string'?Date.parse(row.at):NaN;
+        if(Number.isFinite(at)&&at>=cutoff)retained.push(line);
+      }catch{/* Drop malformed rows because their age cannot be established. */}
+    }
+    if(retained.length===lines.length)return false;
+    if(!retained.length){fs.unlinkSync(resolved);return true;}
+    const temporary=resolved+'.retention-'+randomUUID()+'.tmp';
+    try{
+      fs.writeFileSync(temporary,retained.join('\n')+'\n',{encoding:'utf8',flag:'wx',flush:true});
+      fs.renameSync(temporary,resolved);
+    }finally{try{if(fs.existsSync(temporary))fs.unlinkSync(temporary);}catch{}}
+    return true;
+  });
+  const settled=operation.then(()=>undefined,()=>undefined);
+  activeWrites.set(key,settled);
+  void settled.then(()=>{if(activeWrites.get(key)===settled)activeWrites.delete(key);});
+  return operation;
+}
 const toast=directoryPageError;
 const inline=directoryInlineError+',.arco-upload-list-item-error';
 const validation=':is(form,.arco-form) :is([role="alert"],.arco-form-item-message,.error-message,[class*="error-message-"],.form-error,.upload-error)';
@@ -444,7 +476,7 @@ export class FanqieDirectoryTrace {
   private append(round:number,entry:TraceEntry,page?:Page,evidence?:ScreenshotEvidence){
     const at=new Date().toISOString();
     const observedUrl=entry.event==='error'?page?.url():undefined;
-    const key=process.platform==='win32'?this.file.toLowerCase():this.file;
+    const key=traceKey(this.file);
     const write=(activeWrites.get(key)??Promise.resolve()).then(async()=>{
       const sequence=lastSequence(this.file)+1;
       const image=entry.event==='error'?await this.capture(page,sequence,observedUrl,evidence):undefined;
