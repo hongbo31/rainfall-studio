@@ -17,6 +17,7 @@
 - 同一批避重只使用当前已经产生的标题；不得为等标题而串行化计划、增加自动模型调用或费用。
 - 同艺人近期避重最多参考 50 个作品名，按 `createdAt` 倒序；缺失时间或空标题不进入列表。
 - 新任务在初始预算计算时冻结标题提示上下文，并在后续派发复用，保证预算和实际请求一致。旧任务记录没有该可选内部上下文时沿用旧版系统提示，避免升级后旧请求长度变化导致预留预算不匹配；不做数据库迁移，API/UI 不暴露该字段。
+- 同批上下文查询在 SQLite 中只投影歌名/备选歌名及关联所需 ID；不得把包含歌词、素材或账号信息的完整计划条目/歌词任务载入 Core。
 - 延用 `title`、`alternateTitle`、现有清理与长度校验；无数据库迁移、无 UI 变化。
 - 不新增或运行测试；交付前做静态审阅和 `git diff --check`。只提交拥有的实现及交接文件到本地 `codex/genre-aware-song-titles` 分支，不推送。
 - 浏览器与 Windows 继续共用 `src/core/lyric-writing.ts` 中的业务逻辑。
@@ -50,5 +51,7 @@
 - [x] Update this handoff with actual changed files, behavior, static review evidence, unverified items, and rollback path. Do not revert any pre-existing uncommitted docs.
 - [x] Inspect all three generation request branches and the recent-title filter statically; run `git diff --check` only. Do not add or run tests, start a visible app/browser, or call paid text APIs.
 - [x] Commit only `src/core/lyric-writing.ts` and `handoff/2026-11-27-genre-aware-song-titles.md` on the local feature branch. Do not push or stage project-manager documentation.
+
+- [x] Keep same-batch SQL reads title-only: query material title fields and required relation IDs without decoding complete plan items or lyric jobs containing lyrics/assets. Preserve the existing version-selection semantics while projecting only the selected title values. A follow-up review fix also guards malformed primitive/null legacy versions while preserving the previous truthy/falsy fallback behavior.
 
 **Implementation note:** Plan Center siblings can be concurrent. Include titles that exist when a prompt is built; do not serialize other items just to manufacture an avoidance list. The model prompt reduces repetition but cannot guarantee unique model output.
