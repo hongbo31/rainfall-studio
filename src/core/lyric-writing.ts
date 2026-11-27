@@ -478,10 +478,10 @@ export class LyricWritingService {
   private messages(job: Job): ProviderTextRequest["messages"] {
     const generatedTitleContext = job.phase === "generate" && job.titleAvoidance
       ? { songType: job.songType, titleAvoidance: job.titleAvoidance } : undefined;
-    const applyGeneratedTitleGuidance = (task: string) => {
+    const applyGeneratedTitleGuidance = (task: string, includeInstrumentalGuidance = false) => {
       if (!generatedTitleContext) return task;
       const guidance = titleGuidance + genreTitleGuidance +
-        (generatedTitleContext.songType === "instrumental" ? instrumentalTitleGuidance : "");
+        (includeInstrumentalGuidance ? instrumentalTitleGuidance : "");
       return task.replace(legacyTitleGuidance, guidance);
     };
     if (job.kind === "inspiration") {
@@ -538,7 +538,7 @@ export class LyricWritingService {
     const gender = job.musician?.gender;
     const vocalGuidance = job.planAttemptId && task === "generate" && (gender === "male" || gender === "female")
       ? `本次计划的主唱为${gender === "male" ? "男声" : "女声"}。音乐风格 style 的主唱描述须与该配置一致。` : "";
-    return [{ role: "system", content: applyGeneratedTitleGuidance(useExpertReview ? expertReview : tasks[task]) + guidance + rewriteGuidance + limit + vocalGuidance },
+    return [{ role: "system", content: applyGeneratedTitleGuidance(useExpertReview ? expertReview : tasks[task], task === "instrumental") + guidance + rewriteGuidance + limit + vocalGuidance },
       { role: "user", content: JSON.stringify(input) }];
   }
 
