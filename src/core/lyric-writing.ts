@@ -186,6 +186,9 @@ function inspirationMusicianContext(artist: Row, songType: SongType) {
 }
 
 const jobTables = ["lyricJobs", "inspirationJobs"] as const;
+const workCreationTimestamp = z.iso.datetime({ offset: true });
+// Match String.trim() for historical titles, including full-width spaces.
+const workTitleWhitespace = " \t\n\v\f\r\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff";
 
 function nonemptyTitle(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
@@ -193,6 +196,12 @@ function nonemptyTitle(value: unknown): value is string {
 
 export class LyricWritingService {
   constructor(readonly repo: Repository, private readonly now: () => Date = () => new Date()) {
+    this.repo.db.function("lyric_work_created_at_ms", { deterministic: true }, (value: unknown) => {
+      const parsed = workCreationTimestamp.safeParse(value);
+      if (!parsed.success) return null;
+      const timestamp = Date.parse(parsed.data);
+      return Number.isFinite(timestamp) ? timestamp : null;
+    });
     this.repo.transaction(() => {
       for (const job of this.jobs()) {
         if (job.state === "dispatching") this.save({ ...job, state: "unknown", reason: "TEXT_PROCESS_INTERRUPTED" });
@@ -221,14 +230,18 @@ export class LyricWritingService {
   }
 
   private recentArtistTitles(artistId: string) {
-    const rows = this.repo.db.prepare(`SELECT json_extract(data, '$.title') AS title,
-      json_extract(data, '$.createdAt') AS createdAt FROM works
-      WHERE artistId = ? AND json_type(data, '$.title') = 'text'`).all(artistId) as
-      { title: unknown; createdAt: unknown }[];
-    return rows.flatMap(({ title, createdAt }) => {
-      const timestamp = typeof createdAt === "string" ? Date.parse(createdAt) : NaN;
-      return nonemptyTitle(title) && Number.isFinite(timestamp) ? [{ title: title.trim(), timestamp }] : [];
-    }).sort((a, b) => b.timestamp - a.timestamp).slice(0, 50).map(row => row.title);
+    const rows = this.repo.db.prepare(`WITH artist_titles AS (
+      SELECT rowid, trim(json_extract(data, '$.title'), ?) AS title,
+        lyric_work_created_at_ms(json_extract(data, '$.createdAt')) AS created_at_ms
+      FROM works
+      WHERE artistId = ? AND json_type(data, '$.title') = 'text'
+        AND json_type(data, '$.createdAt') = 'text'
+    )
+    SELECT title FROM artist_titles
+    WHERE title <> '' AND created_at_ms IS NOT NULL
+    ORDER BY created_at_ms DESC, rowid DESC
+    LIMIT 50`).all(workTitleWhitespace, artistId) as { title: string }[];
+    return rows.map(row => row.title);
   }
 
   private earlierRunTitles(attemptId: string) {
