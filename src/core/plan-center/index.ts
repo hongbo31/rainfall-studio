@@ -390,7 +390,7 @@ export class PlanCenterService {
     if(stage==='lyric_write'){
       const plan=run.snapshot, issue=planWorkflowIssue(this.repo,plan,'run');
       if(issue)return {state:'blocked',reason:issue};
-      if(plan.workflow?.graph&&item.ordinal>1&&this.store.all('item').some(previous=>previous.runId===run.id&&
+      if(plan.workflow?.graph&&item.ordinal>1&&this.store.all('item',{field:'runId',values:[run.id]}).some(previous=>
         previous.ordinal<item.ordinal&&!['completed','waiting_publication'].includes(previous.state)))
         return {state:'waiting_workflow',reason:'PREVIOUS_WORKFLOW_PENDING'};
       if(!plan.authorization.text||!plan.text.consent)return {state:'blocked',reason:'TEXT_AUTHORIZATION_REQUIRED'};

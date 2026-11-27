@@ -9,8 +9,7 @@ import type { Repository } from "./database";
 const key = (id: string) => "api-profile:" + id;
 export function listApiProfiles(repo: Repository): ApiProfile[] {
   return repo
-    .all("settings")
-    .filter((row) => row.id.startsWith("api-profile:"))
+    .settingsByPrefix("api-profile:")
     .map((row) => apiProfileSchema.parse({ ...row, id: row.id.slice(12) }));
 }
 export function saveApiProfile(

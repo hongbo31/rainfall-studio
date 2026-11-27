@@ -3,7 +3,7 @@ import type {Repository} from './database';
 import type {Studio} from './studio';
 import type {PlanCenterRun,PlanCenterItem,PlanCenterStageAttempt} from '../shared/plan-center';
 import {ProviderTextService,verifyProviderTextGeneration,verifyProviderTextProof} from './provider-text';
-import {digest} from './plan-center/storage';
+import {CenterStore,digest} from './plan-center/storage';
 import {PlanCenterRunRecordSchema,PlanCenterItemSchema} from '../shared/plan-center';
 
 const bindingKey=(itemId:string)=>'provider-plan:binding:'+itemId;
@@ -47,7 +47,7 @@ export function providerMusicSource(repo:Repository,parentRunId:string,itemId:st
 
 export function stopProviderPlanText(s:Studio,runId:string){
  const service=providerTextService(s);
- for(const a of s.planCenterService().list().stageAttempts.filter(a=>a.runId===runId&&a.stage==='text_generate'))service.stop(a.id);
+ for(const a of new CenterStore(s.repo).all('stage',{field:'runId',values:[runId]}).filter(a=>a.stage==='text_generate'))service.stop(a.id);
 }
 
 /** Local orchestration only. Main owns all provider credentials and network execution. */

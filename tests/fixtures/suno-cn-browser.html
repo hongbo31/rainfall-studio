@@ -36,6 +36,13 @@
 const byId = id => document.getElementById(id);
 const log = data => console.log("fixture:" + JSON.stringify(data));
 const scenario = "SCENARIO";
+if (scenario.startsWith("create-label-")) {
+  const count = scenario === "create-label-three" ? 3 : 2;
+  byId("create").innerHTML = '<span class="app-button__content"><span class="points-action-text">创作</span><span>' + count + '首 · 10</span></span>';
+  byId("pure").setAttribute("aria-checked", "true");
+  byId("lyrics-section").hidden = true;
+  document.querySelector(".custom-vocal-segment").hidden = true;
+}
 const list = document.querySelector(".create-list-scroll");
 const popup = byId("menu");
 const waveDialog = byId("wave-dialog");
@@ -165,6 +172,10 @@ byId("confirm").onclick = () => {
 };
 byId("wave-request").onclick = () => {
   popup.hidden = byId("wave-menu").hidden = true;
+  if (scenario === "create-label-native-download") {
+    byId("wave").click();
+    return;
+  }
   waveReady.hidden = true;
   waveDialog.hidden = false;
   const songId = activeSong.dataset.id;

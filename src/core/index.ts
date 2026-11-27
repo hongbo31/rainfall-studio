@@ -11,6 +11,7 @@ import { materialEntries } from "./materials";
 export { materialEntries };
 export { probe, ffmpeg, ffprobe } from "./assets";
 import { Studio } from "./studio";
+import { createCoreRequestQueue } from "./request-queue";
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -168,7 +169,8 @@ if (port) {
     process.argv[3] === "simulation" ? "simulation" : "production",
     {musicAdapter:liveAdapter,accountIdentityAdapter:identityBridge.adapter},
   );
-  let chain = Promise.resolve().then(() => studio.scanInbox());
+  const queue = createCoreRequestQueue();
+  void queue.enqueue(() => studio.scanInbox()).catch(() => undefined);
   recoverPlanFanqie(studio);
   recoverCoverImages(studio);
   const execute = async (method: string, input: any) => {
@@ -416,7 +418,7 @@ if (port) {
     if(['inbox.pause','inbox.bridge.pause','internal.inboxBridge.configure'].includes(data.method)){
       try{studio.inboxController().interruptRequest(data.method,data.input)}catch{/* Serialized execution returns the validation error. */}
     }
-    chain = chain.then(async () => {
+    void queue.enqueue(async () => {
       try {
         const value = await execute(data.method, data.input);
         port.postMessage({ id: data.id, result: { ok: true, value } });
@@ -443,12 +445,10 @@ if (port) {
           },
         });
       }
-    });
+    }).catch(() => undefined);
   });
   setInterval(() => {
-    chain = chain
-      .then(() => (studio.closing ? undefined : studio.tick()))
-      .catch(() => undefined);
+    void queue.tick(() => (studio.closing ? undefined : studio.tick())).catch(() => undefined);
   }, 1000).unref();
   port.postMessage({ ready: true });
 }

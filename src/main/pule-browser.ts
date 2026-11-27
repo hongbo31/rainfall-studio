@@ -192,7 +192,7 @@ function recordedArchiveFolder(recording: PuleFile) {
   return songDownloadCollisionStem(folder) === name ? path.basename(path.dirname(dir)) : folder;
 }
 
-function coverSource(archiveRoot: string, recording: PuleFile) {
+function coverSource(archiveRoot: string, recording: PuleFile, allowExistingCover = false) {
   const { dir, base, name, ext } = path.parse(recording.path);
   const relative = path.relative(archiveRoot, dir);
   const [folder, collision, ...extra] = relative.split(path.sep);
@@ -210,7 +210,7 @@ function coverSource(archiveRoot: string, recording: PuleFile) {
         if (identity(archiveRoot, true) !== rootIdentity || identity(dir, true) !== folderIdentity ||
             path.relative(dir, fs.realpathSync.native(dir)) || identity(recording.path) !== waveIdentity)
           throw Error(unavailable);
-        if (fs.lstatSync(destination, { throwIfNoEntry: false })) throw Error("PULE_COVER_ALREADY_EXISTS");
+        if (!allowExistingCover && fs.lstatSync(destination, { throwIfNoEntry: false })) throw Error("PULE_COVER_ALREADY_EXISTS");
       } catch (error) {
         if (error instanceof Error && error.message === "PULE_COVER_ALREADY_EXISTS") throw error;
         throw Error(unavailable);
@@ -356,8 +356,24 @@ export function createPuleBrowserJobs(port: Ports) {
   };
 
   const generateRecordingCover = async (task: Active, recording: PuleFile, prompt: string,
-    profile: NonNullable<PuleScope["coverProfile"]>, resolution: number | undefined, guardRecording: () => void) => {
+    profile: NonNullable<PuleScope["coverProfile"]>, resolution: number | undefined, guardRecording: () => void,
+    guardPeer: (recording: PuleFile) => void = () => task.guard()) => {
     const guard = () => { task.guard(); guardRecording(); };
+    const reusable = task.record.job.files.find(file => file !== recording && file.cover);
+    if (reusable?.cover) {
+      const { dir, name } = path.parse(reusable.path);
+      const expected = path.join(dir, name + ".png");
+      if (reusable.cover.path !== expected || reusable.cover.name !== path.basename(expected))
+        throw Error("PULE_COVER_SOURCE_UNAVAILABLE");
+      guardPeer(reusable);
+      const coverIdentity = identity(expected);
+      const coverBytes = await fsp.readFile(expected);
+      guardPeer(reusable);
+      if (identity(expected) !== coverIdentity) throw Error("PULE_COVER_SOURCE_UNAVAILABLE");
+      const cover = await saveArtwork(coverBytes, recording.path, guard, resolution);
+      update(task, { files: task.record.job.files.map(file => file === recording ? { ...file, cover } : file) });
+      return;
+    }
     let dispatched = false, bytes: Buffer;
     guard();
     try {
@@ -427,6 +443,7 @@ export function createPuleBrowserJobs(port: Ports) {
       step: "opening", updatedAt: new Date().toISOString(), files: [],
       ...(image && { coverImage: { providerId: image.providerId, modelId: image.modelId } }) };
     const lyricsText = input.instrumental ? suno ? "" : undefined : input.lyrics.replace(/\r\n?/gu, "\n");
+    const companionText = input.instrumental ? input.style.replace(/\r\n?/gu, "\n") : lyricsText;
     const promptFor = (version: PuleVersion, title: string) => recordingCoverPrompt({
       title, artist: scope.singers[version], lyrics: lyricsText,
       genre: input.style, mood: scope.mood, coverStyle: scope.coverStyle,
@@ -520,9 +537,9 @@ export function createPuleBrowserJobs(port: Ports) {
                 const outputDirectories = task.record.job.outputDirectories;
                 update(task, { files: [...files, recording],
                   ...(outputDirectories && { outputDirectories: { ...outputDirectories, [version]: recordingFolder } }) });
-                if (lyricsText !== undefined) {
+                if (companionText !== undefined) {
                   const guard = () => guardRecording(version, wav.path);
-                  const lyrics = await saveCompanion(recordingFolder, path.parse(wav.path).name + ".txt", lyricsText, guard, "PULE_LYRICS_SAVE_FAILED");
+                  const lyrics = await saveCompanion(recordingFolder, path.parse(wav.path).name + ".txt", companionText, guard, "PULE_LYRICS_SAVE_FAILED");
                   update(task, { files: [...files, { ...recording, lyrics }] });
                 }
               },
@@ -531,7 +548,7 @@ export function createPuleBrowserJobs(port: Ports) {
                 const recording = task.record.job.files.find(file => file.version === version && file.songId === songId);
                 if (!recording) throw Error("PULE_RESULT_UNCLEAR");
                 await generateRecordingCover(task, recording, promptFor(version, title), coverProfile, scope.coverResolution,
-                  () => guardRecording(version, recording.path));
+                  () => guardRecording(version, recording.path), peer => guardRecording(peer.version, peer.path));
               },
             }, {}, phase);
           } finally {
@@ -548,7 +565,7 @@ export function createPuleBrowserJobs(port: Ports) {
         const files = task.record.job.files;
         if (files.length !== 2) throw Error("PULE_DOWNLOAD_FAILED");
         if (files.some(file => !file.cover)) throw Error("PULE_COVER_SAVE_FAILED");
-        if (lyricsText !== undefined && files.some(file => !file.lyrics)) throw Error("PULE_LYRICS_SAVE_FAILED");
+        if (companionText !== undefined && files.some(file => !file.lyrics)) throw Error("PULE_LYRICS_SAVE_FAILED");
         update(task, { status: "completed", quote: undefined });
       } catch (error) {
         recordFailure(task, error);
@@ -585,8 +602,9 @@ export function createPuleBrowserJobs(port: Ports) {
     if (current.job.updatedAt !== record.job.updatedAt) return view(current);
     if (Array.from(active.values()).some(task => task.record.job.accountId === current.job.accountId)) throw Error("PULE_ACCOUNT_BUSY");
     const resolution = coverResolutionSchema.optional().parse(record.coverPlan ? record.coverPlan.resolution : scope.coverResolution);
+    const sources = new Map([a, b].map(file => [file.version, coverSource(archiveRoot, file, true)] as const));
     const inputs = [a, b].filter(file => !file.cover).map(file => {
-      const source = coverSource(archiveRoot, file);
+      const source = sources.get(file.version)!;
       const title = file.version === "A" ? record.job.title : path.parse(file.name).name;
       const saved = record.coverPlan?.prompts?.[file.version];
       const prompt = typeof saved === "string" && saved.trim() && Buffer.byteLength(saved) <= 900 ? saved : recordingCoverPrompt({
@@ -601,7 +619,13 @@ export function createPuleBrowserJobs(port: Ports) {
     active.set(id, task);
     task.execution = (async () => {
       try {
-        for (const { file, guard, prompt } of inputs) await generateRecordingCover(task, file, prompt, coverProfile, resolution, guard);
+        for (const { file, guard, prompt } of inputs)
+          await generateRecordingCover(task, file, prompt, coverProfile, resolution, guard,
+            peer => {
+              const source = sources.get(peer.version);
+              if (!source) throw Error("PULE_COVER_SOURCE_UNAVAILABLE");
+              source.guard();
+            });
         update(task, { status: "completed" });
       } catch (error) { recordFailure(task, error); }
       finally { active.delete(id); }

@@ -27,8 +27,7 @@ export function resolveFanqieWork(s:Studio,raw:unknown) {
  const instrumental=work.config?.voice==='instrumental';
  const actual=selection.useVersionMetadata
   ?work.audioVersions?.find((row:{assetId:string})=>row.assetId===audioId)?.actualLyrics?.text:undefined;
- const lyrics=instrumental?'':actual?cleanLyricText(actual).cleaned:s.lyricService().forWork(work).cleaned;
- if(!instrumental&&!lyrics.trim())throw Error('FANQIE_LYRICS_INVALID');
+ const lyrics=actual!==undefined?cleanLyricText(actual).cleaned:s.lyricService().forWork(work).cleaned;
  const title=selection.useVersionMetadata?workVersionTitle(versionWork,slot):work.title;
  const source={...selection,title,audio,cover,lyrics,ai:work.ai,...(instrumental?{instrumental:true as const}:{})};
  return {...source,artistId:work.artistId as string,fingerprint:hash(source),...(credits?{credits}:{})};

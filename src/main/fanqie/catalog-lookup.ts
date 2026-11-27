@@ -37,6 +37,14 @@ const responseSchema = z.object({
   code: z.literal(0),
   data: z.object({total_count: integer, music_ugc_product_list: z.array(workSchema).nullish()}),
 });
+const responseFields=new Set([
+  'code','data','total_count','music_ugc_product_list','product_id','contract_id','name','music_ugc_product_status',
+  'create_time','on_shelf_time','music_ugc_extra','music_audit_info','common_modify_audit_info','status',
+]);
+
+function unverified(reason:string){
+  return Error('FANQIE_CATALOG_LOOKUP_UNVERIFIED',{cause:Error(reason)});
+}
 
 function parseResponse(text: string) {
   // The site can encode 64-bit IDs as JSON numbers. Keep their exact digits.
@@ -45,7 +53,11 @@ function parseResponse(text: string) {
   if (typeof decoded === 'object' && decoded !== null && 'code' in decoded && decoded.code === -2)
     throw Error('FANQIE_CATALOG_LOOKUP_LOGIN_REQUIRED');
   const result = responseSchema.safeParse(decoded);
-  if (!result.success) throw Error('FANQIE_CATALOG_LOOKUP_UNVERIFIED');
+  if (!result.success) {
+    const issue=result.error.issues[0];
+    const field=issue.path.map(part=>typeof part==='number'?'[]':typeof part==='string'&&responseFields.has(part)?part:'field').join('.')||'root';
+    throw unverified(`response-schema-invalid:${field}:${issue.code}`);
+  }
   return result.data.data;
 }
 
@@ -96,7 +108,7 @@ async function readPage(page: AccountDocument, guard: () => void, query: FanqieC
   });
   try { return parseResponse(response.text); }
   catch (error) {
-    if (error instanceof SyntaxError) throw Error('FANQIE_CATALOG_LOOKUP_UNVERIFIED');
+    if (error instanceof SyntaxError) throw unverified('response-json-invalid');
     throw error;
   }
 }
@@ -109,14 +121,17 @@ async function search(page: AccountDocument, guard: () => void, query: FanqieCat
     const response = await readPage(page, guard, query, index);
     total ??= response.total_count;
     const records = response.music_ugc_product_list ?? [];
-    if (response.total_count !== total || records.length !== Math.min(pageSize, total - index * pageSize))
-      throw Error('FANQIE_CATALOG_LOOKUP_UNVERIFIED');
+    if (response.total_count !== total) throw unverified('pagination-total-changed');
+    const expectedCount=Math.min(pageSize,total-index*pageSize);
+    if (records.length !== expectedCount)
+      throw unverified(`pagination-item-count-mismatch:expected-${expectedCount}:received-${records.length}`);
     if (total > maxTitleResults || (query.id && total > 1))
       throw Error('FANQIE_CATALOG_LOOKUP_TOO_BROAD');
     for (const record of records) {
       const id = record.product_id;
-      if (seen.has(id) || (query.id && (id !== query.id || record.name !== query.title)))
-        throw Error('FANQIE_CATALOG_LOOKUP_UNVERIFIED');
+      if (seen.has(id)) throw unverified('duplicate-product-id-in-pages');
+      if (query.id && id !== query.id) throw unverified('product-id-does-not-match-query');
+      if (query.id && record.name !== query.title) throw unverified('product-title-does-not-match-query');
       seen.add(id);
       if (fanqieTitleKey(record.name) !== fanqieTitleKey(query.title)) continue;
       const status = record.music_ugc_product_status;
@@ -144,16 +159,30 @@ export async function readFanqieDirectoryCatalog(
   const titles = new Set<string>();
   const searched = new Set<string>();
   const receiptDeadline = Date.now() + 15000;
-  for (const {title: rawTitle, id, waitForReceipt} of queries) {
+  const searchTitle=async(query:FanqieCatalogQuery,queryIndex:number)=>{
+    let diagnostic='unclassified';
+    for(let attempt=1;attempt<=2;attempt++){
+      try{return await search(page,guard,query);}
+      catch(error){
+        if(!(error instanceof Error)||error.message!=='FANQIE_CATALOG_LOOKUP_UNVERIFIED')throw error;
+        diagnostic=error.cause instanceof Error?error.cause.message:'unclassified';
+        if(attempt===2)
+          throw unverified(`query-${queryIndex+1}-of-${queries.length}:${diagnostic}:attempts-2`);
+        await delay(350);
+      }
+    }
+    throw unverified(`query-${queryIndex+1}-of-${queries.length}:${diagnostic}:retry-exhausted`);
+  };
+  for (const [queryIndex,{title: rawTitle, id, waitForReceipt}] of queries.entries()) {
     const title = rawTitle.trim();
     if (!title || title.length > maxTitleLength || (id !== undefined && !idSchema.safeParse(id).success))
-      throw Error('FANQIE_CATALOG_LOOKUP_UNVERIFIED');
+      throw unverified(`query-${queryIndex+1}-of-${queries.length}:invalid-query`);
     const key = JSON.stringify([title, id]);
     if (searched.has(key)) continue;
-    let matches = await search(page, guard, {title, id});
+    let matches = await searchTitle({title, id},queryIndex);
     while (waitForReceipt && !matches.some(row => row.title === title) && Date.now() < receiptDeadline) {
       await delay(750);
-      matches = await search(page, guard, {title, id});
+      matches = await searchTitle({title, id},queryIndex);
     }
     searched.add(key);
     if (!id) titles.add(title);
@@ -161,7 +190,7 @@ export async function readFanqieDirectoryCatalog(
       const previous = rows.get(row.id);
       if (previous && (previous.title !== row.title || previous.stage !== row.stage ||
           JSON.stringify(previous.contract) !== JSON.stringify(row.contract)))
-        throw Error('FANQIE_CATALOG_LOOKUP_UNVERIFIED');
+        throw unverified(`query-${queryIndex+1}-of-${queries.length}:duplicate-product-state-conflict`);
       rows.set(row.id, row);
     }
   }

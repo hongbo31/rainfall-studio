@@ -10,7 +10,7 @@ import type {FanqieWorkSource} from '../../core/fanqie-work';
 import type {FanqieAssets} from '../../shared/fanqie';
 const run=promisify(execFile);
 /** Publication derivatives only. Originals and library metadata remain unchanged. */
-export async function prepareFanqieWorkMaterials(root:string,source:Pick<FanqieWorkSource,'title'|'audio'|'cover'|'lyrics'|'instrumental'>,guard:()=>void,directoryUpload=false) {
+export async function prepareFanqieWorkMaterials(root:string,source:Pick<FanqieWorkSource,'title'|'audio'|'cover'|'lyrics'>,guard:()=>void,directoryUpload=false) {
  guard();for(const asset of [source.audio,source.cover])assertPublicationFile(asset,{error:'FANQIE_ASSET_CHANGED',rejectSymlinks:true});
  const metadata=probe(source.audio.file),streams=metadata.streams?.filter((stream:any)=>stream.codec_type==='audio');
  const audio=streams?.[0],duration=Number(metadata.format?.duration),rate=Number(audio?.sample_rate);
@@ -28,7 +28,7 @@ export async function prepareFanqieWorkMaterials(root:string,source:Pick<FanqieW
  // Keep the same title stem for all attachment roles. Extensions distinguish the
  // audio, image and lyric files without adding role suffixes to uploaded names.
  const files={audio:path.join(folder,stem+(copyMP3?'.mp3':'.wav')),cover:path.join(folder,stem+'.jpg'),
-  ...(source.instrumental?{}:{lyrics:path.join(folder,stem+'.txt')})};
+  ...(source.lyrics.trim()?{lyrics:path.join(folder,stem+'.txt')}:{})};
  if(copyMP3)fs.copyFileSync(source.audio.file,files.audio,fs.constants.COPYFILE_EXCL);
  else await run(ffmpeg,['-nostdin','-v','error','-n','-protocol_whitelist','file,pipe','-i',source.audio.file,'-map','0:a:0','-vn','-c:a','pcm_s16le','-ar',String(rate),'-ac','2',files.audio],{windowsHide:true,timeout:120000,maxBuffer:1024*1024});
  guard();

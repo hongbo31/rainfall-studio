@@ -38,12 +38,11 @@ const sizeText = (bytes: number) => {
 const coverCropWaitTimeoutMs = 60_000;
 export function expectedFanqieForm(input: FanqieInput): FanqieExpectedForm {
   const lyrics=input.assets.lyrics;
-  if(!input.instrumental&&!lyrics)throw Error('FANQIE_LYRICS_INVALID');
   const audioFileName = path.basename(input.assets.audio.file);
   return {title: input.title, authors: input.authors, ai: input.ai, musicType: input.musicType,
     // The uploaded attachment name must be derived from the verified local asset, never the editable work title.
     audio: {displayName: path.parse(audioFileName).name, format: path.extname(audioFileName).toLowerCase() === '.wav' ? 'WAV' : 'MP3', displaySize: sizeText(input.assets.audio.bytes), bytes: input.assets.audio.bytes},
-    ...(input.instrumental?{instrumental:true as const}:{lyrics:{fileName:path.basename(lyrics!.file),displaySize:sizeText(lyrics!.bytes),bytes:lyrics!.bytes}})};
+    ...(lyrics?{lyrics:{fileName:path.basename(lyrics.file),displaySize:sizeText(lyrics.bytes),bytes:lyrics.bytes}}:{})};
 }
 export async function executeFanqieNativeUpload(context: BrowserContext, input: FanqieInput,
   callbacks: {guard: () => void; intent: (step: string) => Promise<void>; progress: (step: string) => void; diagnostic?:(value:unknown)=>void}) {
@@ -91,21 +90,12 @@ export async function executeFanqieNativeUpload(context: BrowserContext, input: 
   if (before.title || Object.values(before.authors).some(v => v.length) || before.coverPreview.length || /上传完成/.test(before.audioText + before.lyricsText))
     throw Error('FANQIE_EXISTING_FORM_REQUIRES_RECONCILIATION');
   if (before.musicType !== '原创' || input.musicType !== 'original') throw Error('FANQIE_MUSIC_TYPE_UNSUPPORTED');
-  if(input.instrumental){
-    const form=page.locator('form').filter({has:page.getByRole('textbox',{name:'作品名称',exact:true})});
-    const choice=form.getByRole('radio',{name:'纯音乐',exact:true}).or(form.getByRole('checkbox',{name:'纯音乐',exact:true}));
-    if(await choice.count()!==1||!await choice.isVisible())throw Error('FANQIE_INSTRUMENTAL_FORM_UNVERIFIED');
-    if(!before.instrumental){await intent('select-instrumental');await assertScope();await choice.check();}
-    const observed=await readFanqieVisibleForm(adapter);
-    if(!observed.instrumental||observed.musicType!=='原创')throw Error('FANQIE_INSTRUMENTAL_FORM_UNVERIFIED');
-  }
   await intent('fill-title'); await page.getByRole('textbox', {name:'作品名称', exact:true}).fill(input.title);
   if (before.ai !== (input.ai ? '是' : '否')) {
     const ai = page.locator('.arco-form-item').filter({has:page.locator('label[for="songs_0_ai_usage_type_input"]')});
     await intent('declare-ai'); await ai.getByText(input.ai ? '是' : '否', {exact:true}).click();
   }
   for (const role of ['lyricist','composer','singer'] as const) {
-    if(input.instrumental&&role==='lyricist')continue;
     callbacks.progress('正在填写署名');
     await selectFanqieCredit(adapter, role, input.authors[role], intent, assertScope);
   }
@@ -128,21 +118,21 @@ export async function executeFanqieNativeUpload(context: BrowserContext, input: 
         (role === 'audio' ? state?.audioText : state?.lyricsText)?.trim().slice(0, 240)});
     throw Error('FANQIE_UPLOAD_READBACK_TIMEOUT');
   };
-  for (const role of fanqieRoles(input.instrumental)) {
+  for (const role of fanqieRoles(!!input.assets.lyrics)) {
     callbacks.progress({audio:'正在上传音频',lyrics:'正在上传歌词',cover:'正在上传封面'}[role]);
     const asset=input.assets[role];
     if(!asset)throw Error('FANQIE_ASSET_INVALID');
     if (role === 'cover') {
       let retries=0;
       let retryAfterCropTimeout=false;
-      let control=await fanqieFileControl(adapter, role,input.instrumental);
+      let control=await fanqieFileControl(adapter, role);
       for (;;) {
         try {
           await intent(retries ? `upload:cover:retry:${retries}` : 'upload:cover');
           await assertScope();
           if (retries) {
             const failed=page.locator('#songs_0_coverImage .upload-img-item-mask').getByText('上传失败',{exact:true});
-            if(retryAfterCropTimeout&&await failed.count()===0) control=await fanqieFileControl(adapter,role,input.instrumental);
+            if(retryAfterCropTimeout&&await failed.count()===0) control=await fanqieFileControl(adapter,role);
             else {
               if (await failed.count()!==1) throw Error('FANQIE_COVER_RETRY_CONTROL_UNVERIFIED');
               await failed.hover();
@@ -191,7 +181,7 @@ export async function executeFanqieNativeUpload(context: BrowserContext, input: 
       }
     } else {
       await intent('upload:'+role); await assertScope();
-      await chooseFanqieFile(adapter, await fanqieFileControl(adapter, role,input.instrumental),asset,assertScope);
+      await chooseFanqieFile(adapter, await fanqieFileControl(adapter, role),asset,assertScope);
       if (role === 'audio') await waitReadback(role, s => fanqieTransferVerified(s.audioText, expected.audio));
       else await waitReadback(role, s => fanqieTransferVerified(s.lyricsText, expected.lyrics!));
     }

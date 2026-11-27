@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { TmeDraft } from "../../shared/tme";
+import { windowsPowerShellExecutable } from "../../shared/host-executable-paths";
 import {
   agreementHash,
   type LiveTransport,
@@ -21,7 +22,7 @@ export class WindowsUiaTransport implements LiveTransport {
   private closed = false;
   constructor(
     private script: string,
-    private executable = "pwsh.exe",
+    private executable = windowsPowerShellExecutable(),
   ) {}
   dispose() {
     this.closed = true;

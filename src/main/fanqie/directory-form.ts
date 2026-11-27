@@ -1,11 +1,11 @@
 import path from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
-import type {BrowserContext, Locator, Page} from 'playwright-core';
+import type {BrowserContext, Locator, Page, Response} from 'playwright-core';
 import {fanqieOrigin, type FanqieAsset, type FanqieInput} from '../../shared/fanqie';
 import {fanqieDownloadBatchLimit, fanqieOriginalSingerSchema, fanqieOriginalWorkIdSchema} from '../../shared/fanqie-downloads';
 import {
   fanqieDirectoryStartTab, fanqieHomeUrl as homeUrl, fanqieProfileUrl as profileUrl,
-  fanqiePublishWorksUrl as publishUrl, fanqieUploadFormUrl as formUrl, withFanqieReadFrame,
+  fanqieArtistUrl, fanqiePublishWorksUrl as publishUrl, fanqieUploadFormUrl as formUrl, withFanqieReadFrame,
 } from './directory-page';
 import {assertFanqieFirstStepReadback, fanqieTransferVerified, type FanqieExpectedForm} from './first-step';
 import {chooseDirectoryFile, directoryFileReceipt, type DirectoryFileRole} from './directory-files';
@@ -15,6 +15,7 @@ import {directoryPageError, directoryValidationMessages, readDirectoryFieldError
 import {readFanqieAccountUid} from './identity';
 import {expectedFanqieForm} from './native-upload';
 
+/** Directory publishing follows the presence of a lyric file; local artist song-type defaults are not platform upload metadata. */
 export type FanqieDirectorySong = FanqieInput & {
   songAttribute: 'original' | 'multi_version'; copyrightProof?: FanqieAsset; originalSinger?: string; originalWorkId?: string;
   singerArtistId?: string;
@@ -46,6 +47,7 @@ const songAttributes = {original: '原版歌曲', multi_version: '多版本歌�
 const originalSingerError = 'FANQIE_ORIGINAL_SINGER_UNVERIFIED';
 const originalWorkError = 'FANQIE_ORIGINAL_WORK_UNVERIFIED';
 const singerIdError = 'FANQIE_SINGER_ID_UNVERIFIED';
+const authorSearchInputError = 'FANQIE_AUTHOR_SEARCH_UNVERIFIED';
 const artistSongsPath = '/api/author/home/get_song_list/v0/';
 const fieldValidationError = 'FANQIE_DIRECTORY_FIELD_VALIDATION';
 const lyricsContentRejectedError = 'FANQIE_LYRICS_CONTENT_REJECTED';
@@ -64,6 +66,14 @@ const artistSearchResultTimeoutMs = 15_000;
 const artistSearchRetries = 3;
 const aiChoices = ['是', '否'];
 const visible = (locator: Locator) => locator.filter({visible: true});
+
+function dialog(page: Page, title: string) {
+  return visible(page.getByRole('dialog', {name: title, exact: true}).or(
+    page.locator('.arco-modal:not([role="dialog"], [role="dialog"] *)').filter({
+      has: page.locator('.arco-modal-title').and(page.getByText(title, {exact: true})),
+    }),
+  ));
+}
 
 async function one(locator: Locator, code: string, timeout = 15_000) {
   const target = visible(locator);
@@ -122,64 +132,198 @@ async function songAttributeRegion(page: Page, card: Locator, index: number, att
   return fieldRegion(page, card, index, 'is_multi_version', '歌曲属性', 'FANQIE_CHOICE_CONTROL_UNVERIFIED');
 }
 
-async function instrumentalChoice(page: Page, card: Locator) {
-  const checkbox = await choice(page, card, '纯音乐', 'checkbox');
-  const radio = await choice(page, card, '纯音乐');
-  if (checkbox && radio) throw Error('FANQIE_INSTRUMENTAL_FORM_UNVERIFIED');
-  return checkbox ? {...checkbox, toggle: true} : radio;
+function artistOptionRows(page: Page, popupId: string) {
+  const popup = visible(page.locator(`.arco-select-popup-inner[role="listbox"][id="${popupId}"]`));
+  return visible(popup.getByRole('option'));
 }
 
-function artistOptions(page: Page, name: string) {
-  const text = page.getByText(name, {exact: true});
-  const named = page.getByRole('option', {name, exact: true});
-  const select = page.locator('.arco-select-popup-inner label:not([role="option"] *)').filter({has: text});
-  const autocomplete = page.locator('.artist-autocomplete-item-left:not([role="option"] *, .arco-select-popup-inner label *)').filter({has: text});
-  return visible(named.or(select).or(autocomplete));
+function artistOptions(rows: Locator, name: string) {
+  const escapedName = name.replace(/[.*+?^$(){}|[\]\\]/gu, '\\$&');
+  const exactName = new RegExp('^\\s*' + escapedName + '\\s*$', 'u');
+  return visible(rows.filter({hasText: exactName}));
+}
+
+function fanqieAvatarAssetKey(raw: string | null | undefined) {
+  if (!raw) return undefined;
+  try {
+    const url = new URL(raw);
+    if (!['http:', 'https:'].includes(url.protocol) || !url.hostname.endsWith('.byteimg.com')) return undefined;
+    // Fanqie serves one avatar from different CDN hosts with per-view resize suffixes and signatures.
+    const path = url.pathname.split('~', 1)[0];
+    return path && path !== '/' ? path : undefined;
+  } catch { return undefined; }
+}
+
+async function readConfiguredArtistAvatar(page: Page, artist: string, role: keyof typeof authors, expectedAccountId: string,
+  expectedArtistId: string | undefined, guard: () => void) {
+  let rosterCount = 0, rosterMatchCount = 0;
+  try { return await withFanqieReadFrame(page, guard, async frame => {
+    await frame.goto(profileUrl, {waitUntil: 'domcontentloaded', timeout: 20_000});
+    await one(frame.getByText('UID', {exact: true}), 'FANQIE_AUTHOR_AVATAR_UNVERIFIED');
+    const identity = await readFanqieAccountUid({url: async () => frame.url(), playwright: frame});
+    if (identity.accountId !== expectedAccountId) throw Error('FANQIE_CATALOG_SCOPE_CHANGED');
+    await frame.goto(fanqieArtistUrl, {waitUntil: 'domcontentloaded', timeout: 20_000});
+    const search = await one(frame.locator('.artist-search input[placeholder="请输入艺人名"]'),
+      'FANQIE_AUTHOR_AVATAR_UNVERIFIED');
+    await search.fill(artist, {timeout: artistSearchTimeoutMs});
+
+    const deadline = performance.now() + artistSearchResultTimeoutMs;
+    let stableSince: number | undefined;
+    let stableKey: string | undefined;
+    while (performance.now() < deadline) {
+      guard();
+      if (frame.url() !== fanqieArtistUrl) throw Error('FANQIE_AUTHOR_AVATAR_UNVERIFIED');
+      const [query, rows] = await Promise.all([
+        search.inputValue(),
+        frame.locator('.artist-item').evaluateAll(elements => elements.map(element => {
+          const avatar = element.querySelector<HTMLImageElement>('img.artist-avatar');
+          const idText = element.querySelector('.artist-id-text')?.textContent?.trim() ?? '';
+          return {
+            name: element.querySelector('.artist-name')?.textContent?.trim() ?? '',
+            artistId: idText.match(/[1-9]\d{4,24}/u)?.[0] ?? '',
+            avatarUrl: avatar?.currentSrc || avatar?.getAttribute('src') || '',
+          };
+        })),
+      ]);
+      const exactRows = rows.filter(row => row.name === artist.trim());
+      const relevantRows = expectedArtistId ? exactRows.filter(row => row.artistId === expectedArtistId) : exactRows;
+      rosterCount = exactRows.length;
+      rosterMatchCount = relevantRows.length;
+      if (query === artist && relevantRows.length === 1) {
+        const avatarKey = fanqieAvatarAssetKey(relevantRows[0].avatarUrl);
+        if (avatarKey) {
+          const fingerprint = `${relevantRows[0].artistId}:${avatarKey}`;
+          if (stableKey === fingerprint) stableSince ??= performance.now();
+          else { stableKey = fingerprint; stableSince = performance.now(); }
+          if (performance.now() - stableSince >= 500) return avatarKey;
+        } else {
+          stableSince = undefined;
+          stableKey = undefined;
+        }
+      } else {
+        stableSince = undefined;
+        stableKey = undefined;
+      }
+      await delay(120);
+    }
+    throw Error('FANQIE_AUTHOR_AVATAR_UNVERIFIED');
+  }); } catch (error) {
+    if (error instanceof Error && ['FANQIE_CATALOG_SCOPE_CHANGED', 'FANQIE_PAGE_SCOPE_CHANGED'].includes(error.message)) throw error;
+    throw withArtistSelectionDiagnostics(Error('FANQIE_AUTHOR_AVATAR_UNVERIFIED', {cause: error}), {
+      stage: 'avatar-readback', role, requestedName: artist, avatarLookupAttempted: true, avatarReadback: false,
+      avatarRosterCount: rosterCount, avatarRosterMatchCount: rosterMatchCount,
+    });
+  }
 }
 
 function artistNames(region: Locator) {
   return visible(region.locator('.arco-tag-content .name')).allInnerTexts().then(names => names.map(name => name.trim()));
 }
 
-type CreditFiber = {
-  return?: CreditFiber;
-  key?: string | null;
-  memoizedProps?: {artist?: {id?: unknown}};
-};
-
-// Fanqie's result label carries artist.id. Arco keys the mounted selected tag by the field value.
-// Read those bindings because both elements display only the name.
-function renderedSingerIds(elements: Element[], source: 'option' | 'tag') {
-  return elements.map(element => {
-    const node = source === 'option' ? element : element.closest('.arco-tag');
-    if (!node) return null;
-    const property = Object.getOwnPropertyNames(node).find(key => key.startsWith('__reactFiber$'));
-    let fiber = property ? Reflect.get(node, property) as CreditFiber : undefined;
-    for (let depth = 0; fiber && depth < 6; depth++, fiber = fiber.return) {
-      if (source === 'tag') {
-        const value = /^([1-9]\d{4,24})-tag$/u.exec(fiber.key ?? '')?.[1];
-        if (value) return value;
-      } else {
-        const value = fiber.memoizedProps?.artist?.id;
-        const id = typeof value === 'number' && Number.isSafeInteger(value) ? String(value) : value;
-        if (typeof id === 'string' && /^[1-9]\d{4,24}$/u.test(id)) return id;
-      }
+async function waitForArtistSelection(region: Locator, role: keyof typeof authors, artist: string) {
+  const startedAt = performance.now(), deadline = startedAt + artistSearchResultTimeoutMs;
+  let selected: string[] = [];
+  while (performance.now() < deadline) {
+    selected = await artistNames(region);
+    if (selected.length) {
+      if (selected.length === 1 && selected[0] === artist) return;
+      throw withArtistSelectionDiagnostics(Error('FANQIE_AUTHOR_READBACK_REQUIRED'), {
+        stage: 'selection-readback', role, requestedName: artist, selectedNames: selected,
+        elapsedMs: performance.now() - startedAt,
+      });
     }
-    return null;
+    await delay(120);
+  }
+  throw withArtistSelectionDiagnostics(Error('FANQIE_AUTHOR_READBACK_REQUIRED'), {
+    stage: 'selection-readback', role, requestedName: artist, selectedNames: selected,
+    elapsedMs: performance.now() - startedAt,
   });
 }
 
-async function verifySingerId(region: Locator, expectedId: string) {
-  const ids = await visible(region.locator('.arco-tag-content .name')).evaluateAll(renderedSingerIds, 'tag' as const);
-  if (ids.length !== 1 || ids[0] !== expectedId) throw Error(singerIdError);
+function artistDetailDialog(page: Page) {
+  return visible(page.locator('.arco-modal.artist-detail-modal[role="dialog"][aria-modal="true"]'));
 }
 
-function dialog(page: Page, title: string) {
-  return visible(page.getByRole('dialog', {name: title, exact: true}).or(
-    page.locator('.arco-modal:not([role="dialog"], [role="dialog"] *)').filter({
-      has: page.locator('.arco-modal-title').and(page.getByText(title, {exact: true})),
-    }),
-  ));
+type ArtistSelectionDiagnostics = NonNullable<FanqieDirectoryTraceDetails['artistSelection']>;
+type TraceDiagnosticError = Error & {fanqieDirectoryTraceDetails?: FanqieDirectoryTraceDetails};
+
+function withArtistSelectionDiagnostics(error: unknown, artistSelection: ArtistSelectionDiagnostics): Error {
+  const diagnosticError = error instanceof Error ? error : Error('FANQIE_AUTHOR_DETAILS_CHANGED');
+  (diagnosticError as TraceDiagnosticError).fanqieDirectoryTraceDetails = {artistSelection};
+  return diagnosticError;
+}
+
+async function artistDetailSnapshot(page: Page, role: keyof typeof authors, artist: string,
+  stage: NonNullable<ArtistSelectionDiagnostics['stage']>, startedAt: number): Promise<{
+    result: ArtistSelectionDiagnostics; detail?: Locator; confirm?: Locator;
+  }> {
+  const allDialogs = page.locator('.arco-modal.artist-detail-modal[role="dialog"][aria-modal="true"]');
+  const dialogs = visible(allDialogs);
+  const [dialogCount, visibleDialogCount] = await Promise.all([
+    allDialogs.count().catch(() => undefined), dialogs.count().catch(() => undefined),
+  ]);
+  const result: ArtistSelectionDiagnostics = {stage, role, requestedName: artist,
+    ...(dialogCount === undefined ? {} : {dialogCount}),
+    ...(visibleDialogCount === undefined ? {} : {visibleDialogCount}),
+    elapsedMs: Math.max(0, performance.now() - startedAt)};
+  if (visibleDialogCount !== 1) return {result};
+  const detail = dialogs.first();
+  const title = detail.locator('.arco-modal-title'), artistLabel = detail.locator('.artist-info .artist-name');
+  const confirm = detail.locator('.arco-modal-footer button.confirm-button');
+  const [dialogId, titleCount, artistNameCount, confirmCount] = await Promise.all([
+    detail.getAttribute('aria-labelledby').catch(() => null),
+    visible(title).count().catch(() => 0), visible(artistLabel).count().catch(() => 0), visible(confirm).count().catch(() => 0),
+  ]);
+  if (dialogId) result.dialogId = dialogId;
+  result.titleCount = titleCount;
+  result.artistNameCount = artistNameCount;
+  result.confirmCount = confirmCount;
+  const [dialogTitle, displayedArtist, confirmText, confirmEnabled] = await Promise.all([
+    titleCount === 1 ? title.innerText().catch(() => undefined) : undefined,
+    artistNameCount === 1 ? artistLabel.innerText().catch(() => undefined) : undefined,
+    confirmCount === 1 ? confirm.innerText().catch(() => undefined) : undefined,
+    confirmCount === 1 ? confirm.isEnabled().catch(() => undefined) : undefined,
+  ]);
+  if (dialogTitle !== undefined) result.dialogTitle = dialogTitle.trim();
+  if (displayedArtist !== undefined) result.displayedArtist = displayedArtist.trim();
+  if (confirmText !== undefined) result.confirmText = confirmText.trim();
+  if (confirmEnabled !== undefined) result.confirmEnabled = confirmEnabled;
+  return {result, detail, confirm};
+}
+
+async function readArtistDetail(page: Page, role: keyof typeof authors, artist: string, expectedDialogId?: string) {
+  const startedAt = performance.now();
+  let stage: NonNullable<ArtistSelectionDiagnostics['stage']> = 'detail-modal-open';
+  let latest: ArtistSelectionDiagnostics = {stage, role, requestedName: artist};
+  try {
+    const dialogs = artistDetailDialog(page);
+    await dialogs.first().waitFor({state: 'visible', timeout: artistSearchResultTimeoutMs});
+    stage = 'detail-content';
+    const deadline = performance.now() + artistSearchResultTimeoutMs;
+    while (performance.now() < deadline) {
+      const snapshot = await artistDetailSnapshot(page, role, artist, stage, startedAt);
+      latest = snapshot.result;
+      if (snapshot.result.visibleDialogCount !== 1) {
+        await delay(120); continue;
+      }
+      const dialogId = snapshot.result.dialogId;
+      const dialogIdMatched = !!dialogId && (!expectedDialogId || dialogId === expectedDialogId);
+      latest.dialogIdMatched = dialogIdMatched;
+      if (expectedDialogId && !dialogIdMatched) throw Error('FANQIE_AUTHOR_DETAILS_CHANGED');
+      if (dialogId && snapshot.detail && snapshot.confirm && snapshot.result.dialogTitle === '艺人详情' &&
+          snapshot.result.displayedArtist === artist &&
+          snapshot.result.confirmText === '确认选择' && snapshot.result.confirmEnabled) {
+        return {detail: snapshot.detail!, dialogId: dialogId!, confirm: snapshot.confirm!, diagnostics: latest};
+      }
+      await delay(120);
+    }
+    throw Error('FANQIE_AUTHOR_DETAILS_CHANGED');
+  } catch (error) {
+    const finalSnapshot = await artistDetailSnapshot(page, role, artist, stage, startedAt).catch(() => undefined);
+    const diagnostic = finalSnapshot?.result ?? latest;
+    if (expectedDialogId && diagnostic.dialogId) diagnostic.dialogIdMatched = diagnostic.dialogId === expectedDialogId;
+    throw withArtistSelectionDiagnostics(error, diagnostic);
+  }
 }
 
 async function fileArea(page: Page, card: Locator, index: number, role: DirectoryFileRole) {
@@ -264,6 +408,7 @@ type DirectorySongEntry = {
   spec: ExpectedDirectorySong;
   jobIndex: number;
   repairs: number;
+  singerIdConfirmed?: boolean;
   coverSource?: string;
   coverUploadRetries: number;
 };
@@ -338,14 +483,29 @@ async function selectOriginalWork(page: Page, card: Locator, index: number, id: 
 }
 
 async function selectCredit(page: Page, card: Locator, index: number, role: keyof typeof authors, artist: string, write: Write, trace: Trace,
-  assertScope: () => void, artistId?: string) {
+  assertScope: () => void, artistId: string | undefined,
+  readConfiguredAvatar: (name: string, role: keyof typeof authors, expectedArtistId?: string) => Promise<string>) {
   const [field, name] = authors[role];
   const region = await fieldRegion(page, card, index, field, name);
-  const search = await one(region.getByRole('textbox', {name: '搜索或选择艺人', exact: true}).or(region.locator('[role="combobox"] input')),
-    'FANQIE_AUTHOR_REGION_UNVERIFIED', artistSearchTimeoutMs);
-  const options = artistId ? visible(region.locator('.artist-autocomplete-item-left').filter({
-    has: page.getByText(artist, {exact: true}),
-  })) : artistOptions(page, artist);
+  const combo = await one(region.locator('[role="combobox"].artist-autocomplete-select'), 'FANQIE_AUTHOR_REGION_UNVERIFIED', artistSearchTimeoutMs);
+  const search = await one(combo.locator('input.arco-input-tag-input'), 'FANQIE_AUTHOR_REGION_UNVERIFIED', artistSearchTimeoutMs);
+  const popupId = await combo.getAttribute('aria-controls');
+  if (!popupId || !/^[A-Za-z][\w:.-]*$/u.test(popupId)) throw Error('FANQIE_AUTHOR_REGION_UNVERIFIED');
+  const contextWithPopup = (stage: NonNullable<ArtistSelectionDiagnostics['stage']>): FanqieDirectoryTraceDetails => ({
+    artistSelection: {stage, role, requestedName: artist, popupId},
+  });
+  let currentDiagnostics: ArtistSelectionDiagnostics = {stage: 'candidate-search', role, requestedName: artist, popupId};
+  const traceSelection: Trace = (step, action, songIndex, details) => trace(step, async () => {
+    try { return await action(); }
+    catch (error) {
+      const existing = error instanceof Error ? (error as TraceDiagnosticError).fanqieDirectoryTraceDetails : undefined;
+      throw withArtistSelectionDiagnostics(error, existing?.artistSelection
+        ? {...currentDiagnostics, ...existing.artistSelection} : currentDiagnostics);
+    }
+  }, songIndex ?? index, details ?? contextWithPopup(currentDiagnostics.stage!));
+  const optionRows = artistOptionRows(page, popupId);
+  const options = artistOptions(optionRows, artist);
+  let configuredAvatarKey: string | undefined;
   if (!artist.trim() || (await artistNames(region)).length) throw Error('FANQIE_AUTHOR_REGION_UNVERIFIED');
   const retryMessage = async () => {
     // The creator form renders this retry link inside its own autocomplete panel,
@@ -355,28 +515,185 @@ async function selectCredit(page: Page, card: Locator, index: number, role: keyo
     if (await message.count() > 1) throw Error('FANQIE_AUTHOR_RETRY_CONTROL_AMBIGUOUS');
     return await message.count() === 1 ? message : undefined;
   };
-  const option = await trace(`credit:${role}:search`, async () => {
+  const ensureCandidateReady = async (): Promise<Locator> => {
+    const startedAt = performance.now(), deadline = startedAt + artistSearchResultTimeoutMs;
+    let stableSince: number | undefined;
+    let stableFingerprint: string | undefined;
+    let ambiguousSince: number | undefined;
+    let ambiguousFingerprint: string | undefined;
+    let lastAvatarImagesReady = false;
+    let candidateRecoveries = currentDiagnostics.candidateRecoveryCount ?? 0;
+    let recoveryAttempts = 0;
+    let popupReopens = currentDiagnostics.popupReopenCount ?? 0;
+    let nextInputRecoveryAt = 0;
+    while (performance.now() < deadline) {
+      assertScope();
+      const [searchValue, popupExpanded, candidateCount, optionRowCount, selectedNames] = await Promise.all([
+        search.inputValue(), combo.getAttribute('aria-expanded').then(value => value === 'true'), options.count(), optionRows.count(), artistNames(region),
+      ]);
+      const now = performance.now(), searchValueMatched = searchValue === artist;
+      if (selectedNames.length) {
+        currentDiagnostics = {...currentDiagnostics, stage: 'candidate-readback', role, requestedName: artist, popupId,
+          candidateCount, optionRowCount, popupExpanded, searchValueMatched, searchValueEmpty: !searchValue, searchValue,
+          selectedNames, candidateStable: false, candidateRecoveryCount: candidateRecoveries, popupReopenCount: popupReopens,
+          elapsedMs: now - startedAt};
+        throw withArtistSelectionDiagnostics(Error('FANQIE_AUTHOR_OPTION_UNVERIFIED'), currentDiagnostics);
+      }
+
+      let candidate: Locator | undefined;
+      let avatarMatchCount: number | undefined;
+      let avatarImagesReady = false;
+      let candidateFingerprint = candidateCount === 1 ? 'single-candidate' : undefined;
+      let candidateKeys: (string | undefined)[] = [];
+      if (candidateCount === 1) candidate = options.first();
+      else if (candidateCount > 1 && searchValueMatched && popupExpanded) {
+        if (!configuredAvatarKey) {
+          currentDiagnostics = {...currentDiagnostics, stage: 'avatar-readback', role, requestedName: artist, popupId,
+            candidateCount, optionRowCount, popupExpanded, searchValueMatched, searchValueEmpty: !searchValue, searchValue,
+            avatarLookupAttempted: true, avatarCandidateCount: candidateCount, candidateStable: false,
+            candidateRecoveryCount: candidateRecoveries, popupReopenCount: popupReopens, elapsedMs: now - startedAt};
+          configuredAvatarKey = await traceSelection(`credit:${role}:avatar-lookup`,
+            () => readConfiguredAvatar(artist, role, role === 'singer' ? artistId : undefined), index,
+            {artistSelection: currentDiagnostics});
+          currentDiagnostics = {...currentDiagnostics, stage: 'avatar-readback', avatarReadback: true};
+          await trace(`credit:${role}:avatar-readback`, async () => {}, index, {artistSelection: currentDiagnostics});
+          stableSince = undefined;
+          stableFingerprint = undefined;
+          await delay(120);
+          continue;
+        }
+        const images: {name: string; avatarUrl: string}[] = await options.evaluateAll(elements => elements.map(element => {
+          const image = element.querySelector<HTMLImageElement>('.artist-autocomplete-item-left img.arco-image-img');
+          return {
+            name: element.querySelector('.artist-autocomplete-item-left .name')?.textContent?.trim() ?? '',
+            avatarUrl: image?.currentSrc || image?.getAttribute('src') || '',
+          };
+        }));
+        candidateKeys = images.map(image => fanqieAvatarAssetKey(image.avatarUrl));
+        avatarImagesReady = images.length === candidateCount && images.every((image, imageIndex) =>
+          image.name === artist.trim() && !!candidateKeys[imageIndex]);
+        lastAvatarImagesReady = avatarImagesReady;
+        avatarMatchCount = candidateKeys.filter(key => key === configuredAvatarKey).length;
+        currentDiagnostics = {...currentDiagnostics, stage: 'avatar-match', candidateCount, optionRowCount,
+          avatarLookupAttempted: true, avatarReadback: true, avatarCandidateCount: candidateCount,
+          avatarMatchCount, avatarMatched: avatarMatchCount === 1 && avatarImagesReady,
+          popupExpanded, searchValueMatched, searchValueEmpty: !searchValue, searchValue,
+          candidateRecoveryCount: candidateRecoveries, popupReopenCount: popupReopens};
+        if (avatarImagesReady) {
+          candidateFingerprint = candidateKeys.join('|');
+          if (avatarMatchCount === 1) candidate = options.nth(candidateKeys.findIndex(key => key === configuredAvatarKey));
+        }
+        if (avatarImagesReady && avatarMatchCount !== 1) {
+          if (ambiguousFingerprint === candidateFingerprint) ambiguousSince ??= now;
+          else { ambiguousFingerprint = candidateFingerprint; ambiguousSince = now; }
+          const stableForMs = now - (ambiguousSince ?? now);
+          currentDiagnostics = {...currentDiagnostics, candidateStable: stableForMs >= 500,
+            candidateStableForMs: Math.round(stableForMs), elapsedMs: now - startedAt};
+          if (stableForMs >= 500)
+            throw withArtistSelectionDiagnostics(Error('FANQIE_AUTHOR_AVATAR_AMBIGUOUS'), currentDiagnostics);
+          stableSince = undefined;
+          stableFingerprint = undefined;
+          await delay(120);
+          continue;
+        } else {
+          ambiguousSince = undefined;
+          ambiguousFingerprint = undefined;
+        }
+      }
+
+      const arrowCount = candidate ? await visible(candidate.locator('.artist-autocomplete-item-left svg.serial-fm-icon-bold_arrow1_right')).count() : 0;
+      const ready = searchValueMatched && popupExpanded && candidateCount > 0 && !!candidate && arrowCount === 1;
+      const fingerprint = ready ? `${candidateCount}:${candidateFingerprint ?? 'candidate'}:${candidateKeys.join('|')}` : undefined;
+      if (ready && fingerprint === stableFingerprint) stableSince ??= now;
+      else if (ready) { stableFingerprint = fingerprint; stableSince = now; }
+      else { stableSince = undefined; stableFingerprint = undefined; }
+      const stableForMs = stableSince === undefined ? 0 : now - stableSince;
+      currentDiagnostics = {...currentDiagnostics, stage: 'candidate-readback', role, requestedName: artist, popupId,
+        candidateCount, optionRowCount, detailArrowCount: arrowCount, popupExpanded, searchValueMatched, searchValueEmpty: !searchValue, searchValue,
+        candidateStable: ready && stableForMs >= 500, candidateStableForMs: Math.round(stableForMs),
+        candidateRecoveryCount: candidateRecoveries, popupReopenCount: popupReopens, elapsedMs: now - startedAt};
+      if (ready && stableForMs >= 500 && candidate) return candidate;
+
+      if (!searchValueMatched && recoveryAttempts < artistSearchRetries && now >= nextInputRecoveryAt) {
+        recoveryAttempts++;
+        candidateRecoveries++;
+        currentDiagnostics = {...currentDiagnostics, candidateRecoveryCount: candidateRecoveries,
+          inputRetryCount: (currentDiagnostics.inputRetryCount ?? 0) + 1};
+        await write(`credit:${role}:candidate-refill`, index);
+        try { await search.fill(artist, {timeout: artistSearchTimeoutMs}); }
+        catch (error) {
+          throw withArtistSelectionDiagnostics(Error(authorSearchInputError, {cause: error}), currentDiagnostics);
+        }
+        nextInputRecoveryAt = performance.now() + 1_200;
+      } else if (searchValueMatched && !popupExpanded && popupReopens < artistSearchRetries) {
+        popupReopens++;
+        currentDiagnostics = {...currentDiagnostics, popupReopenCount: popupReopens};
+        await write(`credit:${role}:candidate-reopen`, index);
+        try { await search.click({timeout: artistSearchTimeoutMs}); }
+        catch (error) {
+          throw withArtistSelectionDiagnostics(Error('FANQIE_AUTHOR_OPTION_UNVERIFIED', {cause: error}), currentDiagnostics);
+        }
+      }
+      await delay(120);
+    }
+    const avatarDetails: ArtistSelectionDiagnostics = {...currentDiagnostics, stage: 'avatar-match', role,
+      requestedName: artist, popupId, candidateStable: false, elapsedMs: performance.now() - startedAt};
+    if (configuredAvatarKey && (avatarDetails.avatarCandidateCount ?? 0) > 1 && !lastAvatarImagesReady)
+      throw withArtistSelectionDiagnostics(Error('FANQIE_AUTHOR_AVATAR_UNVERIFIED'), avatarDetails);
+    const errorCode = currentDiagnostics.searchValueMatched ? 'FANQIE_AUTHOR_SEARCH_TIMEOUT' : authorSearchInputError;
+    throw withArtistSelectionDiagnostics(Error(errorCode), {...currentDiagnostics,
+      stage: 'candidate-readback', candidateStable: false, elapsedMs: performance.now() - startedAt});
+  };
+  await traceSelection(`credit:${role}:search`, async () => {
     await search.scrollIntoViewIfNeeded({timeout: artistSearchTimeoutMs});
     await write(`credit:${role}:search`, index);
     await search.click({timeout: artistSearchTimeoutMs});
     let lastFailure: unknown;
-    let sawNamedCandidate = false;
     let loadRetries = 0;
     let searchRetries = 0;
+    let searchInputRetries = 0;
+    let nextSearchInputRetryAt = 0;
     let keepSearchAfterLoadRetry = false;
     for (;;) {
       assertScope();
-      if (!keepSearchAfterLoadRetry) await search.fill(artist, {timeout: artistSearchTimeoutMs});
+      if (!keepSearchAfterLoadRetry) {
+        await search.fill(artist, {timeout: artistSearchTimeoutMs});
+        nextSearchInputRetryAt = performance.now() + 1_200;
+      }
       keepSearchAfterLoadRetry = false;
       const deadline = performance.now() + artistSearchResultTimeoutMs;
       let clickedRetry = false;
       while (performance.now() < deadline) {
         assertScope();
-        if (await search.inputValue() !== artist) throw Error(artistId ? singerIdError : 'FANQIE_AUTHOR_SEARCH_UNVERIFIED');
+        const searchValue = await search.inputValue();
+        const inputMatches = searchValue === artist;
+        currentDiagnostics = {...currentDiagnostics, stage: 'candidate-search', searchValueMatched: inputMatches,
+          searchValueEmpty: !searchValue, searchValue,
+          searchRetryCount: searchRetries, inputRetryCount: searchInputRetries, loadRetryCount: loadRetries};
+        if (!inputMatches) {
+          const now = performance.now();
+          if (now >= nextSearchInputRetryAt) {
+            if (searchInputRetries >= artistSearchRetries) throw Error(authorSearchInputError);
+            searchInputRetries++;
+            currentDiagnostics = {...currentDiagnostics, inputRetryCount: searchInputRetries};
+            await write(`credit:${role}:retry-input`, index);
+            await search.fill(artist, {timeout: artistSearchTimeoutMs});
+            nextSearchInputRetryAt = performance.now() + 1_200;
+          }
+          await delay(120);
+          continue;
+        }
+        const popupExpanded = await combo.getAttribute('aria-expanded') === 'true';
+        currentDiagnostics = {...currentDiagnostics, popupExpanded};
+        if (!popupExpanded) {
+          await delay(120);
+          continue;
+        }
         const failed = await retryMessage();
         if (failed) {
           if (loadRetries >= artistSearchRetries) throw Error('FANQIE_AUTHOR_LOAD_RETRIES_EXHAUSTED');
           loadRetries++;
+          currentDiagnostics = {...currentDiagnostics, loadRetryCount: loadRetries};
           await write(`credit:${role}:retry-load`, index);
           try {
             await failed.click({timeout: artistSearchTimeoutMs});
@@ -385,16 +702,9 @@ async function selectCredit(page: Page, card: Locator, index: number, role: keyo
           clickedRetry = true;
           break;
         }
-        if (artistId) {
-          sawNamedCandidate ||= await options.count() > 0;
-          const ids = await options.evaluateAll(renderedSingerIds, 'option' as const);
-          const match = ids.indexOf(artistId);
-          if (match >= 0) return options.nth(match);
-        } else {
-          const count = await options.count();
-          if (count > 1) throw Error('FANQIE_AUTHOR_AMBIGUOUS');
-          if (count === 1) return options;
-        }
+        const [count, optionRowCount] = await Promise.all([options.count(), optionRows.count()]);
+        currentDiagnostics = {...currentDiagnostics, candidateCount: count, optionRowCount};
+        if (count > 0) return options;
         await delay(120);
       }
       if (clickedRetry) {
@@ -404,48 +714,149 @@ async function selectCredit(page: Page, card: Locator, index: number, role: keyo
       if (performance.now() >= deadline) lastFailure = Error(`输入艺人后 ${artistSearchResultTimeoutMs / 1000} 秒未加载到匹配下拉项`);
       if (searchRetries < artistSearchRetries) {
         searchRetries++;
+        currentDiagnostics = {...currentDiagnostics, searchRetryCount: searchRetries};
         await write(`credit:${role}:retry-search`, index);
         await delay(250);
         continue;
       }
       break;
     }
-    if (artistId && sawNamedCandidate) throw Error(singerIdError, {cause: lastFailure});
-    throw Error(artistId ? 'FANQIE_AUTHOR_SEARCH_TIMEOUT' : 'FANQIE_AUTHOR_NOT_FOUND', {cause: lastFailure});
+    throw Error('FANQIE_AUTHOR_SEARCH_TIMEOUT', {cause: lastFailure});
   });
-  const {detail, artistLabel, confirm} = await trace(`credit:${role}:preview`, async () => {
+  let option = await traceSelection(`credit:${role}:candidate-readback`, ensureCandidateReady, index);
+  await trace(`credit:${role}:candidate-stable`, async () => {}, index, {artistSelection: currentDiagnostics});
+  const {dialogId} = await traceSelection(`credit:${role}:preview`, async () => {
     await write(`credit:${role}:preview`, index);
+    // Recheck immediately before opening details: the portal can briefly clear its query
+    // while candidate data is being rendered, even when a stale row is still visible.
+    option = await ensureCandidateReady();
+    if (await combo.getAttribute('aria-controls') !== popupId || await combo.getAttribute('aria-expanded') !== 'true' ||
+        await search.inputValue() !== artist) throw Error('FANQIE_AUTHOR_OPTION_UNVERIFIED');
+    if (configuredAvatarKey && await options.count() > 1) {
+      const [rows, selectedImage] = await Promise.all([
+        options.evaluateAll(elements => elements.map(element => {
+          const image = element.querySelector<HTMLImageElement>('.artist-autocomplete-item-left img.arco-image-img');
+          return {
+            name: element.querySelector('.artist-autocomplete-item-left .name')?.textContent?.trim() ?? '',
+            avatarUrl: image?.currentSrc || image?.getAttribute('src') || '',
+          };
+        })),
+        option.evaluate(element => {
+          const image = element.querySelector<HTMLImageElement>('.artist-autocomplete-item-left img.arco-image-img');
+          return image?.currentSrc || image?.getAttribute('src') || '';
+        }),
+      ]);
+      const currentKeys = rows.map(row => fanqieAvatarAssetKey(row.avatarUrl));
+      const matchCount = currentKeys.filter(key => key === configuredAvatarKey).length;
+      const selectedKey = fanqieAvatarAssetKey(selectedImage);
+      const avatarMatched = rows.length === await options.count() && rows.every(row => row.name === artist.trim()) &&
+        matchCount === 1 && selectedKey === configuredAvatarKey;
+      currentDiagnostics = {...currentDiagnostics, stage: 'avatar-match', avatarCandidateCount: rows.length,
+        avatarMatchCount: matchCount, avatarMatched, candidateCount: rows.length};
+      if (!avatarMatched) throw withArtistSelectionDiagnostics(Error('FANQIE_AUTHOR_AVATAR_AMBIGUOUS'), currentDiagnostics);
+    }
+    const arrow = await one(option.locator('.artist-autocomplete-item-left svg.serial-fm-icon-bold_arrow1_right'),
+      'FANQIE_AUTHOR_OPTION_UNVERIFIED');
+    currentDiagnostics = {...currentDiagnostics, stage: 'detail-modal-open', candidateCount: 1};
     if (artistId) {
-      if ((await option.evaluateAll(renderedSingerIds, 'option' as const))[0] !== artistId) throw Error(singerIdError);
-      // The official details dialog queries this artist's songs on open, before a selection is committed.
-      const [detailsRequest] = await Promise.all([
-        page.waitForRequest(request => {
+      // The official details response carries the selected remote artist ID. Validate it before
+      // confirming, and wait for the response rather than treating request start as loaded content.
+      let detailsRequest: Response;
+      const requestStartedAt = performance.now();
+      try {
+        [detailsRequest] = await Promise.all([
+          page.waitForResponse(response => {
+          const request = response.request();
           const url = new URL(request.url());
           if (url.origin !== fanqieOrigin || url.pathname !== artistSongsPath ||
               request.method() !== 'GET' || (url.searchParams.get('page_no') ?? '0') !== '0' || request.serviceWorker()) return false;
           try { return request.frame() === page.mainFrame(); } catch { return false; }
-        }, {timeout: 12_000}).catch(error => {throw Error(singerIdError, {cause: error});}),
-        option.click(),
-      ]);
-      const ids = new URL(detailsRequest.url()).searchParams.getAll('artist_id');
-      if (ids.length !== 1 || ids[0] !== artistId) throw Error(singerIdError);
+          }, {timeout: 12_000}),
+          arrow.click(),
+        ]);
+      } catch (error) {
+        const modal = await artistDetailSnapshot(page, role, artist, 'artist-id-response', requestStartedAt).catch(() => undefined);
+        currentDiagnostics = {...currentDiagnostics, stage: 'artist-id-response', role, requestedName: artist,
+          ...modal?.result, candidateCount: 1, popupId, responseReceived: false,
+          elapsedMs: performance.now() - requestStartedAt};
+        throw withArtistSelectionDiagnostics(Error(singerIdError, {cause: error}), currentDiagnostics);
+      }
+      const ids = new URL(detailsRequest.request().url()).searchParams.getAll('artist_id');
+      const responseOk = detailsRequest.ok(), artistIdMatched = ids.length === 1 && ids[0] === artistId;
+      const idCheck = {...currentDiagnostics, stage: 'artist-id-check', role, requestedName: artist, responseReceived: true,
+        responseOk, responseStatus: detailsRequest.status(), artistIdMatched, candidateCount: 1, popupId,
+        elapsedMs: performance.now() - requestStartedAt} satisfies ArtistSelectionDiagnostics;
+      currentDiagnostics = idCheck;
+      await trace(`credit:${role}:artist-id-check`, async () => {
+        if (!responseOk || !artistIdMatched) throw withArtistSelectionDiagnostics(Error(singerIdError), idCheck);
+      }, index, {artistSelection: idCheck});
     } else {
-      await option.click();
+      try {
+        await arrow.click();
+      } catch (error) {
+        const modal = await artistDetailSnapshot(page, role, artist, 'detail-modal-open', performance.now()).catch(() => undefined);
+        throw withArtistSelectionDiagnostics(error, {...currentDiagnostics, ...modal?.result,
+          stage: 'detail-modal-open', candidateCount: 1, popupId});
+      }
     }
-    const detail = await one(dialog(page, '艺人详情'), 'FANQIE_AUTHOR_DETAILS_CHANGED');
-    const artistLabel = visible(detail.getByText(artist, {exact: true}));
-    if (await artistLabel.count() !== 1) throw Error('FANQIE_AUTHOR_DETAILS_CHANGED');
-    const confirm = await one(detail.getByRole('button', {name: '确认选择', exact: true}), 'FANQIE_AUTHOR_DETAILS_CHANGED');
-    return {detail, artistLabel, confirm};
+    try {
+      const detail = await readArtistDetail(page, role, artist);
+      currentDiagnostics = {...currentDiagnostics, ...detail.diagnostics};
+      await trace(`credit:${role}:detail-readback`, async () => {
+        if (detail.diagnostics.dialogTitle !== '艺人详情' || detail.diagnostics.displayedArtist !== artist ||
+            detail.diagnostics.confirmText !== '确认选择' || !detail.diagnostics.confirmEnabled)
+          throw Error('FANQIE_AUTHOR_DETAILS_CHANGED');
+      }, index, {artistSelection: currentDiagnostics});
+      return {dialogId: detail.dialogId, diagnostics: currentDiagnostics};
+    } catch (error) {
+      const detailDiagnostics = error instanceof Error
+        ? (error as TraceDiagnosticError).fanqieDirectoryTraceDetails?.artistSelection : undefined;
+      throw detailDiagnostics ? withArtistSelectionDiagnostics(error, {...currentDiagnostics, ...detailDiagnostics}) : error;
+    }
   });
-  await trace(`credit:${role}:confirm`, async () => {
+  currentDiagnostics = {...currentDiagnostics, stage: 'confirm-click', role, requestedName: artist,
+    dialogId, dialogIdMatched: true, candidateCount: 1, popupId};
+  await traceSelection(`credit:${role}:confirm`, async () => {
     await write(`credit:${role}:confirm`, index);
-    if (await artistLabel.count() !== 1) throw Error('FANQIE_AUTHOR_DETAILS_CHANGED');
-    await confirm.click();
-    await detail.waitFor({state: 'hidden'});
-    const selected = await artistNames(region);
-    if (selected.length !== 1 || selected[0] !== artist) throw Error('FANQIE_AUTHOR_READBACK_REQUIRED');
-    if (artistId) await verifySingerId(region, artistId);
+    let ready: Awaited<ReturnType<typeof readArtistDetail>>;
+    try {
+      ready = await readArtistDetail(page, role, artist, dialogId);
+      currentDiagnostics = {...currentDiagnostics, ...ready.diagnostics};
+    } catch (error) {
+      const detailDiagnostics = error instanceof Error
+        ? (error as TraceDiagnosticError).fanqieDirectoryTraceDetails?.artistSelection : undefined;
+      throw detailDiagnostics ? withArtistSelectionDiagnostics(error, {...currentDiagnostics, ...detailDiagnostics}) : error;
+    }
+    const confirmStartedAt = performance.now();
+    try {
+      await ready.confirm.click();
+    } catch (error) {
+      throw withArtistSelectionDiagnostics(error, {...currentDiagnostics, ...ready.diagnostics,
+        stage: 'confirm-click', confirmClicked: false,
+        elapsedMs: performance.now() - confirmStartedAt});
+    }
+    currentDiagnostics = {...currentDiagnostics, ...ready.diagnostics, stage: 'modal-close', confirmClicked: true,
+      elapsedMs: performance.now() - confirmStartedAt};
+    try {
+      await ready.detail.waitFor({state: 'hidden'});
+    } catch (error) {
+      throw withArtistSelectionDiagnostics(error, currentDiagnostics);
+    }
+    try {
+      await waitForArtistSelection(region, role, artist);
+      currentDiagnostics = {...currentDiagnostics, stage: 'selection-readback', selectedNames: [artist],
+        elapsedMs: performance.now() - confirmStartedAt};
+      await trace(`credit:${role}:selection-readback`, async () => {
+        if (currentDiagnostics.selectedNames?.length !== 1 || currentDiagnostics.selectedNames[0] !== artist)
+          throw Error('FANQIE_AUTHOR_READBACK_REQUIRED');
+      }, index, {artistSelection: currentDiagnostics});
+    } catch (error) {
+      const readbackDiagnostics = error instanceof Error
+        ? (error as TraceDiagnosticError).fanqieDirectoryTraceDetails?.artistSelection : undefined;
+      throw readbackDiagnostics
+        ? withArtistSelectionDiagnostics(error, {...currentDiagnostics, ...readbackDiagnostics})
+        : error;
+    }
   });
 }
 
@@ -526,8 +937,10 @@ async function checkAuthorizationGroup(page: Page, titles: readonly string[], as
 export async function executeFanqieDirectoryForm(context: BrowserContext, songs: readonly FanqieDirectorySong[],
   callbacks: FanqieDirectoryFormCallbacks): Promise<Page> {
   let page: Page | undefined;
+  let verifiedAccountId: string | undefined;
   let unwatch: (() => void) | undefined;
   let editor: Awaited<ReturnType<typeof bindDirectoryCards>> | undefined;
+  const configuredArtistAvatarCache = new Map<string, Promise<string>>();
   const trace: Trace = async (step, action, index, details) => {
     const eventDetails = index === undefined ? details : {...details, songTitle: songs[index]?.title};
     await callbacks.trace(step, 'begin', page, index, undefined, eventDetails);
@@ -537,7 +950,10 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
       await callbacks.trace(step, 'ok', page, index, undefined, eventDetails);
       return value;
     } catch (error) {
-      await callbacks.trace(step, 'error', page, index, error, eventDetails);
+      const diagnosticDetails = error instanceof Error
+        ? (error as TraceDiagnosticError).fanqieDirectoryTraceDetails : undefined;
+      await callbacks.trace(step, 'error', page, index, error,
+        diagnosticDetails ? {...eventDetails, ...diagnosticDetails} : eventDetails);
       throw error;
     }
   };
@@ -558,12 +974,23 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
       return readFanqieAccountUid({url: async () => frame.url(), playwright: frame});
     });
     if (songs[0].scope.accountId !== accountId) throw Error('FANQIE_CATALOG_SCOPE_CHANGED');
+    verifiedAccountId = accountId;
+  };
+  const readConfiguredAvatar = (artist: string, role: keyof typeof authors, expectedArtistId?: string) => {
+    if (!page || !verifiedAccountId) throw Error('FANQIE_AUTHOR_AVATAR_UNVERIFIED');
+    const cacheKey = `${role}\u0000${artist.trim()}\u0000${expectedArtistId ?? ''}`;
+    let avatar = configuredArtistAvatarCache.get(cacheKey);
+    if (!avatar) {
+      avatar = readConfiguredArtistAvatar(page, artist, role, verifiedAccountId, expectedArtistId, callbacks.guard);
+      configuredArtistAvatarCache.set(cacheKey, avatar);
+    }
+    return avatar;
   };
 
   try {
     const expected = await trace('validate-songs', async () => {
       if (!songs.length || songs.length > fanqieDownloadBatchLimit || new Set(songs.map(song => song.title)).size !== songs.length || songs.some(song =>
-        !song.title.trim() || !song.rightsConfirmed || (!song.instrumental && !song.lyricsMatchConfirmed) ||
+        !song.title.trim() || !song.rightsConfirmed || (song.assets.lyrics && !song.lyricsMatchConfirmed) ||
         !musicTypes[song.musicType] || !songAttributes[song.songAttribute] || !/^\.(wav|mp3)$/iu.test(path.extname(song.assets.audio.file)) ||
         song.scope.accountId !== songs[0].scope.accountId || song.scope.sessionId !== songs[0].scope.sessionId))
         throw Error('FANQIE_DIRECTORY_SONGS_UNVERIFIED');
@@ -607,9 +1034,8 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
     const repairFields = (entry: DirectorySongEntry, index: number, errors: Awaited<ReturnType<typeof readDirectoryFieldErrors>>) => {
       const fields = new Set<DirectoryRepairField>();
       for (const error of errors) {
-        if (error.index !== index || !error.field ||
-            (entry.song.instrumental && (error.field === 'lyrics' || error.field === 'lyricist')))
-          throw Error(fieldValidationError);
+        if (error.index !== index || !error.field) throw Error(fieldValidationError);
+        if (error.field === 'lyrics' && !entry.song.assets.lyrics) throw Error('FANQIE_LYRICS_REQUIRED_BUT_UNAVAILABLE');
         fields.add(error.field);
       }
       return fields;
@@ -628,23 +1054,20 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
       const credit = {lyricist: [] as string[], composer: [] as string[], singer: [] as string[]};
       for (const role of authorRoles) {
         const [field, name] = authors[role];
-        if (song.instrumental && role === 'lyricist') {
-          credit.lyricist = await artistNames(card.locator('.arco-form-item').filter({has: tab.locator(`label[for="songs_${index}_${field}_input"]`)}));
-        } else {
-          const region = await fieldRegion(tab, card, index, field, name);
-          credit[role] = await artistNames(region);
-          if (!credit[role].length) fields.add(role);
-          else if (role === 'singer' && song.singerArtistId) await verifySingerId(region, song.singerArtistId);
-        }
+        const region = await fieldRegion(tab, card, index, field, name);
+        credit[role] = await artistNames(region);
+        if (!credit[role].length) fields.add(role);
+        else if (role === 'singer' && song.singerArtistId &&
+          (!entry.singerIdConfirmed || credit.singer.length !== 1 || credit.singer[0] !== song.authors.singer))
+          throw Error(singerIdError);
       }
       const audioArea = await fileArea(tab, card, index, 'audio');
       const audioText = await directoryFileReceipt(audioArea);
       if (!audioText && await visible(audioArea.locator('[class*="upload-input-container-"]')).count() === 1) fields.add('audio');
       const audio = expectedAudio(spec, song, audioText, true);
-      const lyricsArea = song.instrumental ? card.locator(`#songs_${index}_lyricFile, #songs_${index}_lyricFile_input`) :
-        await fileArea(tab, card, index, 'lyrics');
+      const lyricsArea = await fileArea(tab, card, index, 'lyrics');
       const lyricsText = await directoryFileReceipt(lyricsArea);
-      if (!song.instrumental && !lyricsText && await visible(lyricsArea.locator('[class*="upload-input-container-"]')).count() === 1)
+      if (spec.lyrics && !lyricsText && await visible(lyricsArea.locator('[class*="upload-input-container-"]')).count() === 1)
         fields.add('lyrics');
       const coverArea = await fileArea(tab, card, index, 'cover');
       if (await visible(coverArea.locator('.image-upload-input-btn')).count() === 1 && !(await coverPreview(coverArea)).length)
@@ -656,7 +1079,7 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
       const preview = await waitForCover(coverArea, assertScope, entry.coverSource);
       assertFanqieFirstStepReadback({
         title, songCount: 1, musicType: await chosenRadio(tab, type, Object.values(musicTypes)), ai: await chosenRadio(tab, ai, aiChoices), authors: credit,
-        instrumental: await (await instrumentalChoice(tab, card))?.state.isChecked(), audioText, lyricsText, coverPreview: [preview],
+        audioText, lyricsText, coverPreview: [preview],
       }, {...spec, audio});
       const attribute = await songAttributeRegion(tab, card, index, song.songAttribute);
       if (attribute && await chosenRadio(tab, attribute, Object.values(songAttributes)) !== songAttributes[song.songAttribute])
@@ -691,7 +1114,7 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
       const index = positionOf(entry), count = order.length;
       const card = await cards.card(index, count);
       const writeSong: Write = step => write(step, jobIndex);
-      const traceSong = <T>(step: string, action: () => Promise<T>) => trace(step, action, jobIndex);
+      const traceSong: Trace = (step, action, _songIndex, details) => trace(step, action, jobIndex, details);
       const needs = (field: DirectoryRepairField) => !fields || fields.has(field);
       const select = async (step: string, region: Locator, name: string, names: readonly string[]) => {
         const option = await choice(tab, region, name);
@@ -712,14 +1135,6 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
         const {originalSinger, originalWorkId} = spec;
         if (originalSinger) await traceSong('select-original-singer', () => selectOriginalSinger(tab, card, index, originalSinger, writeSong));
         if (originalWorkId) await traceSong('select-original-work', () => selectOriginalWork(tab, card, index, originalWorkId, writeSong, traceSong));
-        await traceSong('select-instrumental', async () => {
-          const option = await instrumentalChoice(tab, card);
-          if (!!await option?.state.isChecked() === !!song.instrumental) return;
-          if (!option || (!song.instrumental && !('toggle' in option))) throw Error('FANQIE_INSTRUMENTAL_FORM_UNVERIFIED');
-          await writeSong('select-instrumental');
-          await option.control.click();
-          if (await option.state.isChecked() !== !!song.instrumental) throw Error('FANQIE_INSTRUMENTAL_FORM_UNVERIFIED');
-        });
       }
 
       const uploadMaterial = async (role: DirectoryFileRole, replaceCover = false) => {
@@ -735,13 +1150,18 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
         if (role === 'cover' && existingCover.length && !replaceCover) throw Error('FANQIE_COVER_READBACK_REQUIRED');
         if (role !== 'cover' && await directoryFileReceipt(area)) throw Error('FANQIE_EXISTING_FORM_REQUIRES_RECONCILIATION');
         const missingControl = role === 'proof' ? 'FANQIE_COPYRIGHT_PROOF_CONTROL_UNVERIFIED' : 'FANQIE_UPLOAD_CONTROL_UNVERIFIED';
-        if (failedCoverCount === 1) await failedCover!.hover();
-        const uploader = await one(area.locator(role === 'cover' && (existingCover.length || failedCoverCount)
-          ? '.upload-img-item-btns-replace-text' : role === 'cover' ? '.image-upload-input-btn' : '[class*="upload-input-container-"]'),
-          role === 'cover' && failedCoverCount ? 'FANQIE_COVER_RETRY_CONTROL_UNVERIFIED' : missingControl);
+        if (failedCoverCount === 1) await traceSong('upload:cover:failure-hover', async () => {
+          await failedCover!.hover();
+        });
+        const uploader = role === 'cover' && failedCoverCount
+          ? await one(area.getByText('重新上传', {exact:true}), 'FANQIE_COVER_RETRY_CONTROL_UNVERIFIED')
+          : await one(area.locator(role === 'cover' && existingCover.length
+            ? '.upload-img-item-btns-replace-text' : role === 'cover' ? '.image-upload-input-btn' : '[class*="upload-input-container-"]'),
+            missingControl);
         // Click the upload icon inside the shared file area to keep the copyright guide link untouched.
         const control = role === 'cover' ? uploader : await one(uploader.locator('[class*="upload-input-icon-container-"]'), missingControl);
-        await writeSong(role === 'proof' ? 'upload:copyright-proof' : 'upload:' + role);
+        await writeSong(role === 'proof' ? 'upload:copyright-proof' :
+          role === 'cover' && failedCoverCount ? 'upload:cover:retry' : 'upload:' + role);
         await chooseDirectoryFile(tab, area, control, role, asset, async () => {
           // The account was verified before opening this form. Re-navigating a hidden
           // account iframe around every local file selection can interrupt a long draft
@@ -768,7 +1188,7 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
             });
           });
       });
-      if (!song.instrumental && needs('lyrics')) await traceSong('upload:lyrics', async () => {
+      if (song.assets.lyrics && needs('lyrics')) await traceSong('upload:lyrics', async () => {
         const area = await uploadMaterial('lyrics');
         let retries = 0;
         await waitForTransfer(area, text => fanqieTransferVerified(text, spec.lyrics!), assertScope, 120_000, undefined, async () => {
@@ -783,7 +1203,7 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
           });
         });
       });
-      else if (song.instrumental && !fields) await callbacks.trace('upload:lyrics:skipped-instrumental', 'ok', tab, jobIndex, undefined, {songTitle: song.title});
+      else if (!song.assets.lyrics && !fields) await callbacks.trace('upload:lyrics:skipped-no-lyrics', 'ok', tab, jobIndex, undefined, {songTitle: song.title});
       if (needs('title')) await traceSong('fill-title', async () => {
         const title = await titleField(tab, card, index);
         await writeSong('fill-title');
@@ -791,12 +1211,11 @@ export async function executeFanqieDirectoryForm(context: BrowserContext, songs:
         if (await title.inputValue() !== song.title) throw Error('FANQIE_METADATA_READBACK_REQUIRED');
       });
       for (const role of authorRoles) {
-        if (role === 'lyricist' && song.instrumental) {
-          if (!fields) await callbacks.trace('credit:lyricist:skipped-instrumental', 'ok', tab, jobIndex, undefined, {songTitle: song.title});
-          continue;
-        }
-        if (needs(role)) await traceSong('credit:' + role, () => selectCredit(tab, card, index, role, song.authors[role], writeSong, traceSong,
-          assertScope, role === 'singer' ? song.singerArtistId : undefined));
+        if (needs(role)) await traceSong('credit:' + role, async () => {
+          await selectCredit(tab, card, index, role, song.authors[role], writeSong, traceSong,
+            assertScope, role === 'singer' ? song.singerArtistId : undefined, readConfiguredAvatar);
+          if (role === 'singer' && song.singerArtistId) entry.singerIdConfirmed = true;
+        });
       }
       if (needs('cover')) await traceSong('upload:cover', async () => {
         let area = await uploadMaterial('cover', !!fields), retries = 0;

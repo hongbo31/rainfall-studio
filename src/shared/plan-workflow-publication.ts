@@ -14,6 +14,8 @@ export type PlanWorkflowQishuiJob = z.infer<typeof PlanWorkflowQishuiScopeSchema
   variant: "A" | "B";
   credits: { performer: string; lyricist: string; composer: string };
   submitted: boolean;
+  submittedAt?: string;
+  submittedTitle?: string;
 };
 
 export type PlanWorkflowPublicationStatus = {

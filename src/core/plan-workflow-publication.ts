@@ -2,6 +2,7 @@ import { z } from "zod";
 import { accountSupportsTarget } from "../shared/platform-accounts";
 import { publicationWorkflowHandler } from "../shared/platform-directory";
 import { workRecordingSinger } from "../shared/local-artist";
+import { workVersionTitle } from "../shared/work-versions";
 import { PlanWorkflowFanqieAccountSchema, PlanWorkflowQishuiScopeSchema, PlanWorkflowQishuiSubmittedSchema, type PlanWorkflowPublicationStatus,
   type PlanWorkflowQishuiJob } from "../shared/plan-workflow-publication";
 import type { PlanCenterItem, PlanCenterRun } from "../shared/plan-center";
@@ -180,8 +181,11 @@ export function recordWorkflowQishuiSubmission(s: Studio, input: unknown) {
     workflowQishuiScope(s, { runId, accountId, workId });
     const run = new CenterStore(s.repo).get("run", runId);
     if (!run) throw Error("WORKFLOW_QISHUI_SCOPE");
+    const work = s.repo.maybe("works", workId);
+    const submittedTitle = work?.title ? workVersionTitle({ title: work.title, alternateTitle: work.alternateTitle }, `audio_${item.variant}`) : undefined;
     const next = observe(s, { ...state, qishui: state.qishui.map(job =>
-      job.accountId === accountId && job.workId === workId ? { ...job, submitted: true } : job) }, run);
+      job.accountId === accountId && job.workId === workId
+        ? { ...job, submitted: true, submittedAt: s.now().toISOString(), submittedTitle } : job) }, run);
     savePublication(s.repo, next);
     s.planCenterService().refreshPublication(runId);
     return next;

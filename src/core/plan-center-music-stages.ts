@@ -2,13 +2,16 @@ import type {Studio} from './studio';
 import type {PlanCenterRun,PlanCenterItem,PlanCenterStageAttempt} from '../shared/plan-center';
 import {startPlanMusic,syncPlanMusic,stopPlanMusic} from './plan-center-music';
 import {adoptPlanMusicWork} from './plan-center-assets';
+import {CenterStore} from './plan-center/storage';
 
 const reason=(e:unknown)=>e instanceof Error&&/^[A-Z0-9_]+$/.test(e.message)?e.message:'MUSIC_STAGE_FAILED';
 export function tickPlanMusic(s:Studio,run:PlanCenterRun,item:PlanCenterItem){
  const service=s.planCenterService();
+ const store=new CenterStore(s.repo);
+ const itemStages=()=>store.all('stage',{field:'runId',values:[run.id]}).filter(a=>a.itemId===item.id);
  // Cancellation must persist before validating mutable work/assets.
  let state=run.stopRequested?stopPlanMusic(s,run,item):syncPlanMusic(s,run,item);
- let stages=service.list().stageAttempts.filter(a=>a.itemId===item.id);
+ let stages=itemStages();
  const record=(a:PlanCenterStageAttempt,status:'succeeded'|'failed'|'unknown'|'waiting',result:Record<string,unknown>,why?:string)=>{
   if(['succeeded','failed','not_found'].includes(a.state))return;
   const input={attemptId:a.id,status,evidenceId:state?.operationId??state?.childRunId??'existing-work:'+item.workId,result,...(why?{reason:why}:{})};
@@ -37,7 +40,7 @@ export function tickPlanMusic(s:Studio,run:PlanCenterRun,item:PlanCenterItem){
  }
  if(!state)return false;
  if(state.workId&&!('artifactError'in state))adoptPlanMusicWork(s,run,item,state.workId);
- stages=service.list().stageAttempts.filter(a=>a.itemId===item.id);
+ stages=itemStages();
  const submit=stages.filter(a=>a.stage==='music_submit').at(-1),proof={childRunId:state.childRunId,workId:state.workId,ownerKey:state.ownerKey,operationId:state.operationId,songIds:state.songIds,costUnknown:state.costUnknown};
  if(submit&&!['succeeded','failed','not_found'].includes(submit.state)){
   if(state.songIds.length===2)record(submit,'succeeded',proof);
@@ -45,7 +48,7 @@ export function tickPlanMusic(s:Studio,run:PlanCenterRun,item:PlanCenterItem){
   else if(state.state==='unknown')record(submit,'unknown',proof,'MUSIC_OUTCOME_UNKNOWN');
   else if(['failed','blocked'].includes(state.state))record(submit,'failed',proof,state.reasons[0]??'MUSIC_BLOCKED');
  }
- let assets=service.list().stageAttempts.filter(a=>a.itemId===item.id&&a.stage==='music_assets').at(-1);
+ let assets=itemStages().filter(a=>a.stage==='music_assets').at(-1);
  const next=service.next({runId:run.id,itemId:item.id});
  if(!assets&&!run.stopRequested&&next?.stage==='music_assets'&&next.state==='ready'){
   const claimed=service.claim({runId:run.id,itemId:item.id,stage:'music_assets'});if('id'in claimed)assets=claimed;

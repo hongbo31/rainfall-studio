@@ -28,10 +28,10 @@ import { FanqieDirectoryTrace, type FanqieDirectoryTracePort } from "./directory
 import { prepareFanqieWorkMaterials } from "./materials";
 import { recycleFanqieFile } from "./recycle-file";
 
-export type FanqieDownloadBinding = { batchId:string; id:string; sourceIdentity:string; audioSha256:string; originalTitle?:string };
+export type FanqieDownloadBinding = { batchId:string; id:string; sourceIdentity:string; audioSha256:string; originalTitle?:string; promptEngine?:string };
 export type FanqieUploadJob = {
   id:string; title:string; phase:"uploading"|"unknown"|"contract_pending"|"recorded";
-  accountKey:string; recordingSha256:string; pending:string|null; updatedAt:string; reason?:string;
+  accountKey:string; recordingSha256:string; pending:string|null; updatedAt:string; uploadedAt?:string; reason?:string;
   officialRecord?:FanqieCatalogRow; archiveObservedAt?:string; input:FanqieInput; baselineIds:string[]; download?:FanqieDownloadBinding;
 };
 
@@ -45,6 +45,7 @@ type Round = {
 };
 type Journal = FanqieDownloadBatch & {
   accountKey:string; configurationHash:string; tracks?:FanqieDownloadTrack[];
+  promptEngines?:Record<string,string>;
   archiveRoot?:string; active?:Round; requireSecurityVerification?:true;
 };
 type CatalogAccount = Awaited<ReturnType<FanqieCatalogSession["inspect"]>>;
@@ -76,10 +77,14 @@ const hash = (value:unknown) => createHash("sha256").update(JSON.stringify(value
 const finalIntent = "first-step:confirm-upload";
 const signingPopupLoadGraceMs = 5_000;
 const contractGenerationTimeoutMs = 15 * 60_000;
-const duplicateReasons = new Set(["FANQIE_OFFICIAL_RECORD_ALREADY_EXISTS","FANQIE_RECONCILIATION_REQUIRED"]);
+const duplicateReasons = new Set(["FANQIE_OFFICIAL_RECORD_ALREADY_EXISTS"]);
 const pathKey = (file:string) => process.platform === "win32" ? file.toLowerCase() : file;
 const failCode = (cause:unknown) => fanqieCatalogError(cause).code;
 const cleanupFailed = "FANQIE_DOWNLOAD_CLEANUP_FAILED";
+type ReconciliationDiagnostic = 'existing-audio-job'|'upload-editor-open'|'duplicate-audio-hash';
+function reconciliationError(reason:ReconciliationDiagnostic) {
+  return Object.assign(Error("FANQIE_RECONCILIATION_REQUIRED"),{fanqieDiagnosticReason:reason});
+}
 
 function titleQueries(title:string,originalTitle?:string):FanqieCatalogQuery[] {
   return originalTitle && originalTitle!==title ? [{title},{title:originalTitle}] : [{title}];
@@ -375,7 +380,7 @@ export class FanqieDirectoryRun {
       id:plan?.id??diagnosticId,state:"uploading",accountKey:plan?.accountKey??paused?.accountKey??"",
       configurationHash:hash(config),archiveRoot:archive.root,prepareContracts:true,
       requireSecurityVerification:true,
-      tracks:archive.items.filter(track=>ids.has(track.id)),preferences,
+      tracks:archive.items.filter(track=>ids.has(track.id)),promptEngines:archive.promptEngines,preferences,
       items:songs.map(song=>({...song,state:"queued"})),
     };
     const trace=this.log(journal,0);
@@ -383,7 +388,8 @@ export class FanqieDirectoryRun {
       if(song.issue)counts[song.issue]=(counts[song.issue]??0)+1;
       return counts;
     },{});
-    const scan={candidateCount:preview.items.length,readyCount:songs.length,batchLimit:preferences.limit,issueCounts};
+    const scan={candidateCount:preview.items.length,readyCount:songs.length,batchLimit:preferences.limit,issueCounts,
+      blockedItems:preview.items.flatMap(song=>song.issue?[{songTitle:song.title,issue:song.issue}]:[])};
     if(!songs.length){
       const error=Error(preview.items.length?"FANQIE_DOWNLOADS_NONE_READY":"FANQIE_DOWNLOADS_EMPTY");
       await trace.trace("directory:scan","error",undefined,undefined,error,scan);
@@ -474,15 +480,19 @@ export class FanqieDirectoryRun {
               observed=await inspect(queryCandidates(index,checkedThrough));
             }
             const slot=staged.length;
-            await trace.trace("directory:materials","begin",undefined,slot);
+            let failureStage:"catalog-title"|"artist-selection"|"source-verification"|"material-preparation"="catalog-title";
+            await trace.trace("directory:materials","begin",undefined,slot,undefined,{songTitle:track.title});
             try {
               const retryJob=retryFor(track);
               const duplicate=checkFanqieUploadTitle(observed.catalog,track.title,track.originalTitle,retryJob);
               if(!duplicate.allowed)throw Error(duplicate.reason);
+              failureStage="artist-selection";
               const singer=singers.get(fanqieRosterNameKey(track.singer));
               if(!singer)throw Error("FANQIE_ARTIST_SEARCH_UNVERIFIED");
               if("issue" in singer)throw Error(singer.issue);
+              failureStage="source-verification";
               this.verifyTrack(track,snapshot.get(track.id));
+              failureStage="material-preparation";
               const {input,audioSha256,previousRecord}=await this.prepare(track,config,account,journal,existing,sessionId,guard,context);
               input.singerArtistId=singer.artistId;
               const id=hash({account:journal.accountKey,audio:input.assets.audio.sha256});
@@ -492,7 +502,7 @@ export class FanqieDirectoryRun {
                 ...(previousRecord?{officialRecord:previousRecord}:{}),
                 baselineIds:observed.catalog.rows.map(row=>row.id),
                 download:{batchId:journal.id,id:track.id,sourceIdentity:track.source!.audio.identity,
-                  audioSha256,originalTitle:track.originalTitle},
+                  audioSha256,originalTitle:track.originalTitle,promptEngine:journal.promptEngines?.[track.id]},
               };
               existing.push(job);
               roundMode=mode;
@@ -501,13 +511,21 @@ export class FanqieDirectoryRun {
               await trace.trace("directory:materials","ok",undefined,slot);
             }catch(error){
               item.issue=failCode(error);
-              item.state=duplicateReasons.has(item.issue)?"skipped":"failed";
-              await trace.trace("directory:materials","error",undefined,slot,error);
+              item.state=item.issue==="FANQIE_OFFICIAL_RECORD_ALREADY_EXISTS"?"skipped":
+                item.issue==="FANQIE_RECONCILIATION_REQUIRED"?"needs_review":"failed";
+              if(item.state==="needs_review")journal.issue??=item.issue;
+              await trace.trace("directory:materials","error",undefined,slot,error,
+                {songTitle:track.title,failureStage,
+                  failureReason:(error as {fanqieDiagnosticReason?:ReconciliationDiagnostic})?.fanqieDiagnosticReason});
             }
           }
           await trace.trace("directory:batch-selection","ok",undefined,undefined,undefined,
             {candidateCount:queued.length,batchLimit:preferences.limit,batchSize:staged.length});
-          if(!staged.length)return;
+          if(!staged.length){
+            const review=journal.items.find(item=>item.state==="needs_review");
+            if(review){journal.state="needs_review";journal.issue=review.issue??"FANQIE_RECONCILIATION_REQUIRED";this.save(journal);}
+            return;
+          }
           journal.active={number,trackIds:staged.map(entry=>entry.item.id),mode:roundMode,signContract:preferences.signContract};
           for(const {item} of staged){item.state="uploading";item.round=number;}
           this.save(journal);
@@ -715,8 +733,9 @@ export class FanqieDirectoryRun {
     const known=(sha256:string,except?:FanqieUploadJob)=>existing.find(job=>job!==except&&job.accountKey===account.report.accountKey&&
       (job.download?.audioSha256===sha256||job.recordingSha256===sha256));
     const prior=known(audioSha256);
-    if(prior&&(!canRetryDownload(prior,track)||hasOpenUploadEditor(context)))
-      throw Error(prior.officialRecord?"FANQIE_OFFICIAL_RECORD_ALREADY_EXISTS":"FANQIE_RECONCILIATION_REQUIRED");
+    if(prior&&!canRetryDownload(prior,track))
+      throw prior.officialRecord?Error("FANQIE_OFFICIAL_RECORD_ALREADY_EXISTS"):reconciliationError('existing-audio-job');
+    if(prior&&hasOpenUploadEditor(context))throw reconciliationError('upload-editor-open');
     const saved=track.artistId?config.artistAuthors?.[track.artistId]:undefined;
     const authors={
       lyricist:saved?.lyricist||track.credits?.lyricist||config.authors.lyricist,
@@ -727,28 +746,29 @@ export class FanqieDirectoryRun {
     if(lyrics){
       try { lyricText=new TextDecoder("utf-8",{fatal:true}).decode(fs.readFileSync(lyrics.file)); }
       catch { throw Error("FANQIE_LYRICS_INVALID"); }
-      if(!lyricText.trim()||lyricText.includes("\0"))throw Error("FANQIE_LYRICS_INVALID");
+      if(lyricText.includes("\0"))throw Error("FANQIE_LYRICS_INVALID");
+      if(!lyricText.trim())lyricText="";
     }
     const assets=await (this.options.materials??prepareFanqieWorkMaterials)(this.options.root,{
       title:formTitle,audio:{...audio,sha256:audioSha256},cover:{...cover,sha256:digest(cover.file)},
-      lyrics:lyricText,instrumental:track.instrumental,
+      lyrics:lyricText,
     },guard,true);
     guard();assertFanqieDownloadTrack(track);
     const staged=(prior&&known(audioSha256,prior))??known(assets.audio.sha256,prior);
-    if(staged)throw Error(staged.officialRecord?"FANQIE_OFFICIAL_RECORD_ALREADY_EXISTS":"FANQIE_RECONCILIATION_REQUIRED");
+    if(staged)throw staged.officialRecord?Error("FANQIE_OFFICIAL_RECORD_ALREADY_EXISTS"):reconciliationError('duplicate-audio-hash');
     const copyrightProof=proof?{file:proof.file,bytes:proof.bytes,sha256:digest(proof.file)}:undefined;
     // The journal scopes the configured credits locally. The upload form verifies each live selection.
     const input:FanqieDirectorySong={
       workId:"bundle:"+assets.audio.sha256,scope:{accountId:account.accountId,artistId:hash(authors),sessionId},
       title:formTitle,assets,authors,musicType:release.musicType,ai:release.ai,songAttribute:release.songAttribute,
       originalSinger:release.originalSinger,originalWorkId:release.originalWorkId,
-      instrumental:track.instrumental,copyrightProof,rightsConfirmed:true,lyricsMatchConfirmed:true,
+      copyrightProof,rightsConfirmed:true,lyricsMatchConfirmed:true,
       coverAuthorization:release.musicType==="cover"?(copyrightProof?.sha256??"publisher-confirmation:"+journal.id):undefined,
     };
     await (this.options.verify??verifyFanqieMaterials)(input);
     guard();
     if(prior){
-      if(hasOpenUploadEditor(context))throw Error("FANQIE_RECONCILIATION_REQUIRED");
+      if(hasOpenUploadEditor(context))throw reconciliationError('upload-editor-open');
       this.options.archive(prior);
       existing.splice(existing.indexOf(prior),1);
     }
@@ -965,7 +985,9 @@ export class FanqieDirectoryRun {
     }
   }
   private async complete(journal:Journal,generation:number,trace:FanqieDirectoryTracePort) {
-    journal.state="complete";
+    const review=journal.items.find(item=>item.state==="needs_review");
+    journal.state=review?"needs_review":"complete";
+    if(review)journal.issue??=review.issue??"FANQIE_RECONCILIATION_REQUIRED";
     this.save(journal);
     await trace.trace("directory:complete","ok");
     if(journal.active||journal.issue||journal.items.some(item=>item.state!=="uploaded"&&item.state!=="skipped"))return;

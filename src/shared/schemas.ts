@@ -22,6 +22,7 @@ import { DailyPlanInputSchema, SelectionSchema } from "./daily";
 import { InboxSetupSchema } from "./inbox";
 import {PlanCenterCatalogSchema,PlanCenterSaveSchema,PlanCenterDeleteSchema,PlanCenterIdSchema,PlanCenterRunSchema,PlanCenterStopSchema,PlanCenterRetrySchema,PlanCenterBindWorkSchema,PlanCenterSelectVersionSchema,PlanCenterConfirmMaterialsSchema} from './plan-center';
 import { publicationTaskSchemas } from "./publication-tasks";
+import { PublicationHistoryQuerySchema } from "./publication-history";
 import { TmeInputSchema } from './tme';
 import { CoverRequestSchema, GenerateCoverSchema, RetryCoverSchema, coverResolutionSchema } from './cover-handoff';
 import { TmeObservationSchemas } from './tme-observations';
@@ -273,6 +274,7 @@ export const methodSchemas: Record<string, z.ZodType> = {
   }),
   "exception.retry": z.object({ id }),
   "metrics.read": z.object({}),
+  "publish.history": PublicationHistoryQuerySchema,
   "cover.task": z.object({ workId: id, brief: z.string().max(10000) }),
   "video.prepare": z.object({ workId: id, recordingSlot:z.enum(['audio_A','audio_B']).optional() }),
   "goal.complete": z.object({ workId: id, planId: id.optional() }),

@@ -15,6 +15,7 @@ import {
   Tray,
   Menu,
   crashReporter,
+  autoUpdater,
 } from "electron";
 import path from "node:path";
 import fs from "node:fs";
@@ -62,6 +63,8 @@ import {createPlanPuleRunner} from './plan-pule';
 import {createUnifiedPublishBroker,createTmeAiTransportProvider} from './tme/unified-publish';
 import {externalReceiptBarrier,persistExternalReceiptBarrier,persistExternalReceiptStop} from './tme/external-receipt-barrier';
 import {installNativeDiagnostics} from './native-diagnostics';
+import {createAppUpdater} from './app-updater';
+import type {AppUpdateStatus} from '../shared/app-update';
 import {cleanupExpiredDiagnostics} from './diagnostic-retention';
 import {diagnosticRetentionSweepMs} from '../shared/diagnostic-retention';
 import {chooseInboxBridgeProject} from './inbox-bridge';
@@ -85,6 +88,8 @@ const browserOnly = process.argv.includes("--rainfall-browser");
 const browserNoOpen = browserOnly && process.argv.includes("--rainfall-browser-no-open");
 const browserFresh = browserOnly && process.argv.includes("--rainfall-browser-fresh");
 let browserStudio: ReturnType<typeof startBrowserStudio> | undefined;
+let appUpdater: ReturnType<typeof createAppUpdater> | undefined;
+let liveManagerForUpdate: TmeLiveManager | undefined;
 const browserCaller = Symbol("authenticated browser session");
 type Invocation = Electron.IpcMainInvokeEvent | typeof browserCaller;
 type Handler = (event: Invocation, ...args: any[]) => Promise<RpcResult> | RpcResult;
@@ -659,6 +664,24 @@ function trusted(event: Invocation) {
   )
     throw Error("IPC_SOURCE_REJECTED");
 }
+async function shutdownWorkspaceForUpdate() {
+  if (closing) throw Error("APP_CLOSING");
+  closing = true;
+  browserStudio?.close();
+  publishWorkbench?.close();
+  tmeAiNative.interrupt();
+  await Promise.allSettled([
+    rpc("internal.close"),
+    puleJobs.close(),
+    sunoCnJobs.close(),
+    accountBrowsers.close(),
+    fanqieAccounts.close(),
+    remoteAssistServer.close(),
+    tmeAiCloud.disconnect(),
+    liveManagerForUpdate?.dispose(),
+  ]);
+  child?.kill();
+}
 async function safe(fn: () => any) {
   try {
     return await fn();
@@ -785,6 +808,7 @@ function handlers() {
     assertCurrent:async d=>{checkLiveScope();const r=await rpc('internal.tme.current',{id:d.id});if(!r.ok)throw Error(r.error.code);},
     updateUnit:(id,patch)=>liveRpc('updateUnit',{id,patch}),updateBatch:(id,patch)=>liveRpc('updateBatch',{id,patch}),claim:(id,identity)=>liveRpc('claim',{id,identity}),start:id=>liveRpc('start',{id}),
   },new WindowsUiaTransport(path.join(__dirname,'tme-uia-host.ps1')),os.hostname());
+  liveManagerForUpdate = liveManager;
   const liveScope=registerTmeLiveHandlers((name,fn)=>registerHandler(name,fn),trusted,liveManager,{mode:()=>mode,generation:()=>coreGeneration,unavailable:()=>switching||closing});
   checkLiveScope=liveScope.assertScope;
   interruptTme=()=>{void tmeAiCloud.disconnect().catch(()=>{});tmeScope.invalidate();liveScope.invalidate();tmeAiNative.interrupt();};
@@ -797,6 +821,21 @@ function handlers() {
   registerHandler("rainfall:call", (e, method, input) =>
     safe(async () => {
       trusted(e);
+      if (method === "appUpdate.status" || method === "appUpdate.check" || method === "appUpdate.install") {
+        const updater = appUpdater;
+        if (!updater) {
+          const value: AppUpdateStatus = { supported: false, state: "unsupported", currentVersion: app.getVersion() };
+          return { ok: true, value };
+        }
+        if (method === "appUpdate.status") return { ok: true, value: updater.status() };
+        if (method === "appUpdate.check") return { ok: true, value: updater.check() };
+        if (updater.status().state !== "downloaded") {
+          return { ok: false, error: { code: "APP_UPDATE_NOT_READY", message: "新版尚未下载完成。" } };
+        }
+        await shutdownWorkspaceForUpdate();
+        updater.install();
+        return { ok: true, value: null };
+      }
       const parsed = validate(method, input);
       if (method === "planCenter.retryFanqieCleanup") {
         try {
@@ -1146,6 +1185,14 @@ app
     if(!offlineAcceptance)scheduleDiagnosticRetention();
     startCore();
     await ready;
+    const updateExe = path.resolve(path.dirname(app.getPath("exe")), "..", "Update.exe");
+    appUpdater = createAppUpdater({
+      updater: autoUpdater,
+      currentVersion: app.getVersion(),
+      feedUrl: process.env.RAINFALL_UPDATE_FEED_URL ?? "",
+      squirrelInstalled: !browserOnly && process.platform === "win32" && app.isPackaged && fs.existsSync(updateExe),
+      squirrelFirstRun: process.argv.includes("--squirrel-firstrun"),
+    });
     protocol.handle("app", (request) => {
       const url = new URL(request.url);
       const rel = decodeURIComponent(url.pathname);

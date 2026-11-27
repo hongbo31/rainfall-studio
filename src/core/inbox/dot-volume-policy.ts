@@ -1,5 +1,6 @@
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { windowsPowerShellExecutable } from "../../shared/host-executable-paths";
 import { physicalInboxHelperPath } from "./dot-rename-exclusive";
 const known = new Map<string, number>();
 /** Some virtual volumes report nlink=0. Accept only if native volume flags prove hardlinks unsupported. */
@@ -16,7 +17,7 @@ export function acceptableLinkCount(
   try {
     facts = JSON.parse(
       execFileSync(
-        "pwsh.exe",
+        windowsPowerShellExecutable(),
         [
           "-NoLogo",
           "-NoProfile",

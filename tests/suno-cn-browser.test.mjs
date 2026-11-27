@@ -21,7 +21,8 @@ await build({ stdin: { resolveDir: process.cwd(), contents: `
 const { runSunoCnBrowser, createPuleBrowserJobs, PlatformBrowserSessions, platformPageUrls, sunoCnOrigin } = createRequire(import.meta.url)(bundle);
 const html = await fs.readFile(new URL("./fixtures/suno-cn-browser.html", import.meta.url), "utf8");
 
-for (const scenario of ["vocal", "instrumental", "long-cover-prompt", "cover-rejection", "wav-label-variant", "wav-menu-missing", "wav-menu-retry-b",
+for (const scenario of ["vocal", "instrumental", "create-label-vocal", "create-label-instrumental",
+  "create-label-native-download", "create-label-three", "long-cover-prompt", "cover-rejection", "wav-label-variant", "wav-menu-missing", "wav-menu-retry-b",
   "wav-menu-shared-budget", "wav-menu-replaced-b", "wav-menu-stop-b", "wav-prepare-timeout",
   "wav-prepare-rejected", "wav-download-not-started", "unchanged", "signed-out", "account-origin", "login-hydration", "layout-overflow", "generation-repaint", "already-pending",
   "submit-blocked", "vocal-conflict", "insufficient-credits"]) {
@@ -56,11 +57,12 @@ for (const scenario of ["vocal", "instrumental", "long-cover-prompt", "cover-rej
     const selectedCover = scenario === "cover-rejection" ? {
       profileId: randomUUID(), expectedRevision: 1, providerId: "zhipu_image", modelId: "glm-image",
     } : undefined;
+    const instrumental = scenario === "instrumental" || scenario === "create-label-instrumental";
     let pageRuns = 0, stopRequested = false;
     const jobs = createPuleBrowserJobs({
       root, provider: "suno_cn", captureWorkspace: () => () => {}, chooseAudio: async () => null,
       scope: async (_accountId, _artistId, _publication, coverImage) => ({ accountName: "账号", gender: "female", timbre: "小川",
-        timbreWeight: 0, styleWeight: 63.4, songType: scenario === "instrumental" ? "instrumental" : "vocal",
+        timbreWeight: 0, styleWeight: 63.4, songType: instrumental ? "instrumental" : "vocal",
         archiveRoot, archiveFolderNames: { A: "账号_甲_引擎", B: "账号_乙_引擎" }, singers: { A: "甲", B: "乙" },
         coverProfile: coverImage ? { profileId: coverImage.profileId, expectedRevision: coverImage.expectedRevision, modelId: coverImage.modelId }
           : { profileId: randomUUID(), expectedRevision: 1 } }),
@@ -93,9 +95,9 @@ for (const scenario of ["vocal", "instrumental", "long-cover-prompt", "cover-rej
           await hooks.beforeCharge(...args);
           if (scenario === "submit-blocked") await page.locator(".suno-custom-create-action").evaluate(button => { button.disabled = true; });
         },
-      }, { control: scenario.startsWith("wav-menu-") ? 600 : 2000, generation: 2200, download: 3600, downloadStart: 550, poll: 30 }),
+      }, { control: scenario.startsWith("wav-menu-") ? 600 : 2000, generation: 2200, lyricPreflight: 150,
+        download: 3600, downloadStart: 550, poll: 30 }),
     });
-    const instrumental = scenario === "instrumental";
     const title = scenario === "unchanged" ? "旧歌" : "窗边的灯";
     const lyrics = scenario === "long-cover-prompt" ? "[Verse]\n我在窗边等你\n" + "雨滴落在窗台上\n".repeat(93) : "我在窗边等你";
     const style = scenario === "long-cover-prompt" ? "怀旧慢板，老电影的褪色光影".repeat(40) : "怀旧慢板";
@@ -122,6 +124,13 @@ for (const scenario of ["vocal", "instrumental", "long-cover-prompt", "cover-rej
       assert.deepEqual(job.files, []);
       return;
     }
+    if (scenario === "create-label-three") {
+      assert.equal(job.status, "failed");
+      assert.equal(job.code, "SUNO_CN_SUBMIT_UNAVAILABLE");
+      assert.equal(job.chargeAttempts, undefined);
+      assert.deepEqual(traces, []);
+      return;
+    }
     if (scenario === "vocal-conflict" || scenario === "insufficient-credits") {
       assert.equal(job.status, "failed");
       assert.equal(job.code, scenario === "vocal-conflict" ? "SUNO_CN_VOCAL_STYLE_CONFLICT" : "SUNO_CN_INSUFFICIENT_CREDITS");
@@ -131,6 +140,7 @@ for (const scenario of ["vocal", "instrumental", "long-cover-prompt", "cover-rej
     }
     if (scenario === "layout-overflow")
       assert.equal(await page.locator(".main-shell").getAttribute("data-scroll-after-mode"), "0,0");
+    if (scenario.startsWith("create-label-")) assert.equal(job.status, "completed", job.code);
     assert.deepEqual(traces[0], { title, lyrics: input.lyrics, style: input.style, instrumental,
       voice: instrumental ? "随机" : "女声", timbre: instrumental ? "" : "小川", weights: instrumental ? [25, 50] : [0, 63] });
     if (scenario === "unchanged") {

@@ -2,8 +2,10 @@
 [CmdletBinding()]
 param(
   [switch]$Local,
+  [switch]$Installer,
   [switch]$DeferCleanup,
   [switch]$CleanupInstalled,
+  [string]$UpdateFeedUrl,
   [string]$OutputDirectory,
   [string]$BuildRoot = $env:RAINFALL_BUILD_ROOT
 )
@@ -54,6 +56,24 @@ function Get-BuildArchive($Url, $Sha256, $MirrorUrl) {
 }
 
 $repository = 'https://github.com/hongbo31/rainfall-studio.git'
+$defaultUpdateFeedUrl = 'https://github.com/hongbo31/rainfall-studio-updates/releases/latest/download/'
+$feedUrlInput = if ($UpdateFeedUrl) {
+  $UpdateFeedUrl
+} elseif ($env:RAINFALL_UPDATE_FEED_URL) {
+  $env:RAINFALL_UPDATE_FEED_URL
+} elseif ($Installer) {
+  $defaultUpdateFeedUrl
+}
+$updateFeedUrl = $null
+if ($feedUrlInput) {
+  $feedUri = $null
+  if (![Uri]::TryCreate($feedUrlInput, [UriKind]::Absolute, [ref]$feedUri) -or
+      $feedUri.Scheme -ne 'https' -or $feedUri.UserInfo -or $feedUri.Query -or $feedUri.Fragment) {
+    throw '更新源必须是无凭证、无查询参数的 HTTPS 目录 URL。'
+  }
+  $updateFeedUrl = $feedUri.AbsoluteUri.TrimEnd('/') + '/'
+  if (!$Installer) { throw 'RAINFALL_UPDATE_FEED_URL 只能用于 -Installer 构建。' }
+}
 $pointerFile = Join-Path $env:LOCALAPPDATA 'RainfallStudioLauncher/verified-desktop.json'
 $desktop = if (Test-Path -LiteralPath $pointerFile -PathType Leaf) {
   Get-Content -LiteralPath $pointerFile -Raw | ConvertFrom-Json
@@ -87,7 +107,7 @@ Assert-RainfallPhysicalPath $lockPath
 $buildLock = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
 if ($CleanupInstalled) {
   try {
-    if ($Local -or $DeferCleanup) { throw '清理已安装版本时只需要 -CleanupInstalled。' }
+    if ($Local -or $DeferCleanup -or $Installer) { throw '清理已安装版本时只需要 -CleanupInstalled。' }
     $launcher = Join-Path (Split-Path -Parent $pointerFile) 'Launch-Verified.ps1'
     if (!$desktop -or !(Test-Path -LiteralPath $launcher -PathType Leaf)) { throw '缺少已验收的桌面版本。' }
     Invoke-BuildCommand (Join-Path $PSHOME 'pwsh.exe') @('-NoProfile', '-File', $launcher, '-ValidateOnly') '桌面版本验证失败' | Out-Null
@@ -117,11 +137,19 @@ $partial = $null
 $recordTemp = $null
 $createdArchive = $false
 $createdSidecar = $false
+$installerFile = $null
+$createdInstaller = $false
+$createdInstallerSidecar = $false
+$updateFeedDirectory = $null
+$createdUpdateFeedDirectory = $false
+$updatePackageName = $null
+$updatePackageHash = $null
+$releasesHash = $null
 $verified = $false
 $ownsRun = $false
 $originalPath = $env:Path
 $originalEnvironment = @{}
-foreach ($name in @('TEMP', 'TMP', 'ELECTRON_CACHE', 'ELECTRON_SKIP_BINARY_DOWNLOAD', 'RAINFALL_SMS_APK_DIR')) {
+foreach ($name in @('TEMP', 'TMP', 'ELECTRON_CACHE', 'ELECTRON_SKIP_BINARY_DOWNLOAD', 'RAINFALL_SMS_APK_DIR', 'RAINFALL_UPDATE_FEED_URL')) {
   $originalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 try {
@@ -139,6 +167,7 @@ try {
   $env:TMP = $temporary
   $env:ELECTRON_CACHE = Join-Path $buildCache 'electron'
   $env:ELECTRON_SKIP_BINARY_DOWNLOAD = '1'
+  if ($updateFeedUrl) { $env:RAINFALL_UPDATE_FEED_URL = $updateFeedUrl }
   Write-Host "构建与验证：$scratch"
   Write-Host "缓存：$buildCache"
   Write-Host "成品：$output"
@@ -182,6 +211,9 @@ try {
     $npmArgs = @($npm, 'ci', '--include=dev', '--no-audit', '--no-fund',
       '--cache', $npmCache, '--logs-dir', (Join-Path $scratch 'npm-logs'),
       '--prefer-offline', '--fetch-retries=1', '--fetch-timeout=30000')
+    # The locked Windows dependencies include native prebuilds. Electron itself
+    # is extracted from its verified archive below, so no install hook is needed.
+    if ($Installer) { $npmArgs += '--ignore-scripts' }
     try {
       Invoke-BuildCommand $node $npmArgs '安装项目依赖失败' | Out-Host
     } catch {
@@ -214,7 +246,22 @@ try {
     } else {
       Join-Path $buildRoot 'android-sms'
     }
-    $buildOutput = @(Invoke-BuildCommand $node @('scripts/package-portable.mjs', '--media-tools-dir', (Join-Path $scratch $mediaName)) '打包失败')
+    $packageArgs = @('scripts/package-portable.mjs', '--media-tools-dir', (Join-Path $scratch $mediaName))
+    if ($Installer) {
+      $browserVersion = '156.0.8078.4'
+      $browsers = Get-Content -LiteralPath 'node_modules/playwright-core/browsers.json' -Raw | ConvertFrom-Json
+      if (($browsers.browsers | Where-Object name -eq chromium).browserVersion -ne $browserVersion) {
+        throw '更新 Playwright 后需同步更新安装包中的浏览器版本和 SHA-256。'
+      }
+      $chromeArchive = Get-BuildArchive "https://storage.googleapis.com/chrome-for-testing-public/$browserVersion/win64/chrome-win64.zip" '220021ecfdad08c116fc71a153e65e3861ba841c531afc4f7acc7bd5d44b41db'
+      [IO.Compression.ZipFile]::ExtractToDirectory($chromeArchive, $scratch)
+      $pwshVersion = '7.6.6'
+      $pwshArchive = Get-BuildArchive "https://github.com/PowerShell/PowerShell/releases/download/v$pwshVersion/PowerShell-$pwshVersion-win-x64.zip" '02fe458be20493fbdf43f61ea20610b811ee6c738ab1676c61b9cfcd1a33c860'
+      $pwshFolder = Join-Path $scratch 'pwsh'
+      [IO.Compression.ZipFile]::ExtractToDirectory($pwshArchive, $pwshFolder)
+      $packageArgs += @('--chromium-dir', (Join-Path $scratch 'chrome-win64'), '--powershell-dir', $pwshFolder)
+    }
+    $buildOutput = @(Invoke-BuildCommand $node $packageArgs '打包失败')
     $built = $buildOutput[-1] | ConvertFrom-Json
     $package = Get-RainfallArtifactChild (Join-Path $source 'out') $built.root
     if (!$package.PSIsContainer -or $built.manifest -ne (Join-Path $package.FullName 'portable-manifest.json') -or
@@ -239,8 +286,36 @@ try {
     (Join-Path $scratch 'verification-data')) '随包运行组件验证失败' | Out-Host
   $hash = (Get-FileHash -LiteralPath $zipTemp -Algorithm SHA256).Hash.ToLowerInvariant()
 
-  Write-Host '[6/6] 交付新包并清理已替代产物'
   $name = "RainfallStudio-$($manifest.version)-$($commit.Substring(0, 12))-win-x64"
+  if ($Installer) {
+    Write-Host '生成 Windows 安装程序并解开安装程序内的载荷进行验证。'
+    $compressionTool = Get-BuildArchive 'https://www.7-zip.org/a/7z2601-x64.exe' 'd64a0468f5b5b0b0fc5b2188450bcd655b70809d97b1c4535f2884635094377d'
+    $setupName = "$name-Setup.exe"
+    if ((Test-Path -LiteralPath (Join-Path $output $setupName)) -or (Test-Path -LiteralPath (Join-Path $output "$setupName.sha256"))) {
+      $setupName = "$name-$buildId-Setup.exe"
+    }
+    $setupOutput = @(Invoke-BuildCommand $node @((Join-Path $source 'scripts/package-windows-installer.mjs'),
+      $built.root, $scratch, $setupName, $compressionTool) '安装程序打包或验证失败')
+    $setupOutput | Select-Object -SkipLast 1 | Out-Host
+    $setup = $setupOutput[-1] | ConvertFrom-Json
+    $installerTemp = Get-RainfallArtifactChild (Join-Path $scratch 'installer') $setup.setup
+    $updatePackageTemp = Get-RainfallArtifactChild (Join-Path $scratch 'installer') $setup.updatePackage
+    $releasesTemp = Get-RainfallArtifactChild (Join-Path $scratch 'installer') $setup.releases
+    if ($installerTemp.Name -ne $setupName -or $setup.verifiedFiles -ne @($manifest.files).Count + 2 -or
+        !$setup.updatePackageSha256 -or !$setup.releasesSha256 -or
+        $updatePackageTemp.Name -ne $setup.updatePackageName) {
+      throw '安装程序校验结果与应用清单不一致。'
+    }
+    $updatePackageHash = (Get-FileHash -LiteralPath $updatePackageTemp.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    $releasesHash = (Get-FileHash -LiteralPath $releasesTemp.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($updatePackageHash -ne $setup.updatePackageSha256 -or $releasesHash -ne $setup.releasesSha256) {
+      throw 'Squirrel 更新文件校验失败。'
+    }
+    $updatePackageName = $updatePackageTemp.Name
+    $installerHash = (Get-FileHash -LiteralPath $installerTemp.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+  }
+
+  Write-Host '[6/6] 交付新包并清理已替代产物'
   $zip = Join-Path $output "$name.zip"
   if ((Test-Path -LiteralPath $zip) -or (Test-Path -LiteralPath "$zip.sha256")) {
     $zip = Join-Path $output "$name-$buildId.zip"
@@ -265,6 +340,41 @@ try {
     $line = [Text.Encoding]::UTF8.GetBytes("$hash  $([IO.Path]::GetFileName($zip))" + [Environment]::NewLine)
     $checksumFile.Write($line, 0, $line.Length)
   } finally { $checksumFile.Dispose() }
+  if ($Installer) {
+    $installerFile = Join-Path $output $setupName
+    [IO.File]::Copy($installerTemp.FullName, $installerFile)
+    $createdInstaller = $true
+    if ((Get-FileHash -LiteralPath $installerFile -Algorithm SHA256).Hash -ne $installerHash) { throw '交付安装程序校验失败。' }
+    $setupChecksum = [IO.File]::Open("$installerFile.sha256", [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    $createdInstallerSidecar = $true
+    try {
+      $line = [Text.Encoding]::UTF8.GetBytes("$installerHash  $setupName" + [Environment]::NewLine)
+      $setupChecksum.Write($line, 0, $line.Length)
+    } finally { $setupChecksum.Dispose() }
+
+    $feedRoot = Join-Path $output 'update-feed'
+    Assert-RainfallPhysicalPath $feedRoot
+    [void][IO.Directory]::CreateDirectory($feedRoot)
+    $feedStageName = "$($manifest.version)-$buildId"
+    $updateFeedDirectory = Join-Path $feedRoot $feedStageName
+    Assert-RainfallPhysicalPath $updateFeedDirectory
+    if (Test-Path -LiteralPath $updateFeedDirectory) { throw '更新 feed staging 目录已存在。' }
+    [void][IO.Directory]::CreateDirectory($updateFeedDirectory)
+    $createdUpdateFeedDirectory = $true
+
+    $publishedPackage = Join-Path $updateFeedDirectory $updatePackageName
+    [IO.File]::Copy($updatePackageTemp.FullName, $publishedPackage)
+    if ((Get-FileHash -LiteralPath $publishedPackage -Algorithm SHA256).Hash.ToLowerInvariant() -ne $updatePackageHash) {
+      throw '更新包复制校验失败。'
+    }
+    [IO.File]::WriteAllText("$publishedPackage.sha256", "$updatePackageHash  $updatePackageName$([Environment]::NewLine)", [Text.UTF8Encoding]::new($false))
+    $publishedReleases = Join-Path $updateFeedDirectory 'RELEASES'
+    [IO.File]::Copy($releasesTemp.FullName, $publishedReleases)
+    if ((Get-FileHash -LiteralPath $publishedReleases -Algorithm SHA256).Hash.ToLowerInvariant() -ne $releasesHash) {
+      throw 'RELEASES 复制校验失败。'
+    }
+    [IO.File]::WriteAllText("$publishedReleases.sha256", "$releasesHash  RELEASES$([Environment]::NewLine)", [Text.UTF8Encoding]::new($false))
+  }
   $record = [pscustomobject]@{
     kind = 'rainfall-studio-verified-build'
     id = $runId
@@ -273,19 +383,32 @@ try {
     archiveName = [IO.Path]::GetFileName($zip)
     sourceCommit = $commit
     sha256 = $hash
+    installerName = $(if ($Installer) { $setupName })
+    installerSha256 = $(if ($Installer) { $installerHash })
+    installerVerifiedFiles = $(if ($Installer) { $setup.verifiedFiles })
+    updateFeedDirectory = $(if ($Installer) { "update-feed/$feedStageName" })
+    updatePackageName = $(if ($Installer) { $updatePackageName })
+    updatePackageSha256 = $(if ($Installer) { $updatePackageHash })
+    updateReleasesSha256 = $(if ($Installer) { $releasesHash })
   }
   $recordTemp = Join-Path $recordsRoot "$runId.json.tmp"
   $record | ConvertTo-Json | Set-Content -LiteralPath $recordTemp -Encoding utf8
   [IO.File]::Move($recordTemp, (Join-Path $recordsRoot "$runId.json"))
   $verified = $true
-  if (!$DeferCleanup) {
+  if (!$DeferCleanup -and !$Installer) {
     try {
       $result = Remove-RainfallSupersededBuilds $recordsRoot $runsRoot $record (Get-RainfallArtifactProtection) -CacheRoot $buildCache
       Write-Host "已清理 $($result.Archives) 个旧包、$($result.Runs) 个历史验证目录和 $([Math]::Round($result.CacheBytes / 1MB, 1)) MiB 构建缓存。"
     } catch { Write-Warning "新包已验证，暂缓清理历史产物。$($_.Exception.Message)" }
   }
-  Write-Host "打包完成。解压 ZIP 后运行 RainfallStudio.exe。"
-  $zip
+  if ($Installer) {
+    Write-Host "更新 feed 文件已校验，发布目录：$updateFeedDirectory"
+    Write-Host '打包完成。双击 Setup.exe 安装。'
+    $installerFile
+  } else {
+    Write-Host '打包完成。解压 ZIP 后运行 RainfallStudio.exe。'
+    $zip
+  }
 } finally {
   try {
     $env:Path = $originalPath
@@ -308,6 +431,17 @@ try {
           Remove-Item -LiteralPath "$zip.sha256" -Force
         }
       }
+    }
+    if (!$verified -and $createdInstaller) {
+      $item = Get-RainfallArtifactChild $output $installerFile
+      Remove-Item -LiteralPath $item.FullName -Force
+      if ($createdInstallerSidecar) { Remove-Item -LiteralPath "$installerFile.sha256" -Force }
+    }
+    if (!$verified -and $createdUpdateFeedDirectory -and $updateFeedDirectory) {
+      $feedRoot = Join-Path $output 'update-feed'
+      $item = Get-RainfallArtifactChild $feedRoot $updateFeedDirectory
+      if (!$item.PSIsContainer) { throw '本轮更新 feed staging 路径不是目录。' }
+      Remove-Item -LiteralPath $item.FullName -Recurse -Force
     }
     if ($ownsRun) {
       $null = Remove-RainfallBuildRun $runsRoot $scratch (Get-RainfallArtifactProtection) -CurrentRun

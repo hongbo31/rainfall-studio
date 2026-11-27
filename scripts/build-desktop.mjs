@@ -6,6 +6,15 @@ import { stageRemoteAssistApk } from "../src/main/remote-assist-apk.ts";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
 const output = path.join(projectRoot, "build");
+const updateFeedUrl = (process.env.RAINFALL_UPDATE_FEED_URL ?? "").trim();
+if (updateFeedUrl) {
+  let parsed;
+  try { parsed = new URL(updateFeedUrl); } catch { throw Error("Invalid RAINFALL_UPDATE_FEED_URL"); }
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw Error("RAINFALL_UPDATE_FEED_URL must be an HTTPS directory URL without credentials, query, or fragment");
+  }
+  if (!parsed.pathname.endsWith("/")) parsed.pathname += "/";
+}
 await fs.mkdir(output, { recursive: true });
 await stageRemoteAssistApk(path.resolve(projectRoot, process.env.RAINFALL_SMS_APK_DIR ||
   path.join("..", `${path.basename(projectRoot)}-build`, "android-sms")), output);
@@ -39,6 +48,9 @@ for (const [name, entry] of Object.entries({
     format: "cjs",
     packages: "external",
     sourcemap: true,
+    ...(name === "main" ? {
+      define: { "process.env.RAINFALL_UPDATE_FEED_URL": JSON.stringify(updateFeedUrl) },
+    } : {}),
   });
 }
 await viteBuild({

@@ -27,6 +27,8 @@ function outcome(batch: FanqieDownloadBatch) {
       ? "FANQIE_DIRECTORY_CONTRACT_GENERATION_PENDING" : "FANQIE_DIRECTORY_CONTRACT_PENDING" };
   if (batch.state !== "complete")
     return { state: "blocked", reason: batch.issue ?? "FANQIE_RECONCILIATION_REQUIRED" };
+  const review = batch.items.find(item => item.state === "needs_review");
+  if (review) return { state: "blocked", reason: review.issue ?? batch.issue ?? "FANQIE_RECONCILIATION_REQUIRED" };
   const issue = batch.issue ?? batch.items.find(item => item.state === "failed")?.issue;
   if (issue || batch.items.some(item => item.state === "failed"))
     return { state: "failed", reason: issue ?? failedReason };

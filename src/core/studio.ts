@@ -15,6 +15,7 @@ import {PlanCenterService,isLegacyOwned} from './plan-center';
 import {assertLegacyScheduleEditable} from './plan-center-ownership';
 import {createPlanCenterService,executePlanCenter,tickPlanCenter} from './plan-center-integration';
 import {callPublicationTasks,tickPublicationTasks} from './publication-task-integration';
+import { readPublicationHistory } from "./publication-history";
 import {requestPlanPuleRecovery} from './plan-pule';
 import { readDownloadArchive, setDownloadAccount, setDownloadDirectory } from './download-archive';
 import { Repository, hash, type Row, type Table } from "./database";
@@ -629,6 +630,8 @@ export class Studio {
         return this.snapshot();
       case "metrics.read":
         return this.all("metrics");
+      case "publish.history":
+        return readPublicationHistory(this, v);
       case "artist.save": return this.repo.transaction(() => {
         const old = v.id ? this.get("artists", v.id) : null;
         if (old?.accountLocalArtist) throw Error("USE_ACCOUNT_LOCAL_ARTIST");

@@ -6,6 +6,7 @@ import DownloadArchiveSettings from "../components/DownloadArchiveSettings";
 import FirstSetup from "../components/FirstSetup";
 import ThemeSettings from "../components/ThemeSettings";
 import PublicationDiagnostics from "./PublicationDiagnostics";
+import SoftwareUpdateSettings from "../components/SoftwareUpdateSettings";
 
 const categories = [
   ["models", "模型 API"],
@@ -13,6 +14,7 @@ const categories = [
   ["inbox", "下载目录"],
   ["diagnostics", "诊断与历史"],
   ["appearance", "外观"],
+  ["update", "客户端更新"],
 ] as const;
 type Category = typeof categories[number][0];
 
@@ -53,7 +55,7 @@ export default function ConfigurationCenter({
         title="配置中心"
         action={<button onClick={() => go("publish")}>返回任务中心</button>}
       />
-      {category !== "appearance" && <details className="configuration-guide"><summary>首次使用引导</summary><FirstSetup
+      {category !== "appearance" && category !== "update" && <details className="configuration-guide"><summary>首次使用引导</summary><FirstSetup
         onModels={() => setCategory("models")}
       /></details>}
       <div className="configuration-tabs" role="tablist" aria-label="配置分类">
@@ -81,7 +83,7 @@ export default function ConfigurationCenter({
         id={"category-panel-" + category}
         aria-labelledby={"category-" + category}
       >
-        {category === "appearance" ? <ThemeSettings /> : category === "models" ? (
+        {category === "update" ? <SoftwareUpdateSettings /> : category === "appearance" ? <ThemeSettings /> : category === "models" ? (
           <ApiSettings compact />
         ) : category === "prompts" ? (
           <PromptLibrary key={data.mode} />

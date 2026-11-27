@@ -22,9 +22,10 @@ type InboxEntry={
 };
 function saveEntry(s:Studio,value:InboxEntry){s.save('settings',{id:prefix+value.requestId,value});}
 
-export function versionBCoverRequired(snapshot:PlanCenterRun['snapshot']|undefined,work:{assets?:{audio_B?:string}}|null|undefined){
- return (snapshot?.material?.source==='creation'&&snapshot.creationDraft?.separateVersionCovers===true||!!snapshot?.workflow?.browserMusic)&&
-  !!work?.assets?.audio_B;
+export function versionBCoverRequired(_snapshot:PlanCenterRun['snapshot']|undefined,_work:{assets?:{audio_B?:string}}|null|undefined){
+ // A/B are versions of one work and share its cover. Keep the legacy snapshot
+ // field readable, but never schedule a second cover for the same work.
+ return false;
 }
 
 export function requestImageCover(s:Studio,raw:unknown){

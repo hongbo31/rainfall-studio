@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import {randomUUID} from "node:crypto";
+import { spawn } from "node:child_process";
 import { chromium, type BrowserContext, type Page } from "playwright-core";
 import { inspectQishuiSession } from "./qishui-session";
 import { inspectPuleSession } from "./pule-session";
@@ -188,12 +189,62 @@ export class PlatformBrowserSessions {
   }
 
   status(accountId: string) {
+    const manualLoginPending = fs.existsSync(this.manualLoginMarker(accountId));
     return {
-      opened: this.contexts.has(accountId),
+      opened: this.contexts.has(accountId) || manualLoginPending,
       savedProfile: fs.existsSync(
         accountBrowserDirectory(this.root, accountId),
       ),
+      manualLoginPending,
     };
+  }
+
+  private manualLoginMarker(accountId: string) {
+    PlatformAccountIdSchema.parse({ accountId });
+    return path.join(scopedDirectory(this.root, "runtime", "manual-browser-login"), accountId + ".json");
+  }
+
+  private setManualLoginPending(accountId: string) {
+    const marker = this.manualLoginMarker(accountId);
+    if (fs.existsSync(marker)) return;
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    const temporary = marker + "." + randomUUID() + ".tmp";
+    fs.writeFileSync(temporary, JSON.stringify({ accountId, provider: "suno" }), { flag: "wx" });
+    fs.renameSync(temporary, marker);
+  }
+
+  private clearManualLoginPending(accountId: string) {
+    fs.rmSync(this.manualLoginMarker(accountId), { force: true });
+  }
+
+  private async openSunoManualLogin(account: PlatformAccount, url: string, guard: () => void, artistId?: string) {
+    if (process.platform !== "win32") throw Error("SUNO_STANDARD_BROWSER_REQUIRED");
+    if (this.regularMusicTasks.has(account.id) || this.taskWindows.usesAccount(account.id))
+      throw Error("SUNO_ACCOUNT_BUSY");
+    const executablePath = windowsChromiumExecutable("chrome") ?? windowsChromiumExecutable("msedge");
+    if (!executablePath) throw Error("SUNO_STANDARD_BROWSER_REQUIRED");
+    guard();
+    await this.closeAccount(account.id);
+    guard();
+    const profile = accountBrowserDirectory(this.root, account.id);
+    fs.mkdirSync(profile, { recursive: true });
+    const child = spawn(executablePath, [`--user-data-dir=${profile}`, "--new-window", url], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: false,
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.once("spawn", resolve);
+        child.once("error", reject);
+      });
+    } catch {
+      throw Error("SUNO_STANDARD_BROWSER_LAUNCH_FAILED");
+    }
+    child.unref();
+    this.setManualLoginPending(account.id);
+    guard();
+    return { ...this.status(account.id), workWindow: this.workWindow(account, artistId, true) };
   }
 
   async webStatus(accountId: string, officialUrl: string) {
@@ -230,7 +281,10 @@ export class PlatformBrowserSessions {
 
   async closeAccount(accountId:string){
     const pending=this.contexts.get(accountId);
-    if(pending)await(await pending).close();
+    if(pending){
+      await(await pending).close();
+      if(this.contexts.get(accountId)===pending)this.contexts.delete(accountId);
+    }
   }
 
   private openContext(accountId: string, provider: PlatformAccount["provider"]) {
@@ -240,6 +294,8 @@ export class PlatformBrowserSessions {
     const loginRead = this.loginReads.get(accountId);
     const started = (loginRead ? loginRead.catch(() => undefined).then(() => this.launch(profile, provider)) : this.launch(profile, provider))
       .then(context => {
+        if (provider === "suno" && fs.existsSync(this.manualLoginMarker(accountId)))
+          this.clearManualLoginPending(accountId);
         context.on("close", () => {
           if (this.contexts.get(accountId) === started) this.contexts.delete(accountId);
         });
@@ -247,6 +303,8 @@ export class PlatformBrowserSessions {
       })
       .catch(error => {
         if (this.contexts.get(accountId) === started) this.contexts.delete(accountId);
+        if (provider === "suno" && fs.existsSync(this.manualLoginMarker(accountId)))
+          throw Error("SUNO_STANDARD_BROWSER_CLOSE_REQUIRED", { cause: error });
         throw error;
       });
     this.contexts.set(accountId, started);
@@ -256,6 +314,7 @@ export class PlatformBrowserSessions {
   async open(account: PlatformAccount, url: string, guard: () => void,artistId?:string) {
     guard();
     if (this.regularMusicTasks.has(account.id)) throw Error("PULE_ACCOUNT_BUSY");
+    if (account.provider === "suno") return this.openSunoManualLogin(account, url, guard, artistId);
     const context = await this.openContext(account.id, account.provider);
     guard();
     const origin = new URL(url).origin + "/";

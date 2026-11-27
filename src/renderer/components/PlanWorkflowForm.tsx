@@ -8,8 +8,10 @@ import { defaultLyricTargetScore, lyricRewriteLimit, LyricScoreSchema } from "..
 import { accountSupportsTarget, type PlatformAccount } from "../../shared/platform-accounts";
 import { platformTargets, type PlatformConfiguration, type PlatformTarget } from "../../shared/platform-config";
 import { imageApiProviders, imageCredentialProfiles } from "../../shared/platform-image";
-import { connectedPlanWorkflowGraph, PlanWorkflowGraphSchema, type PlanCenterPlan, type PlanCenterPlanInput,
-  type PlanWorkflowGraph, type PlanWorkflowPublicationTarget } from "../../shared/plan-center";
+import {
+  connectedPlanWorkflowGraph, planGenerationCountLimit, PlanGenerationCountSchema, PlanWorkflowGraphSchema,
+  type PlanCenterPlan, type PlanCenterPlanInput, type PlanWorkflowGraph, type PlanWorkflowPublicationTarget,
+} from "../../shared/plan-center";
 import { isLocalPublicationWorkflow, workflowProvider, workflowPublicationPlatforms, workflowSequence } from "../../shared/plan-workflow-graph";
 import { browserMusicProvider, browserMusicProviders, withoutWorkflowLyrics, workflowBrowserMusic, workflowLyricFields, type WorkflowBrowserMusic } from "../../shared/plan-workflow-fields";
 import { publicationWorkflowHandler, workflowNodesCatalog, type WorkflowNodeDefinition } from "../../shared/platform-directory";
@@ -321,10 +323,11 @@ export default function PlanWorkflowForm({ initial, busy, error, onClose, onSave
     ? options.find(row => row.id === profileOverrides[role]) : defaultFor(role, options);
   const music = selected("music", musicProfiles);
   const count = Number(countValue);
+  const validCount = PlanGenerationCountSchema.safeParse(count).success;
   const targetScore = targetScoreValue === "" ? NaN : Number(targetScoreValue);
   const connectedGraph = PlanWorkflowGraphSchema.safeParse(workflow).success;
   const completeGraph = connectedGraph && workflow.nodes.every(id => catalog.some(node => node.id === id && node.available));
-  const completeGeneration = artist && account && Number.isInteger(count) && count >= 1 && count <= 20 &&
+  const completeGeneration = artist && account && validCount &&
     (mode === "musician" || inspiration.trim()) && (instrumental || LyricScoreSchema.safeParse(targetScore).success);
   const valid = !!(title.trim() && completeGraph &&
     fanqieBatch.success && (!fanqieAccountId || savedFanqieBatch || accountBatch) &&
@@ -433,7 +436,8 @@ export default function PlanWorkflowForm({ initial, busy, error, onClose, onSave
             <option value="">选择艺人</option>
             {availableArtists.map(row => <option key={row.id} value={row.id} disabled={!!artistAccountChanged && row.id === artistId}>{row.name}</option>)}
           </select></label>
-          <label>歌曲生成次数<input required type="number" min={1} max={20} step={1} value={countValue}
+          <label>歌曲生成次数<input required type="number" min={1} max={planGenerationCountLimit} step={1} value={countValue}
+            aria-invalid={!validCount} aria-describedby={validCount ? undefined : "plan-generation-count-error"}
             onChange={event => setCountValue(event.target.value)} /></label>
           </>}
         </div>
@@ -519,6 +523,9 @@ export default function PlanWorkflowForm({ initial, busy, error, onClose, onSave
         {error && <p className="plan-error" role="alert">{error}</p>}
         {!connectedGraph && workflow.nodes.length > 0 && <p className="plan-warning" role="status">
           {publishes ? "发布节点需要上游作品。请连接作词和音乐生成节点，再将音乐输出连到发布节点。" : "请连接作词和音乐生成节点。"}
+        </p>}
+        {!localPublication && !validCount && <p className="plan-error" id="plan-generation-count-error" role="status">
+          歌曲生成次数须为 1 到 {planGenerationCountLimit} 的整数。
         </p>}
         <div className="plan-editor-footer">
           <button type="button" disabled={busy} onClick={onClose}>取消</button>

@@ -3,7 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { hash } from "./database";
 import {
-  downloadAccountPart, downloadFolderName, downloadSingerPart, resolveDownloadArchiveRoot,
+  downloadAccountPart, downloadFolderName, downloadPromptFromFolder, downloadSingerPart, resolveDownloadArchiveRoot,
 } from "./download-archive";
 import { downloadSupportFolders, songDownloadCollisionStem } from "./download-filenames";
 import type { Studio } from "./studio";
@@ -45,6 +45,7 @@ export type FanqieDownloadScanStage = {
 export type FanqieDownloadScanDiagnostics = { stages: FanqieDownloadScanStage[]; failureCode?: string };
 export type FanqieDownloadArchive = {
   fingerprint: string; items: FanqieDownloadTrack[]; root?: string;
+  promptEngines?: Record<string, string>;
   scanDiagnostics?: FanqieDownloadScanDiagnostics;
 };
 const ScopeSchema = z.strictObject({ folder: z.string().min(1).max(255), id: z.string().regex(/^[a-f0-9]{64}$/u) });
@@ -57,7 +58,12 @@ const key = (name: string) => {
 };
 const byName = (left: string, right: string) => left.localeCompare(right, "zh-CN", { numeric: true });
 const samePath = (a: string, b: string) => process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
-const audioExtensions = new Set([".wav", ".mp3"]);
+// Accept common, unencrypted audio sources. Fanqie uploads only WAV/MP3, so
+// the preparation stage transcodes other supported sources to a validated WAV.
+const audioExtensions = new Set([".wav", ".mp3", ".flac", ".m4a", ".m4b", ".aac", ".ogg", ".opus", ".wma",
+  ".aiff", ".aif", ".ape", ".mp2", ".mka", ".ac3", ".amr", ".caf", ".dts", ".wv", ".tta",
+  ".tak", ".au", ".snd", ".voc", ".3gp", ".3g2"]);
+const encryptedAudioExtensions = new Set([".ncm", ".qmc0", ".qmc3", ".qmcflac", ".kgm", ".kwm"]);
 const coverExtensions = [".png", ".jpg", ".jpeg"];
 const proofExtensions = [".pdf", ...coverExtensions, ".zip", ".bmp"];
 const readFingerprint = (info: fs.BigIntStats) =>
@@ -83,7 +89,7 @@ export function assertFanqieDownloadTrack(track: FanqieDownloadTrack) {
   for (const expected of Object.values(source)) if (expected) assertFanqieDownloadFile(expected);
 }
 
-type Singer = { name: string; part: string; artistId: string; profile?: ArtistProfile; instrumental: boolean; folder: string; release: FanqieDirectoryRelease };
+type Singer = { name: string; part: string; artistId: string; profile?: ArtistProfile; instrumental: boolean; folder: string; promptEngine?: string; release: FanqieDirectoryRelease };
 
 function singerForFolder(folder: string, rest: string, singers: Singer[]) {
   // The archive folder contract is `<account>_<singer>_<prompt>`. Prompt names
@@ -165,7 +171,7 @@ function scanRecordings(directory: string, entries: fs.Dirent[], folder: string,
       if (files.length) return files[0].name;
     }
   };
-  const recordings = records.filter(record => audioExtensions.has(record.ext) &&
+  const recordings = records.filter(record => (audioExtensions.has(record.ext) || encryptedAudioExtensions.has(record.ext)) &&
       (expectedStem === undefined || key(record.stem) === key(expectedStem)))
     .sort((a, b) => byName(a.stem, b.stem) || Number(b.ext === ".wav") - Number(a.ext === ".wav"));
   const savedProofs = singer.saved?.release.proofRequired && recordings.length
@@ -203,8 +209,8 @@ function scanRecordings(directory: string, entries: fs.Dirent[], folder: string,
       const coverName = match(stem, coverExtensions) ?? (archived &&
         (archived[2].toUpperCase() === "B" ? match(archived[1], coverExtensions, "封面 B") : undefined)) ??
         (archived ? match(archived[1], coverExtensions, "封面") : undefined);
-      const lyricsName = track.instrumental ? undefined :
-        match(stem, [".txt"]) ?? (archived ? match(archived[1], [".txt"], "歌词") : undefined);
+      // Whether a lyric attachment exists is determined by the matching TXT file, not the artist's local song-type default.
+      const lyricsName = match(stem, [".txt"]) ?? (archived ? match(archived[1], [".txt"], "歌词") : undefined);
       const proofName = release.proofRequired ?
         savedProof(stem) ?? match(stem + "_版权证明", proofExtensions) ?? match(stem + " - 版权证明", proofExtensions) ??
         match(stem + "_授权附件", proofExtensions) ?? match(stem, [".pdf"]) ??
@@ -212,9 +218,9 @@ function scanRecordings(directory: string, entries: fs.Dirent[], folder: string,
       track.relatedFiles = [audioName, coverName, lyricsName, proofName]
         .filter((file): file is string => typeof file === "string").map(file => path.join(directory, file));
       if (singer.issue) throw Error(singer.issue);
+      if (encryptedAudioExtensions.has(path.extname(audioName).toLowerCase())) throw Error("FANQIE_AUDIO_ENCRYPTED_SOURCE");
       if (!formTitle || formTitle.length > 40) throw Error("FANQIE_TITLE_INVALID");
       if (typeof coverName !== "string") throw Error("FANQIE_DOWNLOAD_COVER_REQUIRED");
-      if (!track.instrumental && !lyricsName) throw Error("FANQIE_DOWNLOAD_LYRICS_REQUIRED");
       if (release.proofRequired && !proofName) throw Error("FANQIE_DOWNLOAD_PROOF_REQUIRED");
       if (release.musicType === "cover" && !release.originalSinger) throw Error("FANQIE_DOWNLOAD_ORIGINAL_SINGER_REQUIRED");
       if (release.songAttribute === "multi_version" && !release.originalWorkId) throw Error("FANQIE_DOWNLOAD_ORIGINAL_WORK_REQUIRED");
@@ -224,7 +230,7 @@ function scanRecordings(directory: string, entries: fs.Dirent[], folder: string,
       const proof = proofName ? snapshotFile(path.join(directory, proofName)) : undefined;
       if (audio.bytes < 1 || audio.bytes > 200 * 1024 * 1024) throw Error("FANQIE_AUDIO_FORMAT");
       if (cover.bytes < 1 || cover.bytes > 10 * 1024 * 1024) throw Error("FANQIE_COVER_FORMAT");
-      if (lyrics && (lyrics.bytes < 1 || lyrics.bytes > 1024 * 1024)) throw Error("FANQIE_LYRICS_INVALID");
+      if (lyrics && lyrics.bytes > 1024 * 1024) throw Error("FANQIE_LYRICS_INVALID");
       if (proof && (proof.bytes < 1 || proof.bytes > 200 * 1024 * 1024)) throw Error("FANQIE_DOWNLOAD_PROOF_INVALID");
       return { ...track, source: { audio, cover, lyrics, proof } };
     } catch (error) {
@@ -276,7 +282,8 @@ export function readFanqieDownloadArchive(studio: Pick<Studio, "repo" | "mode">,
       const names: string[] = [profile?.singer ?? row.name, row.secondSinger?.name].filter(name => typeof name === "string" && name.trim());
       return [...new Set(names)].map(name => ({
         name: name.trim(), part: downloadSingerPart(name), artistId: row.id, profile,
-        instrumental: artistSongType(row.defaults) === "instrumental", folder: downloadFolderName(account.name, name, prompt), release,
+        instrumental: artistSongType(row.defaults) === "instrumental", folder: downloadFolderName(account.name, name, prompt),
+        promptEngine: prompt, release,
       }));
     });
     counts.configuredArtistCount = singers.length;
@@ -316,8 +323,15 @@ export function readFanqieDownloadArchive(studio: Pick<Studio, "repo" | "mode">,
     record("artist-folders", "ok");
 
     record("audio-files", "begin");
+    const prompts = new Map<string, string>();
     for (const { entry, singer } of recognizedFolders) {
+      const configured = singer.saved;
+      const isConfiguredFolder = configured &&
+        [configured.folder, configured.folder + "_B"].some(name => key(name) === key(entry.name));
+      const promptEngine = isConfiguredFolder ? configured.promptEngine :
+        downloadPromptFromFolder(entry.name, account.name, singer.name);
       for (const track of scanFolder(root, entry.name, singer)) {
+        if (promptEngine) prompts.set(track.id, promptEngine);
         counts.audioCandidateCount = (counts.audioCandidateCount ?? 0) + 1;
         const title = fanqieTitleKey(track.title);
         if (!track.issue && seenTitles.has(title)) {
@@ -340,7 +354,12 @@ export function readFanqieDownloadArchive(studio: Pick<Studio, "repo" | "mode">,
     counts.issueCounts = summarizeIssues(selected);
     record("material-validation", "ok");
     record("result", "ok");
-    return { root, items: selected, fingerprint: hash({ accountId, root, items: selected }), scanDiagnostics: diagnostics };
+    // The display metadata does not change existing material fingerprints or recovery checks.
+    const promptEngines = Object.fromEntries(selected.flatMap(item => {
+      const name = prompts.get(item.id);
+      return name ? [[item.id, name]] : [];
+    }));
+    return { root, items: selected, fingerprint: hash({ accountId, root, items: selected }), promptEngines, scanDiagnostics: diagnostics };
   } catch (error) {
     const code = error instanceof Error && /^[A-Z0-9_]{1,100}$/u.test(error.message) ? error.message : "FANQIE_DOWNLOAD_SCAN_FAILED";
     diagnostics.failureCode = code;

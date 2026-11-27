@@ -14,7 +14,55 @@ const countKeys = ['configuredArtistCount','rootEntryCount','accountDirectoryCou
   'newRecordCount','deletedMaterialCount'] as const;
 export type FanqieDirectoryTraceDetails = Partial<Record<typeof countKeys[number],number>> & {
   songTitle?:string;
+  blockedItems?:{songTitle:string;issue:string}[];
+  failureStage?:'catalog-title'|'artist-selection'|'source-verification'|'material-preparation';
+  failureReason?:'existing-audio-job'|'upload-editor-open'|'duplicate-audio-hash';
   issueCounts?:Record<string,number>;
+  artistSelection?:{
+    stage?:'candidate-search'|'candidate-readback'|'avatar-readback'|'avatar-match'|'detail-modal-open'|'detail-content'|'artist-id-response'|'artist-id-check'|'confirm-click'|'modal-close'|'selection-readback';
+    role?:'lyricist'|'composer'|'singer';
+    requestedName?:string;
+    dialogCount?:number;
+    visibleDialogCount?:number;
+    dialogId?:string;
+    dialogIdMatched?:boolean;
+    titleCount?:number;
+    dialogTitle?:string;
+    artistNameCount?:number;
+    displayedArtist?:string;
+    confirmCount?:number;
+    confirmText?:string;
+    confirmEnabled?:boolean;
+    confirmClicked?:boolean;
+    candidateCount?:number;
+    optionRowCount?:number;
+    detailArrowCount?:number;
+    candidateStable?:boolean;
+    candidateStableForMs?:number;
+    candidateRecoveryCount?:number;
+    popupReopenCount?:number;
+    avatarLookupAttempted?:boolean;
+    avatarReadback?:boolean;
+    avatarRosterCount?:number;
+    avatarRosterMatchCount?:number;
+    avatarCandidateCount?:number;
+    avatarMatchCount?:number;
+    avatarMatched?:boolean;
+    popupId?:string;
+    popupExpanded?:boolean;
+    searchValueMatched?:boolean;
+    searchValueEmpty?:boolean;
+    searchValue?:string;
+    searchRetryCount?:number;
+    inputRetryCount?:number;
+    loadRetryCount?:number;
+    responseReceived?:boolean;
+    responseOk?:boolean;
+    responseStatus?:number;
+    artistIdMatched?:boolean;
+    selectedNames?:string[];
+    elapsedMs?:number;
+  };
 };
 export type FanqieDirectoryTracePort = {
   trace:(step:string,phase:Event,page?:Page,songIndex?:number,error?:unknown,details?:FanqieDirectoryTraceDetails)=>Promise<void>|void;
@@ -142,6 +190,10 @@ function safeDetails(details?:FanqieDirectoryTraceDetails){
     const title=details.songTitle.replace(/[\u0000-\u001f\u007f]/gu,' ').trim().slice(0,80);
     if(title)counts.songTitle=title;
   }
+  if(details.failureStage&&['catalog-title','artist-selection','source-verification','material-preparation'].includes(details.failureStage))
+    counts.failureStage=details.failureStage;
+  if(details.failureReason&&['existing-audio-job','upload-editor-open','duplicate-audio-hash'].includes(details.failureReason))
+    counts.failureReason=details.failureReason;
   if(details.issueCounts&&typeof details.issueCounts==='object'){
     const issueCounts:Record<string,number>={};
     for(const [code,value] of Object.entries(details.issueCounts).slice(0,24)){
@@ -149,6 +201,47 @@ function safeDetails(details?:FanqieDirectoryTraceDetails){
         issueCounts[code]=value;
     }
     if(Object.keys(issueCounts).length)counts.issueCounts=issueCounts;
+  }
+  if(Array.isArray(details.blockedItems)){
+    const blockedItems=details.blockedItems.slice(0,200).flatMap(item=>{
+      if(!item||typeof item.songTitle!=='string'||typeof item.issue!=='string'||!/^[A-Z0-9_]{1,80}$/u.test(item.issue))return [];
+      const songTitle=item.songTitle.replace(/[\u0000-\u001f\u007f]/gu,' ').trim().slice(0,80);
+      return songTitle?[{songTitle,issue:item.issue}]:[];
+    });
+    if(blockedItems.length)counts.blockedItems=blockedItems;
+  }
+  if(details.artistSelection&&typeof details.artistSelection==='object'){
+    const source=details.artistSelection,artistSelection:NonNullable<FanqieDirectoryTraceDetails['artistSelection']>={};
+    const stages=['candidate-search','candidate-readback','avatar-readback','avatar-match','detail-modal-open','detail-content','artist-id-response','artist-id-check',
+      'confirm-click','modal-close','selection-readback'] as const;
+    const roles=['lyricist','composer','singer'] as const;
+    if(source.stage&&stages.includes(source.stage))artistSelection.stage=source.stage;
+    if(source.role&&roles.includes(source.role))artistSelection.role=source.role;
+    for(const key of ['dialogCount','visibleDialogCount','titleCount','artistNameCount','confirmCount','candidateCount','optionRowCount','detailArrowCount',
+      'searchRetryCount','inputRetryCount','loadRetryCount','candidateStableForMs','candidateRecoveryCount','popupReopenCount'] as const){
+      const value=source[key];if(typeof value==='number'&&Number.isSafeInteger(value)&&value>=0)artistSelection[key]=value;
+    }
+    for(const key of ['avatarRosterCount','avatarRosterMatchCount','avatarCandidateCount','avatarMatchCount'] as const){
+      const value=source[key];if(typeof value==='number'&&Number.isSafeInteger(value)&&value>=0)artistSelection[key]=value;
+    }
+    for(const key of ['confirmEnabled','confirmClicked','popupExpanded','searchValueMatched','searchValueEmpty','responseReceived','responseOk',
+      'artistIdMatched','dialogIdMatched','candidateStable','avatarLookupAttempted','avatarReadback','avatarMatched'] as const){
+      const value=source[key];if(typeof value==='boolean')artistSelection[key]=value;
+    }
+    if(typeof source.responseStatus==='number'&&Number.isInteger(source.responseStatus)&&source.responseStatus>=100&&source.responseStatus<=599)
+      artistSelection.responseStatus=source.responseStatus;
+    if(typeof source.elapsedMs==='number'&&Number.isFinite(source.elapsedMs)&&source.elapsedMs>=0&&source.elapsedMs<=600_000)
+      artistSelection.elapsedMs=Math.round(source.elapsedMs);
+    const safeText=(value:unknown)=>typeof value==='string'?value.replace(/[\u0000-\u001f\u007f]/gu,' ').trim().slice(0,80):undefined;
+    for(const key of ['requestedName','searchValue','dialogTitle','displayedArtist','confirmText','popupId'] as const){
+      const value=safeText(source[key]);if(value)artistSelection[key]=value;
+    }
+    if(typeof source.dialogId==='string'&&/^[A-Za-z][\w:.-]{0,79}$/u.test(source.dialogId))artistSelection.dialogId=source.dialogId;
+    if(Array.isArray(source.selectedNames)){
+      const names=source.selectedNames.slice(0,5).map(safeText).filter((name):name is string=>!!name);
+      if(names.length)artistSelection.selectedNames=names;
+    }
+    if(Object.keys(artistSelection).length)counts.artistSelection=artistSelection;
   }
   if(Object.keys(counts).length)return counts;
 }
@@ -467,7 +560,7 @@ export class FanqieDirectoryTrace {
       const file=path.join(this.folder,screenshot);
       fs.mkdirSync(path.dirname(file),{recursive:true});
       fs.writeFileSync(file,bytes,{flush:true});
-      return signing?{screenshot,screenshotMode:'redacted-signing-layout'}:{screenshot};
+      return signing?{screenshot,screenshotPath:file,screenshotMode:'redacted-signing-layout'}:{screenshot,screenshotPath:file};
     }catch{
       return {screenshotReason:screenshotBlock(page,signing?.scope)??'capture-unreadable'};
     }finally{page.off('framenavigated',detectNavigation);}

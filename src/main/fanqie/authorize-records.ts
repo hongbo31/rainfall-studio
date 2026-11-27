@@ -24,6 +24,11 @@ type Journal = {
 };
 const preparedPages=new WeakMap<BrowserContext,Map<string,Page>>();
 const previewSteps=new Set(['authorization:preview','authorization:confirm-sync','authorization:generate-contract']);
+const catalogFreeAuthorizationSteps=new Set([
+  'authorization:open-picker','authorization:select-songs','authorization:add-songs','authorization:remove-duplicate',
+  'authorization:mode','authorization:identity-open','authorization:identity-personal','authorization:platform-open',
+  'authorization:platform-audio','authorization:platform-close',
+]);
 
 function verifyPending(pending:readonly Work[],latest:FanqieCatalogRow[]){
   for(const {id,title} of pending){
@@ -183,6 +188,13 @@ export async function authorizeFanqieRecords(
       save('preparing',step);
       session.mark('正在准备 '+pending.length+' 首作品的授权');
       const beforeWrite=async(next:string)=>{
+        const directGenerationWillRecheck=next==='authorization:preview'&&directPreview&&beforeGenerate;
+        if(catalogFreeAuthorizationSteps.has(next)||directGenerationWillRecheck){
+          guard();await outerGuard();guard();
+          step=next;
+          save('preparing',step);
+          return;
+        }
         const latest=await inspect();
         verifyPending(pending,latest);
         if((resume||uncreated)&&!pending.every(work=>latest.some(row=>row.id===work.id&&row.contract?.state==='not_created')))

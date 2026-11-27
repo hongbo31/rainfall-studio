@@ -4,12 +4,24 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
+import {createRequire} from 'node:module';
 const repo = fileURLToPath(new URL('..', import.meta.url));
 const mediaArg = process.argv.indexOf('--media-tools-dir');
 if (mediaArg >= 0 && (!process.argv[mediaArg + 1] || process.argv[mediaArg + 1].startsWith('--'))) {
   throw Error('--media-tools-dir requires a directory');
 }
 const mediaSource = path.resolve(repo, mediaArg >= 0 ? process.argv[mediaArg + 1] : 'tools/ffmpeg');
+const installerRuntime = {};
+for (const [name, exe] of [['chromium', 'chrome.exe'], ['powershell', 'pwsh.exe']]) {
+  const index = process.argv.indexOf(`--${name}-dir`);
+  if (index < 0) continue;
+  const source = process.argv[index + 1];
+  if (!source || !path.isAbsolute(source) || !fs.statSync(path.join(source, exe), {throwIfNoEntry: false})?.isFile()) {
+    throw Error(`Invalid --${name}-dir`);
+  }
+  installerRuntime[name] = source;
+}
+if (Object.keys(installerRuntime).length === 1) throw Error('Supply both bundled Windows runtimes');
 const mediaFiles = ['bin/ffmpeg.exe', 'bin/ffprobe.exe', 'LICENSE', 'README.txt'];
 for (const file of mediaFiles) {
   if (!fs.statSync(path.join(mediaSource, file), {throwIfNoEntry: false})?.isFile()) {
@@ -29,10 +41,23 @@ Object.assign(pkg,{name:'rainfall-studio',productName:'Rainfall Studio'});
 fs.writeFileSync(packageFile,JSON.stringify(pkg,null,2));
 const executable=path.join(root,'RainfallStudio.exe');
 fs.renameSync(candidate.executable,executable);
+if (installerRuntime.chromium) {
+  const require = createRequire(import.meta.url);
+  const editor = path.resolve(require.resolve('electron-winstaller'), '../../vendor/rcedit.exe');
+  execFileSync(editor, [executable, '--set-icon', path.join(app, 'assets', 'rainfall.ico'),
+    '--set-version-string', 'ProductName', 'Rainfall Studio',
+    '--set-version-string', 'FileDescription', 'Rainfall Studio',
+    '--set-version-string', 'CompanyName', 'Rainfall Studio',
+    '--set-file-version', pkg.version.split('-')[0], '--set-product-version', pkg.version.split('-')[0]],
+  {windowsHide: true, stdio: 'pipe'});
+}
 fs.unlinkSync(path.join(root,'candidate-manifest.json'));
 const mediaDest=path.join(app,'tools','media');
 fs.mkdirSync(mediaDest,{recursive:true});
 for (const file of mediaFiles) fs.copyFileSync(path.join(mediaSource, file), path.join(mediaDest, path.basename(file)));
+for (const [name, source] of Object.entries(installerRuntime)) {
+  fs.cpSync(source, path.join(app, 'tools', name), {recursive: true});
+}
 const forbidden=['candidate-data','credentials','browser-sessions','production'];
 for(const name of forbidden)if(fs.existsSync(path.join(root,name)))throw Error('PRIVATE_DATA_IN_PACKAGE');
 const manifest={format:1,kind:'windows-x64-portable',version:pkg.version,sourceCommit:candidate.sourceCommit,
@@ -53,7 +78,9 @@ fs.writeFileSync(path.join(root,'README.txt'),[
  '作品和配置保存到当前 Windows 用户的 %APPDATA%\\RainfallStudio，与程序目录分开。',
  '首次使用时，在配置中心设置模型和下载目录，在账号管理添加账号和艺人。',
  'API 密钥在本机加密保存。新设备在配置中心保存自己的密钥。',
- '番茄自动上传需要 Google Chrome。封面可按首生成或从本地导入。',
+ installerRuntime.chromium
+   ? '安装包已随附专用浏览器与 PowerShell 7。封面可按首生成或从本地导入。'
+   : '番茄自动上传需要 Google Chrome。封面可按首生成或从本地导入。',
  '计划中心可开启关闭窗口后后台运行与登录 Windows 后启动。电脑须开机联网，休眠或关机时不执行。',
  '本包不包含作品、登录、密钥或已启用计划，不会首次启动就产生生成费用。',
  '已有日用版用户不要把空白库覆盖到旧库；升级须沿用原数据目录。',

@@ -1,0 +1,61 @@
+.publication-history-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.publication-history-heading h2,
+.publication-history-summary p {
+  margin: 0;
+}
+
+.publication-history-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(155px, 100%), 1fr));
+  gap: 12px;
+  margin-block: 16px;
+}
+
+.publication-history-filters label {
+  display: grid;
+  gap: 6px;
+}
+
+.publication-history-filters input,
+.publication-history-filters select {
+  width: 100%;
+  min-width: 0;
+}
+
+.publication-history-summary {
+  margin-bottom: 12px;
+}
+
+.publication-history .table-wrap table {
+  min-width: 590px;
+}
+
+.publication-history td {
+  overflow-wrap: anywhere;
+}
+
+.publication-history-day th {
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+.publication-history-pages {
+  justify-content: flex-end;
+  align-items: center;
+  margin-top: 16px;
+}
+
+.insights-reports > summary {
+  cursor: pointer;
+}
+
+.insights-reports > div {
+  margin-top: 16px;
+}

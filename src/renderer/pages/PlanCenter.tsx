@@ -19,7 +19,7 @@ import {musicAssetProgressLabel,needsOutcomeCheck,noStageReason,planExecutionMes
  planStageStatus,showsStageDiagnostics,textProviderCreditsRequired} from '../plan-execution-labels';
 import {isLocalPublicationWorkflow,workflowPublicationPlatforms} from '../../shared/plan-workflow-graph';
 import {browserMusicProviders,workflowBrowserMusic} from '../../shared/plan-workflow-fields';
-import {planRunActive} from '../../shared/plan-center';
+import {planGenerationCountLimit,planRunActive} from '../../shared/plan-center';
 import {canResumeLyricResponse} from '../../shared/lyric-writing';
 import {workflowNodesCatalog} from '../../shared/platform-directory';
 import type {PlanCenterPlan, PlanCenterPlanInput, PlanCenterReconcileObservation, PlanCenterRunDetail, PlanCenterRun, PlanCenterStageAttempt, PlanRunSummary} from '../../shared/plan-center';
@@ -329,7 +329,7 @@ export default function PlanCenter({initialRunId=""}:{initialRunId?:string}){
     <thead><tr><th scope="col">名称</th><th scope="col">创建时间</th><th scope="col">执行结果</th><th scope="col">操作</th></tr></thead>
     <tbody>
      {visiblePlans.map(({plan,active:running,latest:recent,deleteBlocked:locked})=>{
-      const latest=running??recent;
+      const latest=recent??running;
       const blockedRun=running?.state==='blocked'&&!running.stopRequested?running:undefined;
       const opening=pending?.kind==='edit'&&pending.id===plan.id;
       return <tr key={plan.id} id={`plan-${plan.id}`}>
@@ -568,7 +568,7 @@ export default function PlanCenter({initialRunId=""}:{initialRunId?:string}){
  const artist=localMusicians(data, editing.artistId).find(a=>a.id===artistId);
  if(editing.material.source==='provider')selectSongType(artist?.defaults?.voice==='instrumental'?'instrumental':'vocal',{artistId,material});
  else patch({artistId,material,authorization:{...editing.authorization,publish:false}});
-}}><option value="">请选择</option>{localMusicians(data, editing.artistId).map((a:any)=><option key={a.id} value={a.id}>{a.name}</option>)}</select></label><label>独立歌曲数量<input aria-label="独立歌曲数量" type="number" min={1} max={20} value={editing.count} onChange={e=>patch({count:Number(e.target.value)})}/></label></div>
+}}><option value="">请选择</option>{localMusicians(data, editing.artistId).map((a:any)=><option key={a.id} value={a.id}>{a.name}</option>)}</select></label><label>独立歌曲数量<input aria-label="独立歌曲数量" type="number" min={1} max={planGenerationCountLimit} value={editing.count} onChange={e=>patch({count:Number(e.target.value)})}/></label></div>
    {editing.routing&&<GenerationRoutes value={editing.routing} onChange={patchRoutes} disabled={busy}/>}
    <fieldset><legend>创作内容</legend>{(editing.material.source==='provider'||promptMode)&&<label>歌曲类型<select aria-label="计划歌曲类型" value={editing.songType??'vocal'} onChange={e=>selectSongType(e.target.value==='instrumental'?'instrumental':'vocal')}><option value="vocal">人声歌曲</option><option value="instrumental">纯音乐</option></select></label>}{editorArtist&&<small>发行艺人 {editorArtist.name} · 人声偏好 {({female:'女声',male:'男声',duet:'对唱',instrumental:'纯音乐'} as Record<string,string>)[editorArtist.defaults?.voice]??'未设置'}</small>}<div className="plan-checkboxes">{(['lyrics','cover','music'] as const).map((key,i)=><label key={key}><input aria-label={['生成歌词','生成封面','生成音乐'][i]} disabled={promptMode||instrumental||(key==="lyrics"&&editing.material.source==="provider")} type="checkbox" checked={key==="lyrics"&&instrumental?false:promptMode||editing.outputs[key]} onChange={e=>patch({outputs:{...editing.outputs,[key]:e.target.checked}})}/>{['歌词','封面','音乐'][i]}</label>)}</div><label>本次故事<textarea aria-label="计划本次故事" value={editing.storyContext?.storyBeat??''} maxLength={10000} onChange={e=>patch({storyContext:{storyStage:editing.storyContext?.storyStage??'',storyBeat:e.target.value}})}/></label><label>{promptMode?'主题方向（每行一项，按天轮换）':'主题方向'}<textarea aria-label="主题方向" value={editing.theme} onChange={e=>patch({theme:e.target.value})}/></label><MusicStylePicker label="曲风模板" value={editing.styleTemplate} inherited={editorArtist?.defaults?.genre} maxLength={4000} onChange={styleTemplate=>patch({styleTemplate})}/><div className="form-grid"><label>内容渠道<select aria-label="内容渠道" value={editing.material.source} onChange={e=>{
      const source=e.target.value as PlanCenterPlan['material']['source'];

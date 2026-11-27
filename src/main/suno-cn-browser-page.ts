@@ -12,7 +12,7 @@ const titleSelector = ".song-title";
 const itemSelector = ".create-list-scroll > .song-item";
 const moreSelector = '.icon-more, button[aria-label="更多操作"]';
 const pendingSelector = /^\s*(?:进行中|排队中|生成中|正在生成)[.。…]*\s*$/u;
-const createSelector = /^创作(?:\s*[·｜|（(].*)?$/u;
+const createSelector = /^创作(?:\s*2\s*首)?(?:\s*[·｜|（(].*)?$/u;
 const wavMenuLabel = /^\s*下载\s*WAV\s*音频\s*$/iu;
 const waveMenuUnavailable = "SUNO_CN_WAV_MENU_UNAVAILABLE";
 const visible = (locator: Locator) => locator.filter({ visible: true });
@@ -299,28 +299,57 @@ export async function runSunoCnBrowser(page: Page, input: PulePageInput, hooks: 
           node.querySelector(titleSelector)?.textContent?.trim() === title, { title: expected, listSelector, itemSelector, titleSelector });
         if (!matches) throw Error("SUNO_CN_RESULT_UNCLEAR");
       };
+      const openMenus = visible(page.locator(".menu_popover, .menu_popover_sub"));
+      const moreMenuOpen = async (row: ElementHandle) => {
+        const expanded = await row.evaluate((node, selector) => {
+          const more = node.querySelector(selector);
+          return more?.closest("[aria-controls]")?.getAttribute("aria-expanded") === "true";
+        }, moreSelector);
+        return expanded || await openMenus.count() > 0;
+      };
+      const closeMoreMenu = async (row: ElementHandle, timeout = () => control) => {
+        for (let attempt = 0; attempt < 2 && await moreMenuOpen(row); attempt++) {
+          await page.keyboard.press("Escape");
+          await guard();
+        }
+        if (!(await moreMenuOpen(row))) return true;
+        const more = await row.$(moreSelector);
+        if (!more) return false;
+        try { await more.click({ timeout: timeout() }); }
+        catch { await guard(); return false; }
+        finally { await more.dispose(); }
+        return !(await moreMenuOpen(row));
+      };
       const menuItem = async (row: ElementHandle, expected: string, heading: string,
         label: string | RegExp, failure: string, timeout = () => control) => {
         await assertSong(row, expected);
         const more = await row.$(moreSelector);
         if (!more) throw Error(failure);
         try {
+          const popupId = await more.evaluate(element => element.closest("[aria-controls]")?.getAttribute("aria-controls") ?? null);
           await more.click({ timeout: timeout() });
-          const menu = visible(page.locator(".menu_popover:not(.menu_popover_sub)")).getByText(heading, { exact: true });
-          await visible(menu).hover({ timeout: timeout() });
+          const popup = popupId && /^[\w:-]+$/u.test(popupId) ? page.locator(`[id="${popupId}"]`) : undefined;
+          const scopedHeading = popup ? visible(popup.getByText(heading, { exact: true })) : undefined;
+          const headingText = scopedHeading && await scopedHeading.count()
+            ? scopedHeading
+            : visible(page.getByText(heading, { exact: true }));
+          await headingText.hover({ timeout: timeout() });
         } catch (error) {
           await guard();
           throw Error(failure, { cause: error });
         } finally { await more.dispose(); }
         await assertSong(row, expected);
         try {
-          await visible(page.locator(".menu_popover_sub").getByText(label, { exact: true })).click({ timeout: timeout() });
+          const legacyItem = visible(page.locator(".menu_popover_sub").getByText(label, { exact: true }));
+          const menuAction = await legacyItem.count()
+            ? legacyItem
+            : visible(page.getByText(label, { exact: true }));
+          await menuAction.click({ timeout: timeout() });
         } catch (error) {
           await guard();
           throw Error(failure, { cause: error });
         }
       };
-      const openMenus = visible(page.locator(".menu_popover, .menu_popover_sub"));
       if (titles[1] !== input.title) {
         hooks.step("rename");
         const rename = visible(page.locator('[role="dialog"], .el-dialog').filter({
@@ -340,8 +369,7 @@ export async function runSunoCnBrowser(page: Page, input: PulePageInput, hooks: 
           const renameFailure = error instanceof Error &&
             ["SUNO_CN_RENAME_MENU_UNAVAILABLE", "SUNO_CN_RENAME_UNCONFIRMED"].includes(error.message);
           if (!renameFailure || actualTitle !== input.title || await rename.count()) throw error;
-          for (let i = 0; i < 2 && await openMenus.count(); i++) await page.keyboard.press("Escape");
-          if (await openMenus.count()) throw error;
+          if (!(await closeMoreMenu(pair[1], () => control))) throw error;
           pageTitles[1] = input.title;
         }
       }
@@ -384,18 +412,8 @@ export async function runSunoCnBrowser(page: Page, input: PulePageInput, hooks: 
                   await assertSong(row, title);
                   await signedIn();
                   // The receipt identifies this in-page result. Reloading would lose its identity.
-                  if (await openMenus.count()) {
-                    await page.keyboard.press("Escape");
-                    await assertSong(row, title);
-                    if (await openMenus.count()) {
-                      const more = await row.$(moreSelector);
-                      if (!more) throw error;
-                      try { await more.click({ timeout: controlTime() }); }
-                      catch { await guard(); throw error; }
-                      finally { await more.dispose(); }
-                      if (await openMenus.count()) throw error;
-                    }
-                  }
+                  if (!(await closeMoreMenu(row, controlTime))) throw error;
+                  await assertSong(row, title);
                   if (performance.now() >= deadline) throw error;
                   continue;
                 }

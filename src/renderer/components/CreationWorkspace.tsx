@@ -216,7 +216,6 @@ export default function CreationWorkspace({ draft, update, selection, onOpenWork
       draft: {
         title: draft.title, style: draft.style, lyrics: instrumental ? "" : draft.lyrics, vocalGender: generationGender,
         ...(draft.alternateTitle?.trim() ? { alternateTitle: draft.alternateTitle.trim() } : {}),
-        ...(draft.cover && usesMusic ? { separateVersionCovers: true as const } : {}),
       },
       outputs: { cover: draft.cover, music: usesMusic }, routing: draft.routing,
       music: usesMusic && musicProfile ? { consent: true, profileId: musicProfile.id, profileRevision: musicProfile.revision, modelId: musicProfile.modelId }

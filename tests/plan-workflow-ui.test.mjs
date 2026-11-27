@@ -130,6 +130,68 @@ test("the workflow editor exposes a count and a canvas", async () => {
   assert.match(legacy, /aria-label="断开连接"/);
 });
 
+test("the workflow editor can create and edit a plan at the 100-round limit", async t => {
+  const { outputFiles } = await build({
+    stdin: { resolveDir: project, loader: "tsx", contents: `
+      import React from 'react';
+      import { createRoot } from 'react-dom/client';
+      import { Context } from './src/renderer/context';
+      import PlanWorkflowForm from './src/renderer/components/PlanWorkflowForm';
+      import { workflowNodesCatalog } from './src/shared/platform-directory';
+      const root = createRoot(document.body);
+      window.renderEditor = (account, artist, initial) => {
+        const data = { accounts: [account], accountLocalArtists: [artist],
+          platformWorkflow: { nodes: workflowNodesCatalog, profiles: [], defaults: {} } };
+        const onSave = plan => { window.savedPlan = plan; };
+        root.render(<Context.Provider value={{ data, call: async () => [] }}>
+          <PlanWorkflowForm key={initial?.id ?? 'new'} initial={initial} busy={false} error=""
+            onClose={() => {}} onSave={onSave} />
+        </Context.Provider>);
+      };
+    ` },
+    bundle: true, write: false,
+  });
+  const browser = await launchHeadlessChromium(chromium);
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const url = "http://127.0.0.1/";
+  await page.route("**/*", route => route.request().url() === url
+    ? route.fulfill({ contentType: "text/html; charset=utf-8", body: "<!doctype html><body></body>" })
+    : route.abort());
+  await page.goto(url);
+  await page.addScriptTag({ content: outputFiles[0].text });
+  await page.evaluate(({ account, artist }) => window.renderEditor(account, artist), { account, artist });
+  const create = page.getByRole("dialog", { name: "新建计划", exact: true });
+  await create.getByLabel("名称", { exact: true }).fill("百轮创作");
+  await create.getByLabel("艺人信息", { exact: true }).selectOption(artist.id);
+  const palette = create.getByRole("group", { name: "流程模块" });
+  await palette.getByRole("button", { name: "AI作词", exact: true }).click();
+  await palette.getByRole("button", { name: "创作中心", exact: true }).click();
+  await create.getByRole("button", { name: "AI作词输出", exact: true }).press("Enter");
+  await create.getByRole("button", { name: "创作中心输入", exact: true }).press("Enter");
+  const count = create.getByLabel("歌曲生成次数", { exact: true });
+  const save = create.getByRole("button", { name: "保存计划", exact: true });
+  await expect(count).toHaveAttribute("max", "100");
+  await expect(count).toHaveValue("1");
+  for (const invalid of ["101", "2.5", "0"]) {
+    await count.fill(invalid);
+    await expect(save).toBeDisabled();
+    await expect(create.getByText("歌曲生成次数须为 1 到 100 的整数。")).toBeVisible();
+  }
+  await count.fill("100");
+  await save.click();
+  assert.equal(await page.evaluate(() => window.savedPlan.count), 100);
+  await page.evaluate(({ account, artist }) => window.renderEditor(account, artist, window.savedPlan), { account, artist });
+  const edit = page.getByRole("dialog", { name: "编辑计划", exact: true });
+  const editCount = edit.getByLabel("歌曲生成次数", { exact: true });
+  await expect(editCount).toHaveValue("100");
+  await editCount.fill("99");
+  await editCount.fill("100");
+  await edit.getByLabel("名称", { exact: true }).fill("百轮创作已编辑");
+  await edit.getByRole("button", { name: "保存计划", exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => [window.savedPlan.title, window.savedPlan.count]), ["百轮创作已编辑", 100]);
+});
+
 test("plan center saves a linked graph, starts it directly, and confirms deletion", async t => {
   const renderer = await build({
     absWorkingDir: project, entryPoints: ["src/renderer/main.tsx"], bundle: true, write: false, outdir: "build",
@@ -424,7 +486,7 @@ test("plan center saves a linked graph, starts it directly, and confirms deletio
   await expect(save).toBeDisabled();
   await output.press("Enter");
   await input.press("Enter");
-  await count.fill("21");
+  await count.fill("101");
   await expect(save).toBeDisabled();
   await count.fill("2.5");
   await expect(save).toBeDisabled();

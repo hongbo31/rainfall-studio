@@ -68,6 +68,27 @@ export function downloadFolderName(account: string, musician: string, prompt?: s
   ].join("_");
 }
 
+export function downloadPromptFromFolder(folder: string, account: string, singer: string) {
+  const prefix = downloadAccountPart(account) + "_" + downloadSingerPart(singer) + "_";
+  const normalized = folder.normalize("NFC");
+  if (!comparePath(normalized).startsWith(comparePath(prefix))) return;
+  const prompt = normalized.slice(prefix.length).trim();
+  if (prompt && !["未关联提示词", "未关联提示词_B"].includes(prompt)) return prompt;
+}
+
+export function workArchivePromptEngine(repo: Repository, workId: string, accountId: string, account: string, singer: string) {
+  const archive: WorkArchive | undefined = repo.maybe("settings", workKey(workId))?.value;
+  const folders = (archive?.folders ?? []).filter(folder => folder.accountId === accountId);
+  const first = folders.find(folder => folder.audioVersion === "A");
+  const prompts = new Set(folders.flatMap(folder => {
+    const name = folder.audioVersion === "B" && first && comparePath(folder.name) === comparePath(first.name + "_B")
+      ? first.name : folder.name;
+    const prompt = downloadPromptFromFolder(name, account, singer);
+    return prompt ? [prompt] : [];
+  }));
+  if (prompts.size === 1) return [...prompts][0];
+}
+
 function secondFolderName(first: string, second: string) {
   return comparePath(first) === comparePath(second) ? second + "_B" : second;
 }
@@ -348,10 +369,11 @@ function archiveFiles(s: Studio, work: Row) {
     files.set(role, { ext: asset.ext, sha256: asset.sha256,
       write: target => fs.copyFileSync(s.locate(id).file, target, fs.constants.COPYFILE_EXCL) });
   }
-  if (typeof work.lyrics === "string" && work.lyrics.trim()) {
-    const lyrics = Buffer.from("\uFEFF" + work.lyrics.replace(/\r\n?|\n/gu, "\r\n"), "utf8");
-    files.set("lyrics", { ext: "txt", sha256: digest(lyrics),
-      write: target => fs.writeFileSync(target, lyrics, { flag: "wx" }) });
+  const companionText = work.parameters?.voice === "instrumental" ? work.prompt : work.lyrics;
+  if (typeof companionText === "string" && companionText.trim()) {
+    const text = Buffer.from("\uFEFF" + companionText.replace(/\r\n?|\n/gu, "\r\n"), "utf8");
+    files.set("lyrics", { ext: "txt", sha256: digest(text),
+      write: target => fs.writeFileSync(target, text, { flag: "wx" }) });
   }
   return files;
 }
@@ -428,7 +450,11 @@ export function archiveWorkDownloads(s: Studio, workId: string, folders: Downloa
       files.push(target);
       return;
     }
-    const old = previous?.files.find(candidate => path.extname(candidate).slice(1).toLowerCase() === file.ext &&
+    // A/B singer folders each need their own companion files, even when the content hash matches.
+    const targetDirectory = comparePath(path.resolve(path.dirname(target)));
+    const old = previous?.files.find(candidate =>
+      comparePath(path.resolve(path.dirname(candidate))) === targetDirectory &&
+      path.extname(candidate).slice(1).toLowerCase() === file.ext &&
       fs.existsSync(candidate) && fileDigest(candidate) === file.sha256);
     if (old) {
       files.push(old);

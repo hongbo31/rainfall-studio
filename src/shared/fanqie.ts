@@ -14,8 +14,9 @@ export type FanqieRole = 'audio' | 'lyrics' | 'cover';
 export type FanqieAsset = { file: string; sha256: string; bytes: number };
 export type FanqieAssets = Record<'audio'|'cover',FanqieAsset> & {lyrics?:FanqieAsset};
 const vocalRoles = ['audio','lyrics','cover'] as const;
-const instrumentalRoles = ['audio','cover'] as const;
-export const fanqieRoles = (instrumental?:boolean): readonly FanqieRole[] => instrumental ? instrumentalRoles : vocalRoles;
+const audioCoverRoles = ['audio','cover'] as const;
+/** The Fanqie form is lyric-file driven; local song-type defaults do not affect the uploaded materials. */
+export const fanqieRoles = (hasLyrics:boolean): readonly FanqieRole[] => hasLyrics ? vocalRoles : audioCoverRoles;
 export type FanqieScope = { accountId: string; artistId: string; sessionId: string };
 export type FanqieAuthorizationPreference = {mode:'exclusive'|'nonexclusive';platforms:('fanqie_music'|'fanqie_audio')[];confirmContractManually:true};
 export type FanqieAuthorizationResult = {
@@ -29,7 +30,6 @@ export type FanqieInput = {
   workId: string; scope: FanqieScope; title: string; ai: boolean;
   musicType: 'original' | 'cover'; rightsConfirmed: boolean; coverAuthorization?: string;
   authors: { lyricist: string; composer: string; singer: string };
-  instrumental?: true;
   lyricsMatchConfirmed: boolean; assets: FanqieAssets;
 };
 export type FanqieObservation = {

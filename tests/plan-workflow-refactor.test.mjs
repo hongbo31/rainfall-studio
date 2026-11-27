@@ -102,6 +102,23 @@ function updateArtist(x) {
   });
 }
 
+test("a workflow plan accepts one hundred rounds on creation and update and schedules each round", t => {
+  const x = fixture(t);
+  const save = (count, expectedRevision) => x.rpc("save", { plan: { ...x.draft, count }, expectedRevision });
+  const countError = error => error.issues?.some(issue => issue.path.join(".") === "plan.count");
+  assert.throws(() => save(101, null), countError);
+  const created = save(100, null);
+  assert.equal(created.count, 100);
+  const reduced = save(1, created.revision);
+  assert.throws(() => save(101, reduced.revision), countError);
+  const plan = save(100, reduced.revision);
+  assert.equal(x.rpc("read", { id: plan.id }).count, 100);
+  const run = x.rpc("run", { ...x.startInput(plan), confirmGeneration: true });
+  const { items } = x.rpc("runDetail", { runId: run.id });
+  assert.equal(run.snapshot.count, 100);
+  assert.deepEqual(items.map(item => item.ordinal), Array.from({ length: 100 }, (_, index) => index + 1));
+});
+
 test("artist edits refresh old plan projections and new confirmed runs without rewriting the plan or its history", t => {
   const x = fixture(t, { secondSinger: { name: "原歌手乙" } });
   const plan = x.rpc("save", { plan: x.draft, expectedRevision: null });

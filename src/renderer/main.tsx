@@ -22,6 +22,7 @@ import ConfigurationCenter from "./pages/ConfigurationCenter";
 import PlatformAccounts from "./pages/PlatformAccounts";
 import PlatformManagement from "./pages/PlatformManagement";
 import { createSelectionWriter } from "./publish-selection";
+import { createSnapshotRefresh } from "./snapshot-refresh";
 import type { PublishSelection } from "../shared/platform-config";
 import ChatCreation from "./pages/ChatCreation";
 import { emptyCreationEditor, type CreationEditor } from "./components/CreationWorkspace";
@@ -84,11 +85,13 @@ function App() {
     setToast(text);
     setTimeout(() => setToast(""), 5000);
   }, []);
-  const refresh = useCallback(async () => {
+  const snapshotReader = useRef<ReturnType<typeof createSnapshotRefresh<any>> | null>(null);
+  if (!snapshotReader.current) snapshotReader.current = createSnapshotRefresh(async () => {
     const result = await window.rainfall.call("snapshot");
     if (!result.ok) throw Error(result.error.message);
-    setData(result.value);
-  }, []);
+    return result.value;
+  }, setData);
+  const refresh = useCallback(() => snapshotReader.current!.refresh(), []);
   useEffect(() => {
     if (!data || selectionMode.current === data.mode) return;
     selectionMode.current = data.mode;
@@ -103,9 +106,11 @@ function App() {
   useEffect(() => {
     window.rainfall.call("runtime").then((r) => r.ok && setRuntime(r.value));
     void refresh().catch((e) => setFatal(e.message));
-    const t = setInterval(() => {
-      void refresh().catch(() => {});
-    }, 1500);
+    const poll = () => {
+      if (document.visibilityState !== "hidden") void snapshotReader.current!.poll().catch(() => {});
+    };
+    const t = setInterval(poll, 1500);
+    document.addEventListener("visibilitychange", poll);
     const unhandled = (e: PromiseRejectionEvent) => {
       e.preventDefault();
       notify(e.reason?.message || "操作未完成");
@@ -113,6 +118,7 @@ function App() {
     window.addEventListener("unhandledrejection", unhandled);
     return () => {
       clearInterval(t);
+      document.removeEventListener("visibilitychange", poll);
       window.removeEventListener("unhandledrejection", unhandled);
     };
   }, []);

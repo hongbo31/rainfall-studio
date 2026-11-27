@@ -269,10 +269,7 @@ function pendingTerms(
     return null;
   const account = s.repo.maybe("accounts", accountId);
   if (!account || !accountSupportsTarget(account, target)) return null;
-  const settings = s.all("settings");
-  for (const row of settings.filter((r) =>
-    r.id.startsWith("tme-ai-prepare:job:"),
-  )) {
+  for (const row of s.repo.settingsByPrefix("tme-ai-prepare:job:")) {
     const job = row.value;
     if (
       job?.state !== "awaiting_terms_review" ||
@@ -389,9 +386,8 @@ export function previewPublication(s: Studio, { target, accountId, workId }: Pub
 }
 
 function storedRequests(s: Studio): SimplePublicationRequest[] {
-  return s
-    .all("settings")
-    .filter((r) => r.id.startsWith(requestPrefix))
+  return s.repo
+    .settingsByPrefix(requestPrefix)
     .map((r) => r.value);
 }
 /** Official page preparation may be proven even when no OAuth/local account mapping exists. */
@@ -399,9 +395,7 @@ export function listPublicationPendingTerms(
   s: Studio,
 ): PublicationPendingTerms[] {
   const result: PublicationPendingTerms[] = [];
-  for (const row of s
-    .all("settings")
-    .filter((r) => r.id.startsWith("tme-ai-prepare:job:"))) {
+  for (const row of s.repo.settingsByPrefix("tme-ai-prepare:job:")) {
     const job = row.value,
       w = job?.workId ? s.repo.maybe("works", job.workId) : null;
     if (
@@ -507,11 +501,10 @@ export function listSimplePublicationRequests(
     }
   });
   const pendingWorkIds = new Set(
-    s
-      .all("settings")
+    s.repo
+      .settingsByPrefix("tme-ai-prepare:job:")
       .filter(
         (r) =>
-          r.id.startsWith("tme-ai-prepare:job:") &&
           r.value?.state === "awaiting_terms_review",
       )
       .map((r) => r.value.workId),

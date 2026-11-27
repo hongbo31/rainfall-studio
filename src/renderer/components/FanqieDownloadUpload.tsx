@@ -95,6 +95,10 @@ export default function FanqieDownloadUpload({ accountId, onBusy }: { accountId:
   const signContract = draft.signContract ?? savedSignContract;
   const settings = fanqieDirectoryPreferencesSchema.safeParse({ limit: Number(limit), signContract });
   const ready = preview?.items.filter(item => !item.issue).length ?? 0;
+  const blockedSummary = preview?.items.reduce<Record<string, number>>((counts, item) => {
+    if (item.issue) counts[item.issue] = (counts[item.issue] ?? 0) + 1;
+    return counts;
+  }, {}) ?? {};
   const count = settings.success ? Math.min(ready, settings.data.limit) : 0;
   const active = isFanqieDownloadActive(batch);
   const cleanupBatch = batch?.state === "needs_review" &&
@@ -173,6 +177,10 @@ export default function FanqieDownloadUpload({ accountId, onBusy }: { accountId:
       {preview?.configurationRequired && <p className="notice" role="status">{issueText("FANQIE_CONFIGURATION_REQUIRED")}</p>}
       {preview && !preview.rootIssue && !loading && <p className="muted">
         {preview.items.length ? `共发现 ${preview.items.length} 首 · ${ready} 首待预检` : "该账号的下载目录下暂无歌曲。"}
+      </p>}
+      {preview && !preview.rootIssue && !loading && preview.items.length > 0 && ready === 0 && <p className="notice" role="status">
+        当前没有可安全投稿的歌曲：{Object.entries(blockedSummary).map(([issue, count]) =>
+          `${count} 首${fanqieDownloadIssues[issue] ?? issue}`).join("；") || "请重新扫描并查看逐首状态"}
       </p>}
       {!!preview?.items.length && <ul className="fanqie-download-list" aria-label="扫描结果" tabIndex={0}>
         {preview.items.map(item => <li key={item.id}>

@@ -5,6 +5,7 @@ import type { AccountLoginState } from "../shared/platform-accounts";
 export type AccountSessionStatus = {
   opened: boolean;
   savedProfile: boolean;
+  manualLoginPending?: boolean;
   loginState?: AccountLoginState;
   profileVerified?: boolean;
   qishuiState?: QishuiSessionState;
@@ -45,6 +46,7 @@ export function accountLoginState(status?: AccountSessionStatus, authStatus?: st
 }
 
 export function accountLoginText(status?: AccountSessionStatus) {
+  if (status?.manualLoginPending) return "普通浏览器登录待接续";
   if (status?.puleState) return puleLabels[status.puleState];
   if (status?.qishuiState) return qishuiLabels[status.qishuiState];
   if (status?.loginState === "unknown" && !status.opened) return "专属窗口未打开";

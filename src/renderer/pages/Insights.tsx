@@ -1,8 +1,23 @@
 import HelpNote from "../components/HelpNote";
+import PublicationHistory from "../components/PublicationHistory";
 import React, { useState, useEffect } from "react";
 import { useStudio, PageHead, Badge, names, date } from "../context";
 import { summarizeReports, reportScopeKey } from "../insights-summary";
 export default function Insights() {
+  const { data } = useStudio();
+  return (
+    <>
+      <PageHead title="数据看板" />
+      <PublicationHistory key={data.mode} />
+      <details className="panel insights-reports">
+        <summary>CSV 指标报表</summary>
+        <ReportInsights />
+      </details>
+    </>
+  );
+}
+
+function ReportInsights() {
   const { data, importAsset } = useStudio();
   const [platform, setPlatform] = useState(""),
     [period, setPeriod] = useState(""),
@@ -26,18 +41,12 @@ export default function Insights() {
             ? "请先核对指标口径"
             : null;
   return (
-    <>
-      <PageHead
-        title="数据看板"
-        action={
-          <button className="primary" onClick={() => importAsset("report")}>
-            ＋ 导入 CSV 报表
-          </button>
-        }
-      />
-      <p className="notice">用户导入报表 · 未自动同步 · 累计快照非增长</p>
+    <div>
+      <button className="primary" onClick={() => importAsset("report")}>
+        ＋ 导入 CSV 报表
+      </button>
       <HelpNote label="统计口径">
-        在线统计尚未接入，数据不会自动同步。此页仅展示用户导入报表；选择同一日期、同一平台并核对指标口径后，才合计已知数值。累计快照不能跨日期相加解读为总增长。
+        播放、收藏和评论来自导入的报表。选择同一日期和平台，核对指标口径后查看合计。各日数值为当时的累计快照。
       </HelpNote>
       <div className="toolbar">
         <select
@@ -162,6 +171,6 @@ export default function Insights() {
           BOM、引号、逗号和换行。此行只是字段示例，不会自动写入统计。
         </p>
       </details>
-    </>
+    </div>
   );
 }

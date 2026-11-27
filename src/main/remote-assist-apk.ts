@@ -7,13 +7,14 @@ const fileName = "Rainfall-Remote-Assist.apk";
 const checksumName = `${fileName}.sha256`;
 const maxApkSize = 32 * 1024 * 1024;
 
-async function readVerifiedApk(directory: string) {
-  const file = path.join(directory, fileName);
+async function readVerifiedApk(directory: string, artifact = fileName) {
+  const file = path.join(directory, artifact);
   try {
     const stats = await fs.stat(file);
     if (!stats.isFile() || stats.size < 4 || stats.size > maxApkSize) return null;
-    const checksum = await fs.readFile(path.join(directory, checksumName), "utf8");
-    const sha256 = /^([a-f0-9]{64})[ \t]+Rainfall-Remote-Assist\.apk\s*$/iu.exec(checksum)?.[1].toLowerCase();
+    const checksum = await fs.readFile(path.join(directory, `${artifact}.sha256`), "utf8");
+    const match = /^([a-f0-9]{64})[ \t]+(\S+)\s*$/iu.exec(checksum);
+    const sha256 = match?.[2] === artifact ? match[1].toLowerCase() : undefined;
     if (!sha256) return null;
     const bytes = await fs.readFile(file);
     if (bytes.subarray(0, 4).toString("hex") !== "504b0304" || bytes.length > maxApkSize ||
@@ -25,7 +26,7 @@ async function readVerifiedApk(directory: string) {
 }
 
 export async function stageRemoteAssistApk(source: string, output: string) {
-  const apk = await readVerifiedApk(source);
+  const apk = await readVerifiedApk(source) ?? await readVerifiedApk(source, "Rainfall-SMS.apk");
   if (!apk) return;
   await fs.writeFile(path.join(output, fileName), apk.bytes);
   await fs.writeFile(path.join(output, checksumName), `${apk.sha256}  ${fileName}\n`);

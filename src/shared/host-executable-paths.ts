@@ -27,6 +27,16 @@ export function windowsChromiumExecutable(browser: "chrome" | "msedge", env: Nod
   return roots.map(root => path.win32.join(root, vendor, app, "Application", browser + ".exe")).find(isFile);
 }
 
+export function bundledChromiumExecutable(isFile = isExecutableFile): string | undefined {
+  const executable = path.resolve(__dirname, "..", "tools", "chromium", "chrome.exe");
+  if (isFile(executable)) return executable;
+}
+
+export function windowsPowerShellExecutable(): string {
+  const executable = path.resolve(__dirname, "..", "tools", "powershell", "pwsh.exe");
+  return process.platform === "win32" && isExecutableFile(executable) ? executable : "pwsh.exe";
+}
+
 export function executableOnPath(names: readonly string[], platform = process.platform,
   env: NodeJS.ProcessEnv = process.env, isFile = isExecutableFile): string | undefined {
   const paths = platform === "win32" ? path.win32 : path.posix;

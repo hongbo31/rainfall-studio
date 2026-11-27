@@ -17,13 +17,13 @@ export class UnifiedPublicationService{
   repo.transaction(()=>{for(const task of this.raw())if(task.state==='preparing')this.patch(task,{state:'reconcile_required',reason:'PREPARATION_INTERRUPTED'});});
  }
  private stamp(){return (this.options.now?.()??new Date()).toISOString()}
- private raw():Row[]{return this.repo.all('settings').filter(r=>r.id.startsWith(prefix)).map(r=>r.value)}
+ private raw():Row[]{return this.repo.settingsByPrefix(prefix).map(r=>r.value)}
  private put(task:Row){this.repo.save('settings',{id:prefix+task.id,value:task});return task}
  private patch(task:Row,patch:Row){const state=patch.state??task.state;return this.put({...task,...patch,summary:summaries[state],revision:task.revision+1,updatedAt:this.stamp()})}
  private get(id:string){const task=this.repo.maybe('settings',prefix+z.uuid().parse(id))?.value;if(!task)throw Error('NOT_FOUND');return task}
  private sourceSha(r:SimplePublicationRequest){return (r.materialSnapshot.audio?.boundAssetId?this.repo.maybe('assets',r.materialSnapshot.audio.boundAssetId)?.sha256:null)??r.materialSnapshot.audio?.sha256??null}
  private priorSubmit(audioSha:string|null){return !!audioSha&&this.repo.all('operations').some(o=>o.kind==='tme_ai_submission'&&o.phase==='submit'&&o.receiptScope?.sourceAudioSha===audioSha)}
- private source(task:Row){return this.repo.all('settings').filter(r=>r.id.startsWith('tme-ai-submission:')).map(r=>r.value).find(r=>r.id===task.submissionJobId)}
+ private source(task:Row){return task.submissionJobId?this.repo.maybe('settings','tme-ai-submission:'+task.submissionJobId)?.value:undefined}
  list(){return this.raw().map(task=>{const external=task.targets?.some((t:string)=>['qqmusic','kugou'].includes(t))?externalTmeReceipt(this.repo,task.workId,task.audioSha):null;if(external)return{...task,state:external.workId===task.workId?external.state:'blocked',summary:external.workId===task.workId?summaries[external.state]:'录音已有官网投稿',reason:'OFFICIAL_RECORD_ALREADY_EXISTS',receipt:externalTmePublicJob(external).receipt};const submission=this.source(task);
   // The Core submission service alone establishes official receipt validity.
   if(submission&&terminal.has(submission.state)&&submission.submissionByClient===true&&submission.receipt)return{...task,state:submission.state,summary:summaries[submission.state],receipt:submission.receipt,updatedAt:submission.updatedAt};

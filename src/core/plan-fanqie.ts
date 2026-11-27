@@ -101,7 +101,13 @@ function batchJobs(s:Studio,runId:string){
     stopped:owner?!publicationOwnerActive(s.repo,owner):run!.stopRequested};
 }
 function saveBatchJob(s:Studio,job:Record<string,unknown>,patch:Record<string,unknown>){
-  s.save('settings',{id:prefix+job.id,value:{...job,...patch,updatedAt:s.now().toISOString()}});
+  const updatedAt=s.now().toISOString();
+  const saved={...job,...patch,updatedAt};
+  const uploadedAt=job.uploadedAt??((patch.record??job.record)&&(patch.state??job.state)!=='existing'
+    ? job.record ? job.updatedAt??updatedAt : updatedAt
+    : undefined);
+  const value={...saved,uploadedAt};
+  s.save('settings',{id:prefix+job.id,value});return value;
 }
 export function retryPlanFanqieBatch(s:Studio,input:unknown){
   const {runId}=batchScope.omit({workId:true}).parse(input);
@@ -203,8 +209,8 @@ export function planFanqieAction(s:Studio,action:string,input:unknown){
  if(action==='record'){
   if(job.state!=='dispatching'||!value.state)throw Error('FANQIE_PLAN_SCOPE');
   if(['uploaded','existing'].includes(value.state)&&!value.record?.id)throw Error('FANQIE_SAVED_WORK_READBACK_REQUIRED');
-  const saved={...job,state:value.state,reason:value.reason,record:value.record,updatedAt:s.now().toISOString()};
-  s.save('settings',{...row,value:saved});s.planCenterService().refreshPublication(job.runId);return saved;
+  const saved=saveBatchJob(s,job,{state:value.state,reason:value.reason,record:value.record});
+  s.planCenterService().refreshPublication(job.runId);return saved;
  }
  throw Error('METHOD_NOT_ALLOWED');
 }

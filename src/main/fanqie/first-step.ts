@@ -25,7 +25,6 @@ export type FanqieFirstStepPage = {
 };
 export type FanqieVisibleForm = {
   title: string; songCount: number; musicType: string; ai: string;
-  instrumental?: boolean;
   authors: {lyricist: string[]; composer: string[]; singer: string[]};
   audioText: string; lyricsText: string;
   coverPreview: {complete: boolean; width: number; height: number}[];
@@ -35,7 +34,6 @@ export type FanqieExpectedForm = {
   authors: {lyricist: string; composer: string; singer: string};
   audio: {displayName: string; format: 'WAV' | 'MP3'; displaySize: string; bytes?: number};
   lyrics?: {fileName: string; displaySize: string; bytes?: number};
-  instrumental?: true;
 };
 function assertUrl(raw: string | undefined) {
   const url = raw ? new URL(raw) : null;
@@ -55,8 +53,6 @@ export async function readFanqieVisibleForm(page: FanqieFirstStepPage): Promise<
       title: (el as HTMLInputElement).value,
       songCount: Array.from(form.querySelectorAll('label[for]')).filter(l => /^songs_\d+_name_input$/.test(l.getAttribute('for') ?? '')).length,
       musicType: radio('type'), ai: radio('ai_usage_type'),
-      instrumental: Array.from(form.querySelectorAll('input[type="radio"]:checked,input[type="checkbox"]:checked'))
-        .some(input=>input.closest('label')?.textContent?.trim()==='纯音乐'),
       authors: {lyricist: credit('lyricist_id_list'), composer: credit('composer_id_list'), singer: credit('singer_id_list')},
       audioText: (form.querySelector('#songs_0_songFile') as HTMLElement | null)?.innerText ?? '',
       lyricsText: (form.querySelector('#songs_0_lyricFile') as HTMLElement | null)?.innerText ?? '',
@@ -99,19 +95,14 @@ export function assertFanqieFirstStepReadback(actual: FanqieVisibleForm, expecte
   if (actual.songCount !== 1) throw Error('FANQIE_METADATA_READBACK_REQUIRED:song-count');
   if (actual.title !== expected.title) throw Error('FANQIE_METADATA_READBACK_REQUIRED:title');
   if (actual.ai !== (expected.ai ? '是' : '否')) throw Error('FANQIE_METADATA_READBACK_REQUIRED:ai-usage');
-  if (!!actual.instrumental !== !!expected.instrumental) throw Error('FANQIE_METADATA_READBACK_REQUIRED:instrumental');
   if (actual.musicType !== (expected.musicType === 'original' ? '原创' : '翻唱'))
     throw Error('FANQIE_METADATA_READBACK_REQUIRED:music-type');
   for (const role of ['lyricist', 'composer', 'singer'] as const) {
-    if(expected.instrumental&&role==='lyricist'){
-      if(actual.authors[role].length)throw Error('FANQIE_AUTHOR_READBACK_REQUIRED');
-      continue;
-    }
     if (actual.authors[role].length !== 1 || actual.authors[role][0] !== expected.authors[role]) throw Error('FANQIE_AUTHOR_READBACK_REQUIRED');
   }
   if (!fanqieTransferVerified(actual.audioText, expected.audio) ||
-      (expected.instrumental ? /上传完成/.test(actual.lyricsText) :
-        !expected.lyrics||!fanqieTransferVerified(actual.lyricsText, expected.lyrics))) throw Error('FANQIE_UPLOAD_READBACK_REQUIRED');
+      (expected.lyrics ? !fanqieTransferVerified(actual.lyricsText, expected.lyrics) : /上传完成/.test(actual.lyricsText)))
+    throw Error('FANQIE_UPLOAD_READBACK_REQUIRED');
   // The official cropper turns a valid 2048px source into a 1400px preview. Validate source dimensions before transfer.
   if (actual.coverPreview.length !== 1 || !actual.coverPreview[0].complete || actual.coverPreview[0].width <= 0 ||
       actual.coverPreview[0].width !== actual.coverPreview[0].height) throw Error('FANQIE_COVER_READBACK_REQUIRED');
@@ -124,7 +115,7 @@ export async function selectFanqieCredit(page: FanqieFirstStepPage, role: keyof 
   if (!name.trim()) throw Error('FANQIE_AUTHORS_REQUIRED');
   await assertCurrentScope();
   const before = await readFanqieVisibleForm(page), selected = before.authors[role];
-  if (!(await probeFanqieForm(page,before.instrumental)).firstStepObserved) throw Error('FANQIE_FORM_UNVERIFIED');
+  if (!(await probeFanqieForm(page)).firstStepObserved) throw Error('FANQIE_FORM_UNVERIFIED');
   if (selected.length === 1 && selected[0] === name) return;
   if (selected.length) throw Error('FANQIE_EXISTING_AUTHOR_REQUIRES_RECONCILIATION');
   const label = page.playwright.locator(`label[for="songs_0_${creditFields[role]}_input"]`);

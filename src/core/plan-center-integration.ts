@@ -149,6 +149,7 @@ export function executePlanCenter(s:Studio,method:string,raw:unknown){
 /** Local orchestration only. Real text HTTP is still exclusively owned by Main's existing broker. */
 export function tickPlanCenter(s:Studio){
  const service=s.planCenterService();syncPlanDot(s);exportPlanDotBridge(s);
+ const store=new CenterStore(s.repo);
  const rows=service.list();
  for(const run of rows.runs.filter(r=>!['completed','failed'].includes(r.state))){
   const creation=run.snapshot.material.source==='creation',customCreation=creation||!!run.snapshot.workflow;
@@ -162,7 +163,7 @@ export function tickPlanCenter(s:Studio){
     for(const a of rows.stageAttempts.filter(a=>a.itemId===item.id&&a.stage==='text_score'))
       s.productionFlowService().stopManagedInboxEvaluation(a.id);
    }
-   const boundItem=service.list().items.find(i=>i.id===item.id)!;
+   const boundItem=store.get('item',item.id)!;
    const imported=typeof boundItem.material?.candidateId==='string'?s.repo.maybe('textCandidates',boundItem.material.candidateId):undefined;
    if(run.snapshot.material.source==='provider'&&tickProviderPlanText(s,run,boundItem)&&!run.stopRequested)continue;
    if(run.stopRequested){try{tickPlanMusic(s,run,boundItem);}catch{/* Existing receipt remains persisted for reconciliation. */}}

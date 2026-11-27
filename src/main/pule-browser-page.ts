@@ -205,6 +205,9 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
   let preparingWav = false;
   const loginDialog = puleSignInDialog(page);
   const rewardDialog = visible(dialogs.filter({ has: button("登录领取积分") }));
+  const atmosphereMvAdDialog = visible(dialogs.filter({
+    has: page.getByRole("heading", { name: /氛围 MV 大升级/u }),
+  }));
   const dismiss = async (popup: Locator, closeName: string | RegExp) => {
     if (!await popup.count()) return false;
     await hooks.guard();
@@ -217,6 +220,7 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
     let state = await inspectPuleSession(page);
     if (state === "closed") throw Error("PULE_WINDOW_CLOSED");
     if (new URL(page.url()).origin !== puleOrigin) return state;
+    await dismiss(atmosphereMvAdDialog, "关闭");
     if (await dismiss(rewardDialog, "关闭")) state = await inspectPuleSession(page);
     if (state === "signed_in" && await dismiss(loginDialog, /^(?:close|关闭)$/iu)) {
       await page.waitForTimeout(time.poll);

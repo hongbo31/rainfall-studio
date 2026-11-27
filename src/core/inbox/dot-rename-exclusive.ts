@@ -1,5 +1,6 @@
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { windowsPowerShellExecutable } from "../../shared/host-executable-paths";
 export const physicalInboxHelperPath = (
   name: "dot-rename-exclusive.ps1" | "dot-volume-facts.ps1",
   base: string = __dirname,
@@ -16,7 +17,7 @@ export function renameExclusive(source: string, destination: string) {
     throw Error("DELIVERY_EXCLUSIVE_WINDOWS_REQUIRED");
   try {
     execFileSync(
-      "pwsh.exe",
+      windowsPowerShellExecutable(),
       [
         "-NoLogo",
         "-NoProfile",

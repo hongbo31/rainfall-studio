@@ -5,12 +5,13 @@ import {randomUUID,createHash} from 'node:crypto';
 import {z} from 'zod';
 import {waitForStableManualCover} from './cover-readback';
 import {inspectPcmWav} from '../../shared/pcm-wav';
+import {windowsPowerShellExecutable} from '../../shared/host-executable-paths';
 import {tmeAiSubjectHash,TmeAiPrepareIdentitySchema,TmeAiPrepareBindingSchema,TmeAiPrepareSnapshotSchema,TmeAiPreparePublicSchemas,type TmeAiPrepareSnapshot} from '../../shared/tme-ai-prepare';
 const hash=(x:any)=>createHash('sha256').update(typeof x==='string'||Buffer.isBuffer(x)?x:JSON.stringify(x)).digest('hex');
 const fileHash=(file:string)=>hash(fs.readFileSync(file));
 export class TmeAiNativePort {
  private children=new Set<ReturnType<typeof spawn>>();
- constructor(readonly script:string,readonly executable='pwsh.exe'){}
+ constructor(readonly script:string,readonly executable=windowsPowerShellExecutable()){}
  interrupt(){for(const child of this.children)child.kill()}
  async request(action:string,input:any){
   if(!['inspect','observe','step','inspect_picker','resume_cover_picker','locate_cover_picker','inspect_crop','confirm_existing_crop'].includes(action))throw Error('ACTION_NOT_ALLOWED');

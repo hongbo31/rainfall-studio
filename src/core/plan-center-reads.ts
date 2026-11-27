@@ -1,4 +1,4 @@
-import { isPlanCenterDefinition, planRunActive, planRunBlocksDeletion,
+import { isPlanCenterDefinition, planRunBlocksDeletion,
   type PlanCenterHistory, type PlanCenterItem, type PlanCenterRun, type PlanCenterRunDetail,
   type PlanDashboardRow, type PlanRunSummary } from '../shared/plan-center';
 import { isLocalPublicationWorkflow } from '../shared/plan-workflow-graph';
@@ -40,9 +40,10 @@ export function readPlanDashboard(store: CenterStore): PlanDashboardRow[] {
     const row = rows.get(run.planId);
     if (!row) continue;
     row.latest ??= runSummary(run);
-    if (planRunActive(run)) row.active ??= runSummary(run);
+    const blocksDeletion = planRunBlocksDeletion(run, activity);
+    if (blocksDeletion) row.active ??= runSummary(run);
     if (run.state === 'blocked') row.stopsOnDelete = true;
-    if (planRunBlocksDeletion(run, activity)) row.deleteBlocked = true;
+    if (blocksDeletion) row.deleteBlocked = true;
   }
   return [...rows.values()];
 }

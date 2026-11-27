@@ -60,12 +60,14 @@ const PlanWorkflowSnapshotSchema = z.strictObject({
   secondSinger: storedSecondSingerSchema.optional(),
   template: z.strictObject({ id: z.uuid(), name: z.string(), revision }).nullable(),
 });
+export const planGenerationCountLimit = 100;
+export const PlanGenerationCountSchema = z.number().int().min(1).max(planGenerationCountLimit);
 export const PlanCenterPlanSchema = z.strictObject({
   artistSnapshot:z.strictObject({id:z.string(),revision:z.number().int().positive(),name:z.string(),defaults:z.record(z.string(),z.unknown())}).optional(),
   origin:z.enum(['plan','manual']).optional(),routing:GenerationRoutingSchema.optional(),routeSnapshot:RouteSnapshotSchema.optional(),storyContext:z.strictObject({storyBeat:z.string().max(10000),storyStage:z.string().max(1000).default('')}).optional(),
   id, revision: revision.default(1), title: z.string().trim().min(1).max(200), artistId: id.or(z.literal('')),
   enabled: z.boolean().default(false), timezone: z.literal('Asia/Shanghai').default('Asia/Shanghai'),
-  schedule: PlanCenterScheduleSchema, count: z.number().int().min(1).max(20).default(1),
+  schedule: PlanCenterScheduleSchema, count: PlanGenerationCountSchema.default(1),
   theme: z.string().max(2000).default(''), styleTemplate: z.string().max(4000).default(''),
   songType: z.enum(['vocal','instrumental']).optional(),
   creationDraft: CreationTaskDraftSchema.optional(),
@@ -73,7 +75,7 @@ export const PlanCenterPlanSchema = z.strictObject({
   workflowSnapshot: PlanWorkflowSnapshotSchema.optional(),
   distinctLyrics: z.literal(true).optional(),
   outputs: z.strictObject({ lyrics: z.boolean(), cover: z.boolean(), music: z.boolean() }).default({ lyrics: true, cover: false, music: false }),
-  material: z.strictObject({ source: z.enum(['dot','manual','provider','pule_prompt','creation','workflow']).default('dot'), channel: z.string().max(500).default(''), identity: z.string().max(500).default(''), expectedExternalItemIds: z.array(InboxId).max(20).optional() }),
+  material: z.strictObject({ source: z.enum(['dot','manual','provider','pule_prompt','creation','workflow']).default('dot'), channel: z.string().max(500).default(''), identity: z.string().max(500).default(''), expectedExternalItemIds: z.array(InboxId).max(planGenerationCountLimit).optional() }),
   text: z.strictObject({ profileId: id.optional(), profileRevision: revision.optional(), modelId: id.optional(), maxOutputTokens: z.number().int().min(256).max(16384).optional(), budgetMicros: z.number().int().positive().max(100_000_000).optional(), consent: z.boolean().default(false), threshold: z.number().min(0).max(100).default(75), maxRewrites: z.number().int().min(0).max(2).default(2), maxScoreRetries: z.number().int().min(0).max(2).default(2) }),
   music: z.strictObject({ route: z.enum(['suno_official','pule','yourmusic','pule_browser','suno_cn_browser','manual']), profileId: id.optional(), profileRevision: revision.optional(), modelId: id.optional(), budgetCredits: z.number().int().positive().optional(), maxCostPerRequestCredits: z.number().int().positive().optional(), pricingEvidence: z.string().max(1000).optional(), creditPolicy: FlowMusicCreditPolicySchema.optional(), consent: z.boolean().default(false), versionPolicy: z.enum(['first','manual']).default('first') }),
   publishTargets: z.array(PlanCenterPublishTargetSchema).max(20).refine(v => new Set(v.map(t=>`${t.platform}\0${t.accountId}`)).size===v.length,'DUPLICATE_TARGET').default([]),

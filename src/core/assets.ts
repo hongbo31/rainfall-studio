@@ -54,7 +54,7 @@ export function probe(file: string) {
         "-protocol_whitelist",
         "file,pipe",
         "-format_whitelist",
-        "wav,mp3,flac,ogg,mov,matroska,webm",
+        "wav,mp3,flac,ogg,mov,matroska,webm,aac,aiff,ape,asf,ac3,amr,caf,dts,wv,tta,tak,au,voc",
         "-show_format",
         "-show_streams",
         "-of",
