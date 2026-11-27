@@ -246,29 +246,59 @@ export class LyricWritingService {
 
   private earlierRunTitles(attemptId: string) {
     const store = new CenterStore(this.repo);
-    const attempt = store.get("stage", attemptId);
-    if (attempt?.stage !== "lyric_write") return [];
-    const current = store.get("item", attempt.itemId);
-    if (!current || current.runId !== attempt.runId) return [];
-    const scope = { field: "runId", values: [attempt.runId] } as const;
-    const items = store.all("item", scope).filter(item => item.ordinal < current.ordinal)
-      .sort((a, b) => a.ordinal - b.ordinal);
-    const stages = store.all("stage", scope);
-    return items.flatMap(item => {
-      const { title, alternateTitle } = item.material ?? {};
+    const itemPrefix = store.key("item", "");
+    const current = this.repo.db.prepare(`SELECT json_extract(item.data, '$.value.runId') AS runId,
+        json_extract(item.data, '$.value.ordinal') AS ordinal
+      FROM settings AS attempt
+      JOIN settings AS item ON item.id = ? || json_extract(attempt.data, '$.value.itemId')
+      WHERE attempt.id = ? AND json_extract(attempt.data, '$.value.stage') = 'lyric_write'
+        AND json_extract(item.data, '$.value.runId') = json_extract(attempt.data, '$.value.runId')`
+    ).get(itemPrefix, store.key("stage", attemptId)) as { runId: string; ordinal: number } | undefined;
+    if (!current) return [];
+
+    const items = this.repo.db.prepare(`SELECT json_extract(data, '$.value.id') AS itemId,
+        CASE WHEN json_type(data, '$.value.material.title') = 'text'
+          THEN json_extract(data, '$.value.material.title') END AS title,
+        CASE WHEN json_type(data, '$.value.material.alternateTitle') = 'text'
+          THEN json_extract(data, '$.value.material.alternateTitle') END AS alternateTitle
+      FROM settings
+      WHERE id GLOB ? AND json_extract(data, '$.value.runId') = ?
+        AND json_extract(data, '$.value.ordinal') < ?
+      ORDER BY json_extract(data, '$.value.ordinal'), rowid`
+    ).all(itemPrefix + "*", current.runId, current.ordinal) as
+      { itemId: string; title: string | null; alternateTitle: string | null }[];
+    if (!items.length) return [];
+
+    // Match lyricResultVersion: a result ID takes priority, then a current ID, otherwise the last version.
+    // A missing match skips the attempt, so an earlier attempt can still supply a title.
+    const selectedDraftTitles = this.repo.db.prepare(`WITH sibling_jobs AS (
+      SELECT job.data, stage.rowid AS stage_rowid, json_extract(stage.data, '$.value.ordinal') AS stage_ordinal,
+        coalesce(nullif(json_extract(job.data, '$.resultVersionId'), ''),
+          nullif(json_extract(job.data, '$.currentVersionId'), '')) AS version_id
+      FROM settings AS stage
+      JOIN lyricJobs AS job ON job.id = json_extract(stage.data, '$.value.externalTaskId')
+        AND json_extract(job.data, '$.planAttemptId') = json_extract(stage.data, '$.value.id')
+      WHERE stage.id GLOB ? AND json_extract(stage.data, '$.value.runId') = ?
+        AND json_extract(stage.data, '$.value.itemId') = ? AND json_extract(stage.data, '$.value.stage') = 'lyric_write'
+    )
+    SELECT CASE WHEN json_type(version.value, '$.title') = 'text'
+        THEN json_extract(version.value, '$.title') END AS title,
+      CASE WHEN json_type(version.value, '$.alternateTitle') = 'text'
+        THEN json_extract(version.value, '$.alternateTitle') END AS alternateTitle
+    FROM sibling_jobs
+    JOIN json_each(sibling_jobs.data, '$.versions') AS version
+      ON CASE WHEN version_id IS NOT NULL THEN json_extract(version.value, '$.id') = version_id
+        ELSE version.key = json_array_length(sibling_jobs.data, '$.versions') - 1 END
+    ORDER BY stage_ordinal DESC, stage_rowid, version.key
+    LIMIT 1`);
+
+    return items.flatMap(({ itemId, title, alternateTitle }) => {
       const materialTitles = [title, alternateTitle].filter(nonemptyTitle);
       if (materialTitles.length) return materialTitles.map(value => value.trim());
       // The lyric worker can already have a title while the plan is still waiting for its result.
-      const lyricStages = stages.filter(stage => stage.itemId === item.id && stage.stage === "lyric_write")
-        .sort((a, b) => b.ordinal - a.ordinal);
-      for (const stage of lyricStages) {
-        if (!stage.externalTaskId) continue;
-        const sibling = this.repo.maybe("lyricJobs", stage.externalTaskId) as Job | undefined;
-        if (sibling?.planAttemptId !== stage.id) continue;
-        const version = lyricResultVersion(sibling);
-        if (version) return [version.title, version.alternateTitle].filter(nonemptyTitle);
-      }
-      return [];
+      const draft = selectedDraftTitles.get(store.key("stage", "*"), current.runId, itemId) as
+        { title: string | null; alternateTitle: string | null } | undefined;
+      return draft ? [draft.title, draft.alternateTitle].filter(nonemptyTitle) : [];
     });
   }
 
