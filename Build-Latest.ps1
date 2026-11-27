@@ -56,7 +56,7 @@ function Get-BuildArchive($Url, $Sha256, $MirrorUrl) {
 }
 
 $repository = 'https://github.com/hongbo31/rainfall-studio.git'
-$defaultUpdateFeedUrl = 'https://github.com/hongbo31/rainfall-studio-updates/releases/latest/download/'
+$defaultUpdateFeedUrl = 'https://github.com/hongbo31/rainfall-studio/releases/latest/download/'
 $feedUrlInput = if ($UpdateFeedUrl) {
   $UpdateFeedUrl
 } elseif ($env:RAINFALL_UPDATE_FEED_URL) {
