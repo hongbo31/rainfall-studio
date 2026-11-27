@@ -41,7 +41,7 @@
 - The project manager updates `docs/project/board.md` after review.
 
 **Interfaces:**
-- Consumes: Existing `LyricWritingService`, `Job.planAttemptId`, `Repository.all("works")`, and Plan Center item/stage records.
+- Consumes: Existing `LyricWritingService`, `Job.planAttemptId`, `Repository.db` SQLite projections over `works` and Plan Center `settings`, plus the `CenterStore` key helpers.
 - Produces: Existing `title` and `alternateTitle` outputs; no IPC/API contract changes.
 
 - [x] Update `titleGuidance` so vocal, instrumental, and inspiration generation all ask for a short core name first, then optionally add zero or more relevant descriptors. Keep the core name first. Permit dynamic combinations such as “蹦跳墨尔本2027年爆款DJ纯音乐”, “蹦跳墨尔本纯音乐”, or “蹦跳墨尔本爆款”; make clear these are examples, not a fixed template.
