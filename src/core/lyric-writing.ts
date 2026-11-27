@@ -56,6 +56,11 @@ const rubricResponseSchema = z.preprocess(raw => {
 const reviewFormat = "只返回 JSON 对象，包含 score、languageMatches、findings 三个字段。score 是 0 到 100 的整数。languageMatches 是 JSON 布尔值 true 或 false。findings 是包含 1 到 12 条中文意见的字符串数组，每条非空且最多 1000 字。即使没有扣分，也至少写一条评分依据。";
 
 const quality = "尊重指定的题材、情绪、用途、语种和方言。用具体动作和自然口语，按风格处理段落、节奏、密度和可演唱性。保留自然的声线与记忆句，不强制押韵或固定结构。制作标注单独成行、保持简洁。避免模仿特定歌手、照搬已有歌词、混入拼音或评审文字。";
+const legacyTitleGuidance = [
+  "用流行单曲常见的短词组或自然口语短句起名，让人读一遍就能记住。中文优先 2 至 8 个字，其他语种优先简短词组，遵循指定语种。",
+  "两个名字从同一首歌提炼出不同记忆点。避免套用知名歌名、堆砌抽象情绪词、只换近义词或给同一个歌名加后缀。",
+  `每个字段只写一个原创歌名，只用文字、数字和词间空格，省略书名号、标点、表情、装饰符号、版本标签和序号。各不超过 ${lyricTitleLimit} 个字符。`,
+].join("");
 const titleGuidance = [
   "从本首歌词、乐曲或灵感中提炼具体、易记的核心歌名。中文核心歌名建议 2 至 8 个字；这个长度建议只适用于核心歌名，不限制后续可选描述词。遵循指定语种。",
   "分别为两个候选提炼不同的核心歌名和记忆点。alternateTitle 不可只复用 title 的核心名，再替换描述词或添加、删除后缀。避免套用知名歌名、堆砌抽象情绪词和近义改写。",
@@ -83,12 +88,12 @@ const expertReview = [
   "languageMatches 是表示歌词语种是否合格的 JSON 布尔值。findings 含 1 到 12 条中文评语，每条非空且不超过 1000 字。",
 ].join("");
 const tasks = {
-  instrumental: `为纯音乐设计两个候选歌名和一份乐曲风格描述。参考所给音乐人的曲风、情绪、乐器和提示词模板，忽略模板中有关填词或人声演唱的要求。language 指定歌名的语种。先构思乐曲，title 从最有辨识度的声音或画面提炼，alternateTitle 从另一处声音细节或情绪转折提炼。${titleGuidance} style 描述器乐编制、节奏、氛围和编曲走向，最多 ${lyricStyleLimit} 个字符。只返回 JSON 对象，按 {style, title, alternateTitle} 的顺序填写。`,
-  generate: `根据创作输入推断合适的原创歌词、语言和风格。优先遵守灵感中明确提出的要求，缺省时参考音乐人设定和提示词模板。${quality} 先写歌词再起名。title 优先提炼副歌里最有记忆点的口语短句，没有副歌时从核心段落提炼。alternateTitle 从同一首歌词中的另一处具体场景、动作或意象提炼。${titleGuidance} style 用简洁的文字描述音乐风格，最多 ${lyricStyleLimit} 个字符。lyrics 只包含完整歌词、可选分段标签和必要的制作说明。creativeSummary 用简短中文概括成稿的主题、情绪、结构和风格选择，供用户阅读。只返回 JSON 对象，按 {style, language, lyrics, title, alternateTitle, creativeSummary} 的顺序填写。`,
+  instrumental: `为纯音乐设计两个候选歌名和一份乐曲风格描述。参考所给音乐人的曲风、情绪、乐器和提示词模板，忽略模板中有关填词或人声演唱的要求。language 指定歌名的语种。先构思乐曲，title 从最有辨识度的声音或画面提炼，alternateTitle 从另一处声音细节或情绪转折提炼。${legacyTitleGuidance} style 描述器乐编制、节奏、氛围和编曲走向，最多 ${lyricStyleLimit} 个字符。只返回 JSON 对象，按 {style, title, alternateTitle} 的顺序填写。`,
+  generate: `根据创作输入推断合适的原创歌词、语言和风格。优先遵守灵感中明确提出的要求，缺省时参考音乐人设定和提示词模板。${quality} 先写歌词再起名。title 优先提炼副歌里最有记忆点的口语短句，没有副歌时从核心段落提炼。alternateTitle 从同一首歌词中的另一处具体场景、动作或意象提炼。${legacyTitleGuidance} style 用简洁的文字描述音乐风格，最多 ${lyricStyleLimit} 个字符。lyrics 只包含完整歌词、可选分段标签和必要的制作说明。creativeSummary 用简短中文概括成稿的主题、情绪、结构和风格选择，供用户阅读。只返回 JSON 对象，按 {style, language, lyrics, title, alternateTitle, creativeSummary} 的顺序填写。`,
   score: `单独评审当前版本的歌词，在其风格和语言目标下判断任务贴合度、表达、结构、节奏与可演唱性、语言自然度和原创辨识度。${quality} 不改写歌词，不给无依据的高分。languageMatches 表示歌词符合目标语种。findings 写明具体问题与可执行建议。${reviewFormat}`,
   rewrite: `按当前版本的反馈改写同一首歌。保留主题、人物、语言、风格及有效记忆点。${quality} 只返回 JSON 对象，格式示例 {"lyrics":"完整改写歌词","creativeSummary":"简述修改"}。lyrics 填完整歌词，creativeSummary 用一两句话概括实际修改。`,
   prompt: `把这次作词和评审中可复用的经验提炼为一份可直接使用的完整作词提示词。若提供原提示词，保留其适用方向并修正实际暴露的问题。保留可调整的风格、语种和内容参数，避免带入这首歌的歌词或专有细节。只返回 JSON 对象 {prompt}。`,
-  inspire: `为所选发布平台和艺人的创作方向构思一个原创歌曲灵感。参考艺人的风格、语种、情绪和创作类型。仅参考提示词模板的创作方向。先确定灵感，title 从核心场景提炼，alternateTitle 从另一处动作或情绪转折提炼。纯音乐用场景和声音表达。${titleGuidance} inspiration 用不超过 ${lyricInspirationLimit} 个字符描述主题、具体场景、情绪走向和可发展的音乐构想。省略歌词、独立风格字段和评分。只返回 JSON 对象，按 {inspiration, title, alternateTitle} 的顺序填写。`,
+  inspire: `为所选发布平台和艺人的创作方向构思一个原创歌曲灵感。参考艺人的风格、语种、情绪和创作类型。仅参考提示词模板的创作方向。先确定灵感，title 从核心场景提炼，alternateTitle 从另一处动作或情绪转折提炼。纯音乐用场景和声音表达。${legacyTitleGuidance} inspiration 用不超过 ${lyricInspirationLimit} 个字符描述主题、具体场景、情绪走向和可发展的音乐构想。省略歌词、独立风格字段和评分。只返回 JSON 对象，按 {inspiration, title, alternateTitle} 的顺序填写。`,
   reviewInspiration: `独立评审提供的两个歌名与同一创作灵感。评估它们与发布平台及艺人方向的贴合度、原创性、清晰度和可发展性。languageMatches 表示歌名和创作方向符合艺人的语种目标，未指定语种时填 true。只评审，保留原文。${reviewFormat}`,
 };
 
@@ -469,11 +474,12 @@ export class LyricWritingService {
   private messages(job: Job): ProviderTextRequest["messages"] {
     const generatedTitleContext = job.phase === "generate" && job.titleAvoidance
       ? { songType: job.songType, titleAvoidance: job.titleAvoidance } : undefined;
-    const generatedTitleGuidance = generatedTitleContext ? genreTitleGuidance : "";
+    const applyGeneratedTitleGuidance = (task: string) => generatedTitleContext
+      ? task.replace(legacyTitleGuidance, titleGuidance + genreTitleGuidance) : task;
     if (job.kind === "inspiration") {
       const context = { platform: job.inspirationPlatform, musician: job.musician };
       if (job.phase === "generate") return [
-        { role: "system", content: tasks.inspire + generatedTitleGuidance },
+        { role: "system", content: applyGeneratedTitleGuidance(tasks.inspire) },
         { role: "user", content: JSON.stringify({ ...context, promptTemplate: job.template, ...generatedTitleContext }) },
       ];
       const { title, alternateTitle, inspiration } = job.inspirationResult!;
@@ -524,7 +530,7 @@ export class LyricWritingService {
     const gender = job.musician?.gender;
     const vocalGuidance = job.planAttemptId && task === "generate" && (gender === "male" || gender === "female")
       ? `本次计划的主唱为${gender === "male" ? "男声" : "女声"}。音乐风格 style 的主唱描述须与该配置一致。` : "";
-    return [{ role: "system", content: (useExpertReview ? expertReview : tasks[task]) + generatedTitleGuidance + guidance + rewriteGuidance + limit + vocalGuidance },
+    return [{ role: "system", content: applyGeneratedTitleGuidance(useExpertReview ? expertReview : tasks[task]) + guidance + rewriteGuidance + limit + vocalGuidance },
       { role: "user", content: JSON.stringify(input) }];
   }
 
