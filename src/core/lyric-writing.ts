@@ -270,7 +270,7 @@ export class LyricWritingService {
     if (!items.length) return [];
 
     // Match lyricResultVersion: a result ID takes priority, then a current ID, otherwise the last version.
-    // A missing match skips the attempt, so an earlier attempt can still supply a title.
+    // A missing match or falsy last version skips the attempt, as in the previous JavaScript lookup.
     const selectedDraftTitles = this.repo.db.prepare(`WITH sibling_jobs AS (
       SELECT job.data, stage.rowid AS stage_rowid, json_extract(stage.data, '$.value.ordinal') AS stage_ordinal,
         coalesce(nullif(json_extract(job.data, '$.resultVersionId'), ''),
@@ -281,14 +281,25 @@ export class LyricWritingService {
       WHERE stage.id GLOB ? AND json_extract(stage.data, '$.value.runId') = ?
         AND json_extract(stage.data, '$.value.itemId') = ? AND json_extract(stage.data, '$.value.stage') = 'lyric_write'
     )
-    SELECT CASE WHEN json_type(version.value, '$.title') = 'text'
-        THEN json_extract(version.value, '$.title') END AS title,
-      CASE WHEN json_type(version.value, '$.alternateTitle') = 'text'
-        THEN json_extract(version.value, '$.alternateTitle') END AS alternateTitle
+    SELECT CASE WHEN version.type = 'object' THEN
+        CASE WHEN json_type(version.value, '$.title') = 'text' THEN json_extract(version.value, '$.title') END
+      END AS title,
+      CASE WHEN version.type = 'object' THEN
+        CASE WHEN json_type(version.value, '$.alternateTitle') = 'text' THEN json_extract(version.value, '$.alternateTitle') END
+      END AS alternateTitle
     FROM sibling_jobs
     JOIN json_each(sibling_jobs.data, '$.versions') AS version
-      ON CASE WHEN version_id IS NOT NULL THEN json_extract(version.value, '$.id') = version_id
-        ELSE version.key = json_array_length(sibling_jobs.data, '$.versions') - 1 END
+      ON json_type(sibling_jobs.data, '$.versions') = 'array'
+      AND CASE WHEN version_id IS NOT NULL THEN
+        CASE WHEN version.type = 'object' THEN json_extract(version.value, '$.id') = version_id END
+      ELSE version.key = json_array_length(sibling_jobs.data, '$.versions') - 1
+        AND CASE
+          WHEN version.type IN ('null', 'false') THEN 0
+          WHEN version.type IN ('integer', 'real') THEN version.atom <> 0
+          WHEN version.type = 'text' THEN version.atom <> ''
+          ELSE 1
+        END
+      END
     ORDER BY stage_ordinal DESC, stage_rowid, version.key
     LIMIT 1`);
 
