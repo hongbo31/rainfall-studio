@@ -34,3 +34,10 @@ Windows 用户需要一个可直接安装的 EXE。使用 PowerShell 7 在仓库
 - 同轮 ZIP：RainfallStudio-0.12.0-preview.15-8645b544d973-win-x64.zip，SHA-256 33f826f915899f410f1e1acbbfe7a21ceaaa80e933dc10fcff656322e0fa668b。构建记录 E:\WYX\wyx\rainfall-studio-build\records\rsb-4fd77dad.json；Squirrel feed staging 在 E:\WYX\wyx\rainfall-studio-build\out\update-feed\0.12.0-preview.15-4fd77dad。
 - 验证：Setup 内完整 Squirrel 载荷与 3,563 个清单文件逐项匹配；隔离运行验证 SQLite、PowerShell 7、FFmpeg/FFprobe、Sharp、Chromium 与 APK 通过。未安装 Setup、未打开客户端或更新桌面指针；安装器未签名，Google/Suno 账号未做原生登录验收。
 - 隔离源码快照保留于 E:\WYX\wyx\rainfall-studio-build\source-snapshots\rainfall-studio-preview.15-7332999e，提交 8645b544d973738786102197a9bfa1cb7a4a4795；可用于追溯该包源文件。旧产物按 -DeferCleanup 要求保留。
+
+## 2026-11-27 preview.16 GitHub 更新引导包
+
+- 源码提交 `5813b8e5b7d7e1eb7bf4429493ff00996f2e2695` 已推送至私有 `origin/main`。包版本为 `0.12.0-preview.16`，Setup 默认 feed 指向 `https://github.com/hongbo31/rainfall-studio-updates/releases/latest/download/`。
+- 使用 PowerShell 7 执行 `./Build-Latest.ps1 -Local -Installer -DeferCleanup -BuildRoot ../rainfall-studio-build`。Setup：`E:\WYX\wyx\rainfall-studio-build\out\RainfallStudio-0.12.0-preview.16-5813b8e5b7d7-win-x64-Setup.exe`，563,182,592 字节，SHA-256 `4f65cb6dca835853337421991c0182cdf358968adde87b4412483cc9af4071e3`。
+- 更新包：`E:\WYX\wyx\rainfall-studio-build\out\update-feed\0.12.0-preview.16-471de136\RainfallStudioClient-0.12.0-preview16-full.nupkg`，564,427,275 字节，SHA-256 `82184ca7412ab333a79ffa0a674f5c7eced6b71ab2c868a474f1b086fcfdcb68`。`RELEASES` SHA-256 为 `2056fa70416d3b1a977a5dbec5a3151dc13cb92b30d3fbb5539a8241df315830`；包内 3,563 个文件及随包运行组件验证通过。构建记录 `E:\WYX\wyx\rainfall-studio-build\records\rsb-471de136.json`。
+- 旧版没有自助更新源，首次需手动安装该引导包。尚未创建/公开更新仓库，也未上传附件、安装客户端或改桌面指针；公开分发二进制需用户明确确认。未运行测试套件、原生安装和更新验收。

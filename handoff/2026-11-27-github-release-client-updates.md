@@ -27,10 +27,11 @@
 
 ## 本轮状态（2026-11-27）
 
-- 当前源码包版本从 `0.12.0-preview.15` 提升为 `0.12.0-preview.16`，拟用的公开更新地址已加入 `Build-Latest.ps1`。
-- 当前工作区存在大量未提交的代码、测试与 handoff 改动；准备提交前需检查完整 `git status`、差异、凭据/个人数据和构建结果，不要覆盖或丢弃现有修改。
-- `git fetch origin main` 遇到 `Recv failure: Connection was reset`；`gh` CLI 未安装。此前已有 push 403 记录。已通过现有 GitHub 浏览器会话确认源仓库 Releases 标注为私有；独立更新仓库尚未创建。
-- 本轮尚未提交/推送、构建 preview.16 或发布 GitHub Release；未安装/切换桌面客户端。构建地址目前指向尚不存在/未验证的更新仓库，需经用户确认创建后才能作为可用更新地址。
+- 当前源码包版本从 `0.12.0-preview.15` 提升为 `0.12.0-preview.16`，安装程序默认更新地址设为独立更新仓库 `https://github.com/hongbo31/rainfall-studio-updates/releases/latest/download/`。
+- 源码与当时工作区改动已提交并推送至私有源码仓库，提交 `5813b8e5b7d7e1eb7bf4429493ff00996f2e2695`（`feat: add GitHub client self-updates`）。提交包括 111 个文件；检查未发现凭据/个人数据，`git diff --check`、更新器相关静态检查及版本一致性检查通过。没有运行测试套件。
+- preview.16 已用 PowerShell 7 和 `Build-Latest.ps1 -Local -Installer -DeferCleanup -BuildRoot ../rainfall-studio-build` 构建。Setup 位于 `E:\WYX\wyx\rainfall-studio-build\out\RainfallStudio-0.12.0-preview.16-5813b8e5b7d7-win-x64-Setup.exe`，大小 563,182,592 字节，SHA-256 `4f65cb6dca835853337421991c0182cdf358968adde87b4412483cc9af4071e3`。完整更新包位于 `E:\WYX\wyx\rainfall-studio-build\out\update-feed\0.12.0-preview.16-471de136\RainfallStudioClient-0.12.0-preview16-full.nupkg`，大小 564,427,275 字节，SHA-256 `82184ca7412ab333a79ffa0a674f5c7eced6b71ab2c868a474f1b086fcfdcb68`；`RELEASES` 与 3,563 文件载荷及随包运行组件验证通过。构建记录为 `E:\WYX\wyx\rainfall-studio-build\records\rsb-471de136.json`。
+- 现有源码仓库的 Releases 页面说明其为私有；客户端没有 GitHub 认证能力，所以它不能作为公开用户的更新源。`hongbo31/rainfall-studio-updates` 尚未创建，也没有上传或公开任何安装包。创建公开更新仓库并公开发布二进制前需用户确认；本轮未安装 Setup、未更新桌面指针、未操作真实账号。
+- 已安装的旧版本没有更新源，需要先手动安装一次 preview.16；之后发布更高版本到可匿名访问的更新源，才可从客户端点击检查更新并更新。
 
 ## 后续与回退
 
