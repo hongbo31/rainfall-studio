@@ -37,8 +37,18 @@
 
 - 用户确认源码仓库已改为公开。匿名 GitHub API 确认 `hongbo31/rainfall-studio` 的 `private=false`；源码提交 `edd2171e5ec3f7f024a6ebbb0c77126c6589811e` 已推送，更新 URL 改为此仓库。
 - preview.17 Setup 和 Squirrel 更新包已构建，路径、大小和 SHA-256 见 [Windows 安装包交接](2026-11-26-windows-installer.md)。构建结果通过安装载荷 3,563 文件清单、SQLite、PowerShell、FFmpeg/FFprobe、Sharp、Chromium 与 APK 布局验证。使用 `-DeferCleanup`，旧包保留。
-- GitHub 当前旧 Release 均为预发布，`GET /repos/hongbo31/rainfall-studio/releases/latest` 返回 404。preview.17 必须在 GitHub 作为非预发布、非草稿的 Latest Release 发布（标题/说明仍写明 preview），否则客户端的 `latest/download/RELEASES` 会不可用。
-- 待完成：推送 `v0.12.0-preview.17` 标签，上传 `RELEASES`、同名完整 `.nupkg`、Setup 和 `.sha256`；发布后用未认证请求验证 latest、RELEASES 与包可匿名下载。当前未上传资产、未安装客户端、未更新桌面指针或做原生更新验收。旧安装版需手动安装 preview.17 一次。
+- 当时 GitHub 旧 Release 均为预发布，`GET /repos/hongbo31/rainfall-studio/releases/latest` 返回 404。preview.17 必须在 GitHub 作为非预发布、非草稿的 Latest Release 发布（标题/说明仍写明 preview），否则客户端的 `latest/download/RELEASES` 会不可用。
+- 初次检查确认 `v0.12.0-preview.17` 已是 Latest，但没有附加 `RELEASES` 与完整 `.nupkg`；因此客户端请求 `/releases/latest/download/RELEASES` 和包文件都返回 404。不是客户端 feed URL 错误。
+
+## preview.17 更新资产补齐与公开验证（2026-11-27）
+
+- 已在现有公开 Latest Release `v0.12.0-preview.17` 上传并保存以下资产：
+  - `RELEASES`：102 字节，SHA-256 `e5bdc7f359868650ce4b77b604f5208a90dba2d385daf3d1cb836b1acfb59793`。
+  - `RainfallStudioClient-0.12.0-preview17-full.nupkg`：564,427,277 字节，SHA-256 `568952880f7dd0134e8f4392bb0af803b3b472e5974a88edf9412ea30f6d8689`。
+  - `RainfallStudio-0.12.0-preview.17-edd2171e5ec3-win-x64-Setup.exe`：563,182,592 字节，SHA-256 `8929aec19ac17804dc7c1612477dc542ba97412fd9b3ce5e120571d7107c9e7d`。
+  - Setup `.sha256` sidecar：131 字节。
+- 未登录 `curl -I -L` 检查以上 `latest/download` 清单、完整包和 Setup 均最终返回 HTTP 200；`RELEASES` 正文匹配完整 `.nupkg` 文件名及 564,427,277 字节，和构建产物一致。GitHub Release 页面显示该版本仍为 Latest、附件已保存。
+- 未修改客户端源码或 feed URL。未安装客户端、未切换桌面入口，也未做原生“检查更新/重启并更新”验收；旧安装版若未内置公开 feed，仍需先手动安装 preview.17 Setup 一次，再用“配置中心 → 客户端更新”检查更高版本。
 
 ## 后续与回退
 
