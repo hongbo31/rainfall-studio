@@ -33,6 +33,13 @@
 - 初次构建的 preview.16 使用了尚不存在的独立 feed，未发布，不能用作客户端引导包。
 - 已安装的旧版本没有更新源，需要先手动安装一次带公开 feed 的引导包；之后发布更高版本到可匿名访问的更新源，才可从客户端点击检查更新并更新。
 
+## preview.17 构建与 GitHub 发布状态（2026-11-27）
+
+- 用户确认源码仓库已改为公开。匿名 GitHub API 确认 `hongbo31/rainfall-studio` 的 `private=false`；源码提交 `edd2171e5ec3f7f024a6ebbb0c77126c6589811e` 已推送，更新 URL 改为此仓库。
+- preview.17 Setup 和 Squirrel 更新包已构建，路径、大小和 SHA-256 见 [Windows 安装包交接](2026-11-26-windows-installer.md)。构建结果通过安装载荷 3,563 文件清单、SQLite、PowerShell、FFmpeg/FFprobe、Sharp、Chromium 与 APK 布局验证。使用 `-DeferCleanup`，旧包保留。
+- GitHub 当前旧 Release 均为预发布，`GET /repos/hongbo31/rainfall-studio/releases/latest` 返回 404。preview.17 必须在 GitHub 作为非预发布、非草稿的 Latest Release 发布（标题/说明仍写明 preview），否则客户端的 `latest/download/RELEASES` 会不可用。
+- 待完成：推送 `v0.12.0-preview.17` 标签，上传 `RELEASES`、同名完整 `.nupkg`、Setup 和 `.sha256`；发布后用未认证请求验证 latest、RELEASES 与包可匿名下载。当前未上传资产、未安装客户端、未更新桌面指针或做原生更新验收。旧安装版需手动安装 preview.17 一次。
+
 ## 后续与回退
 
 - 更新 Release 必须保持非预发布状态，确保 `latest/download` 持续解析；不能只发布 GitHub Pre-release。

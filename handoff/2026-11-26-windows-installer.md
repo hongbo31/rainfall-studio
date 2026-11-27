@@ -35,6 +35,15 @@ Windows 用户需要一个可直接安装的 EXE。使用 PowerShell 7 在仓库
 - 验证：Setup 内完整 Squirrel 载荷与 3,563 个清单文件逐项匹配；隔离运行验证 SQLite、PowerShell 7、FFmpeg/FFprobe、Sharp、Chromium 与 APK 通过。未安装 Setup、未打开客户端或更新桌面指针；安装器未签名，Google/Suno 账号未做原生登录验收。
 - 隔离源码快照保留于 E:\WYX\wyx\rainfall-studio-build\source-snapshots\rainfall-studio-preview.15-7332999e，提交 8645b544d973738786102197a9bfa1cb7a4a4795；可用于追溯该包源文件。旧产物按 -DeferCleanup 要求保留。
 
+## 2026-11-27 preview.17 GitHub 自更新引导包
+
+- 源码提交 `edd2171e5ec3f7f024a6ebbb0c77126c6589811e` 已推送至公开仓库 `origin/main`。包版本为 `0.12.0-preview.17`；Setup 内的默认更新 feed 为 `https://github.com/hongbo31/rainfall-studio/releases/latest/download/`。
+- 使用 PowerShell 7 执行 `./Build-Latest.ps1 -Local -Installer -DeferCleanup -BuildRoot ../rainfall-studio-build`。Setup：`E:\WYX\wyx\rainfall-studio-build\out\RainfallStudio-0.12.0-preview.17-edd2171e5ec3-win-x64-Setup.exe`，563,182,592 字节，SHA-256 `8929aec19ac17804dc7c1612477dc542ba97412fd9b3ce5e120571d7107c9e7d`。
+- 更新包：`E:\WYX\wyx\rainfall-studio-build\out\update-feed\0.12.0-preview.17-c8749191\RainfallStudioClient-0.12.0-preview17-full.nupkg`，564,427,277 字节，SHA-256 `568952880f7dd0134e8f4392bb0af803b3b472e5974a88edf9412ea30f6d8689`。同目录 `RELEASES` 为 102 字节，SHA-256 `e5bdc7f359868650ce4b77b604f5208a90dba2d385daf3d1cb836b1acfb59793`；其中包名和附件名逐字一致。
+- Setup `.sha256` 文件为 `RainfallStudio-0.12.0-preview.17-edd2171e5ec3-win-x64-Setup.exe.sha256`，SHA-256 `7433dfeff0b927344eb4961d06b4066ee3aecfffb115b14e3716f14c0058b1d2`。构建记录 `E:\WYX\wyx\rainfall-studio-build\records\rsb-c8749191.json`。安装载荷清单和随包 SQLite、PowerShell 7、FFmpeg/FFprobe、Sharp、Chromium、APK 布局验证通过。
+- GitHub 更新源的 latest endpoint 只接受非预发布、非草稿 Release。为了使 `/releases/latest/download/RELEASES` 有效，v0.12.0-preview.17 Release 的 GitHub Pre-release 选项必须关闭；Release 标题与说明仍明确称其为预览版。旧客户端首次需手动安装 Setup，此后才能点击检查更新。
+- 使用 `-DeferCleanup`，没有清理旧包、安装 Setup、打开客户端、运行测试套件或更新桌面指针。Release 上传及匿名 feed 检查待完成。
+
 ## 2026-11-27 preview.16 GitHub 更新引导包
 
 - 源码提交 `5813b8e5b7d7e1eb7bf4429493ff00996f2e2695` 已推送至私有 `origin/main`。包版本为 `0.12.0-preview.16`，Setup 默认 feed 指向 `https://github.com/hongbo31/rainfall-studio-updates/releases/latest/download/`。
