@@ -19,6 +19,7 @@ import { fanqieChromeLaunchOptions } from "./fanqie/chrome-executable";
 import { windowsChromiumExecutable } from "../shared/host-executable-paths";
 import { capturePuleTaskLogin, openIsolatedPuleTaskWindow, TaskMusicWindows,
   type LaunchTaskMusicWindow, type TaskMusicWindowScope } from "./task-music-windows";
+import { repairPuleCreateDisplay } from "./pule-page-recovery";
 
 export function scopedDirectory(root: string, ...parts: string[]) {
   let directory = root;
@@ -331,6 +332,9 @@ export class PlatformBrowserSessions {
     guard();
     if (!existing || page.url() === "about:blank")
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: 20_000 });
+    guard();
+    if (account.provider === "yourmusic" && new URL(page.url()).pathname === "/create")
+      await repairPuleCreateDisplay(page, guard);
     guard();
     if (puleLogin) this.puleLoginPages.add(page);
     await page.bringToFront();

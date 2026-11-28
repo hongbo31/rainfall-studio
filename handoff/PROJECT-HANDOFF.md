@@ -2,6 +2,10 @@
 
 状态核对基于 2026-11-27（北京时间）。新会话开始时，重新核对 Git、桌面指针和当前任务。平台回执与账号状态取最新可验证结果。
 
+## 本轮歌词能力升级（2026-11-28）
+
+AI 作词页面和计划节点共用的生成、评分、改写已加入版本化曲风/语体指导、具体词句诊断和保留亮点的修订规则。新人声任务启用，旧任务及沿用旧稿的重试保持来源版本；纯音乐不添加歌词规则，新增提示开销计入预算。作词编辑和独立技术复审通过，16 项新回归通过；原作词套件另有 3 项本轮前基线失败，全仓类型检查有 12 条其他诊断。真实模型输出/试听及原生窗口未验收，已安装客户端未更新。[实现、日志与回退](2026-11-28-genre-lyric-craft.md)
+
 ## 项目与版本
 
 Windows x64 EXE 安装包构建与随包运行验证见[安装包交接](2026-11-26-windows-installer.md)。
@@ -138,3 +142,5 @@ Rainfall Studio 是本地优先的 Windows AI 音乐工作台。用户用它管�
 - 2026-11-27 计划中心首页曾优先显示 `active` 而非最新执行；历史阻塞 run 即使已无未结工作，仍被 `planRunActive` 视为活跃，导致第 92 次“已阻塞”覆盖第 94 次“本次已完成”。现首页结果始终优先最新 run，`active` 仅保留仍会阻止新执行的未结 run。静态复核及 CRLF-aware diff check；未运行测试/类型检查/构建或桌面验收，客户端未更新。[计划中心最新执行状态](2026-11-27-plan-center-latest-run-status.md)
 - 2026-11-27 按 Windows x64 完整安装包流程打包当前工作区为 v0.12.0-preview.15 Setup EXE；因工作区有未提交改动，使用构建根中的隔离源码快照并在快照提交，不改动当前分支。Setup 563,182,080 字节，SHA-256 a3e16df6146d0567f7f24f542a88ce4893aeda069bb23611ae94b2a5e3158092。内嵌 3,563 文件及随包 SQLite、PowerShell、FFmpeg/FFprobe、Sharp、Chromium、APK 验证通过。未安装、未启动客户端、未切换桌面入口；缺少更新源 URL，安装包的在线自助更新未配置。重复打包命令与快照处理见 [Windows 安装包交接](2026-11-26-windows-installer.md)。
 - 2026-11-27 用户授权将代码和客户端更新发布到 GitHub。公开源码提交 `edd2171e5ec3f7f024a6ebbb0c77126c6589811e` 已推送；preview.17 Setup 与 Squirrel 更新包已构建，Feed URL 为 `https://github.com/hongbo31/rainfall-studio/releases/latest/download/`，清单/随包运行组件验证通过。此前 404 的直接原因是 Latest Release 缺少 `RELEASES` 与完整 `.nupkg` 附件；现已上传清单、完整包、Setup 和 `.sha256`。未登录 HTTP 检查三条 latest 下载地址最终均为 200，且清单内包名与字节数匹配。旧客户端仍需先手动安装 preview.17 Setup；没有安装客户端、切换桌面指针或运行原生更新验收。详见 [Windows 安装包交接](2026-11-26-windows-installer.md) 与 [GitHub Release 客户端更新](2026-11-27-github-release-client-updates.md)。
+- 2026-11-28 谱乐 AI `/create` 浏览器窗口偶尔只显示放大的蓝色首页图标。隔离无头 Chrome 访问同一站点时创作表单正常，未发现 JS 异常或资源请求失败；更像该账号持久浏览器资料里的站点缩放/缓存异常，verified-desktop.json 缺失，未查看或改写账号资料。现由 `src/main/pule-page-recovery.ts` 统一供账号管理和生成任务页调用，打开该页先将站点缩放复位；仅当 4 秒后仍无创作区、自定义模式标签及交互控件时，才临时绕过缓存与 Service Worker 重载一次，健康表单不会重载，且不清 Cookie/Local Storage。只读无头观察，不是项目测试；`git diff --check` 通过。全仓 TypeScript 检查有 12 条其他文件诊断，未涉及本次修改文件；未运行测试/构建或原生验收，安装客户端未更新。[谱乐创作页显示异常恢复](2026-11-28-pule-create-display-recovery.md)
+- 2026-11-28 任务中心谱乐生成记录仅保留通用错误 `PULE_CONTROL_UNAVAILABLE`。源码显示该码可能来自创作标签页、表单字段、纯音乐开关或生成按钮；错误记录为失败，意味着生成点击前尚未授权派发，因此这次未记为已调用收费生成。用户此前的巨大图标页面与 Plan Center 隔离生成页未使用账号打开路径的恢复逻辑相符，但附件缺少 trace，不能确认本次具体控件。现账户窗口与 Plan Center 谱乐任务共用 `/create` 恢复逻辑：先等待 12 秒 SPA 渲染，再在异常时无缓存重载一次并最多等待 12 秒；同一次导航只调用一次且不抢前台。通用控件码已拆为创作页、表单、各字段和生成按钮错误码。`git diff --check` 通过；`tsc --noEmit` 未通过，诊断均来自本轮未修改文件及缺失依赖，目标文件无诊断。未运行测试、构建、真实生成或原生验收；verified-desktop.json 缺失、客户端未更新。[谱乐创作控件未出现](2026-11-28-pule-control-unavailable.md)

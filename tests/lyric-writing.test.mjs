@@ -612,15 +612,19 @@ test("the automatic response retry stops when the settled call leaves insufficie
   const { repo, service, input, result } = setup(t);
   const artistId = randomUUID();
   repo.save("accountLocalArtists", { id: artistId, name: "歌手" });
-  service.startForPlan({ ...input, artistId, budgetMicros: 100 }, randomUUID());
+  service.startForPlan({ ...input, artistId }, randomUUID());
   const request = service.claim(input.id);
+  // Leave one micro after settlement, independently of the current version's system prompt size.
+  const claimed = repo.get("lyricJobs", input.id);
+  const budgetMicros = claimed.reservedMicros;
+  repo.save("lyricJobs", { ...claimed, budgetMicros });
   const outcome = service.record({ id: input.id, operationId: request.operationId, result: {
     ...result(request, null), status: "invalid", content: null, finishReason: "length", reason: "TEXT_RESPONSE_METADATA_INVALID",
-    usage: { promptTokens: 9900 - request.maxOutputTokens, completionTokens: request.maxOutputTokens, cachedTokens: 0 },
+    usage: { promptTokens: (budgetMicros - 1) * 100 - request.maxOutputTokens, completionTokens: request.maxOutputTokens, cachedTokens: 0 },
   } });
   assert.equal(outcome.state, "blocked");
   assert.equal(outcome.reason, "TEXT_OUTPUT_TRUNCATED");
-  assert.equal(outcome.spentMicros, 99);
+  assert.equal(outcome.spentMicros, budgetMicros - 1);
   assert.equal(outcome.reservedMicros, 0);
   assert.deepEqual(service.ready(), []);
 });

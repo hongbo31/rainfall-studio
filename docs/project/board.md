@@ -1,9 +1,10 @@
 # Rainfall Studio 项目台账
 
-更新时间为 2026-11-27，北京时间。负责人为 xb。
+更新时间为 2026-11-28，北京时间。负责人为 xb。
 
 | ID | 任务 | 负责人 | 状态 | 当前结果或下一步 |
 | --- | --- | --- | --- | --- |
+| RF-023 | 按不同曲风升级 AI 作词的歌词能力 | xb / product / fullstack | 验收中 | 已接入共享 Core 的生成/评分/改写，完成作词编辑与独立技术复审。新任务保存规则版本，旧任务/沿用原稿重试保持来源规则；纯音乐排除，新提示开销进入预算，不增加阶段或改写上限。新增 16/16 回归通过，旧套件 30/33（相同 3 项基线失败）；全仓类型检查有 12 条其他诊断。未调用真实模型、试听或更新安装客户端，艺术质量待验收。[设计](../superpowers/specs/2026-11-28-genre-lyric-craft-design.md) · [计划](../superpowers/plans/2026-11-28-genre-lyric-craft.md) · [交接](../../handoff/2026-11-28-genre-lyric-craft.md) |
 | RF-001 | 立项、配置团队和建立 xb 沟通入口 | xb | 完成 | 八个角色已配置，xb 对话可用。product 和 qa 已回报首次只读派工结果。见[立项交接](../../handoff/2026-11-23-rainfall-project-kickoff.md) |
 | RF-002 | 番茄目录上传正式环境验收 | qa | 待确认 | 目录上传的实时署名已做模拟官网回归，真实账号投稿、签约和 Windows 原生流程按正式验收范围安排 |
 | RF-003 | 音乐生成与下载恢复正式环境验收 | qa | 待确认 | 核对谱乐 AI 与苏诺之音的原回执恢复及归档，依据授权安排真实账号验收 |
@@ -23,7 +24,7 @@
 | RF-016 | 排查任务中心 AI 作词结果未知、用量待核对 | xb / backend / qa | 分析完成 | 已确认 unknown 会持久化，任务中心虽每约 4 秒刷新但没有同步 API 自动对账；用量缺失、调用异常或进程中断可能导致该状态，作词多轮调用会累加耗时。截图无法判定本次具体分支；正式运行日志因当前桌面指针缺失未读取。建议先区分发送前错误与派发后不确定结果，再完善人工/供应商回执对账与进度展示。[本轮交接](../../handoff/2026-11-23-ai-lyric-unknown-reconciliation.md) |
 | RF-020 | 排查任务中心关联计划作词到歌曲生成耗时 | xb / backend / qa | 阻塞 | 两位同学已只读审计代码和日志可用性。源码/构建目录无目标运行日志副本；当前 verified-desktop.json 缺失，无法定位权威运行库。代码确认串行多轮作词、unknown 无自动回执核对，以及生成/WAV 独立等待等可能来源，但不能定为本次根因。取得有效桌面指针或脱敏 run 时间线后继续定位，不重跑收费任务。[排查交接](../../handoff/2026-11-24-linked-plan-workflow-latency.md) |
 | RF-021 | 苏诺之音创作后确认校验歌词 | xb / backend | 验收中 | 点击创作后最多等 20 秒，弹出歌词校验时点击唯一“提交校验后歌词”按钮，否则继续现有结果校验。共享 Main 浏览器函数适用于任务与计划入口。静态变更完成，测试、构建与 Windows 原生验收待做。[交接](../../handoff/2026-11-24-suno-optimized-lyrics-confirmation.md) |
-| RF-022 | 提升不同曲风歌名的辨识度并降低重复 | xb / fullstack | 验收中 | AI 作词的人声、纯音乐和灵感歌名均要求核心名贴合内容与曲风；乐器/制作细节不进入标题，曲风、氛围、年份和“爆款”等可选词由 AI 动态判断。共享 Core 保留同批与同艺人最近 50 首标题避重，并兼容旧任务原提示和预算。独立静态复审发现的问题已修复，`git diff --check` 通过；未跑测试、构建或真实模型，浏览器和 Windows 原生表现待验收。[设计](../superpowers/specs/2026-11-27-genre-aware-song-titles-design.md) · [计划](../superpowers/plans/2026-11-27-genre-aware-song-titles.md) · [交接](../../handoff/2026-11-27-genre-aware-song-titles.md) |
+| RF-022 | 提升不同曲风歌名的辨识度并降低重复 | xb / fullstack | 验收中 | AI 作词的人声、纯音乐和灵感歌名均要求核心名贴合内容与曲风；类型/形态/用途明确时，至少一个候选要自然带准确类型词，热度词/年份仍动态可选。乐器/制作细节不得进入标题。共享 Core 保留同批与同艺人最近 50 首标题避重，并兼容旧任务提示和预算。独立静态复审无源码问题，提示长度未增加，`git diff --check` 通过；实际模型表现、测试/构建及浏览器和 Windows 原生验收待做。[设计](../superpowers/specs/2026-11-27-genre-aware-song-titles-design.md) · [计划](../superpowers/plans/2026-11-27-genre-aware-song-titles.md) · [交接](../../handoff/2026-11-27-genre-aware-song-titles.md) |
 | RF-017 | 明确提示 AI 作词 API 余额不足 | backend / frontend | 验收中 | 在用量核验前识别明确的 HTTP 402 和余额/额度错误码；任务中心与计划中心显示醒目的余额不足提示，并提供配置中心入口。普通 unknown 仍保持待对账语义。静态 diff 检查通过，未运行测试或界面验收。[本轮交接](../../handoff/2026-11-23-text-api-balance-warning.md) |
 | RF-018 | 完善任务中心、计划中心需求及异常处理 | product / backend / frontend / qa / xb | 完成 | 2026-11-23 本线程内由产品、后端、前端和 QA 完成评审；2026-11-24 susu 连续回复“继续”，确认推荐默认：同计划单活跃 run、usage unknown 保留 reservation 并阻断耗费型下游、核对追加且 not_found 不解锁重试、无数据不设等待阈值。没有创建外部日历事件或发送邀请。[评审稿与决策收口](../../handoff/2026-11-23-task-plan-center-requirements-review.md) · [决策单](../../handoff/2026-11-24-rf019-decision-sheet.md) |
 | RF-019 | 任务中心、计划中心异常状态表达与安全恢复 MVP | product / backend / frontend / qa | 进行中 | 按 susu 连续“继续”确认的推荐默认推进 E-H：Core 事务按 planId 原子限制跨来源单活跃 run；计划中心历史纳入任务中心来源，普通任务中心遇到已有执行时以 owned=false 关联并可查看，不接管停止权；定时任务在预检查或原子仲裁冲突时跳过计划；人工/系统/供应商 reconciliation 追加保存状态、证据指纹、来源、操作者、时间和原因，`not_found` 不改写原 attempt，UI 隐藏重试且 Core retry 拒绝，重试仅保留明确 failed；作词 usage unknown 已有 reservation 并阻断下游，不重复实现；等待阈值没有依据，保留耗时与本地更新时间提示、不自动取消或重发。前端展示核对记录，证据 ID 在 Core 投影脱敏；人工记录不验证外部证据真实性/归属。`tests/publication-tasks.test.mjs` 38 项通过；diff check 通过。TypeScript 检查受当前缺少三个依赖阻塞；完整集成和双端验收未做。[实施拆分](../../handoff/2026-11-23-rf019-task-plan-center-mvp-breakdown.md) · [决策单](../../handoff/2026-11-24-rf019-decision-sheet.md) · [验收清单](../../handoff/2026-11-23-rf019-task-plan-acceptance-checklist.md) · [本轮交接](../../handoff/2026-11-24-rf019-safe-concurrency-reconciliation.md) |

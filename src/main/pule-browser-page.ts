@@ -5,6 +5,7 @@ import {
 } from "../shared/pule-browser";
 import type { PuleBrowserReceiptLookup, PuleBrowserReceiptMatch } from "../shared/plan-pule";
 import { inspectPuleSession, puleSignInControl, puleSignInDialog } from "./pule-session";
+import { repairPuleCreateDisplay } from "./pule-page-recovery";
 import { preparePuleWave, receivePuleWave } from "./pule-wav-transfer";
 
 export type PulePageInput = PuleStart & Pick<PuleScope, "gender" | "timbre" | "timbreWeight" | "styleWeight"> & { audioPath?: string };
@@ -194,6 +195,12 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
   timeouts: Partial<Timeouts> = {}, phase?: PulePagePhase) {
   const time = { ...productionTimeouts, ...timeouts };
   page.setDefaultTimeout(time.control);
+  let currentStep: PuleStep = "opening";
+  const step = (value: PuleStep) => {
+    currentStep = value;
+    hooks.step(value);
+  };
+  const unavailableControlCode = () => `PULE_${currentStep.toUpperCase()}_CONTROL_UNAVAILABLE`;
   const button = (name: string | RegExp, scope: Page | Locator = page) =>
     visible(scope.getByRole("button", { name, exact: typeof name === "string" }));
   const creationArea = page.locator("#creation-area");
@@ -247,7 +254,10 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
       if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
     }
   };
-  const openCreate = () => page.goto(puleCreateUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+  const openCreate = async () => {
+    await page.goto(puleCreateUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await repairPuleCreateDisplay(page, hooks.guard);
+  };
   const waitForCreate = async (tab: Locator) => {
     let deadline = Date.now() + time.form;
     let signingIn = false;
@@ -256,7 +266,9 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
     do {
       const current = await sessionState();
       if (current === "signed_in") {
-        if (await tab.count()) return;
+        const tabCount = await tab.count();
+        if (tabCount > 1) throw Error("PULE_CREATE_TAB_AMBIGUOUS");
+        if (tabCount === 1) return;
         if (!reopenedCreate && new URL(page.url()).pathname !== createPath) {
           // The official site may send the user to another page after sign-in.
           reopenedCreate = true;
@@ -266,14 +278,14 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
       } else if (current === "login_required" && state === current && !signingIn) {
         signingIn = true;
         deadline = Date.now() + time.login;
-        hooks.step("login");
+        step("login");
         await openLogin();
       }
       state = current;
       await page.waitForTimeout(time.poll);
     } while (Date.now() < deadline);
     await hooks.guard();
-    if (state === "signed_in") throw Error("PULE_CONTROL_UNAVAILABLE");
+    if (state === "signed_in") throw Error("PULE_CREATE_TAB_UNAVAILABLE");
     if (signingIn && state === "login_required") throw Error("PULE_LOGIN_TIMEOUT");
     throw Error("PULE_SESSION_UNVERIFIED");
   };
@@ -313,7 +325,7 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
     throw Error(code);
   };
 
-  const one = (locator: Locator, code = "PULE_CONTROL_UNAVAILABLE", timeout = time.control) =>
+  const one = (locator: Locator, code = unavailableControlCode(), timeout = time.control) =>
     until(async () => {
       const count = await locator.count();
       if (count > 1) throw Error(code);
@@ -324,8 +336,9 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
     await hooks.guard();
     await action.click({ timeout });
   };
-  const fill = async (locator: Locator, value: string, changedCode = "PULE_FORM_VALUE_CHANGED") => {
-    const field = await one(visible(locator), undefined, time.form);
+  const fill = async (locator: Locator, value: string, changedCode = "PULE_FORM_VALUE_CHANGED",
+    unavailableCode = unavailableControlCode()) => {
+    const field = await one(visible(locator), unavailableCode, time.form);
     const expected = value.replace(/\r\n?/gu, "\n");
     await hooks.guard();
     await field.fill(expected, { timeout: time.form });
@@ -360,13 +373,13 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
   await openCreate();
   const customMode = visible(page.getByRole("tab", { name: "自定义模式", exact: true }));
   await waitForCreate(customMode);
-  await click(customMode, undefined, time.form);
+  await click(customMode, "PULE_CREATE_TAB_UNAVAILABLE", time.form);
   const createSongs = async () => {
     // For covers, attach the selected file and bind the processed upload to its new cover control.
     if (input.mode === "cover") {
       if (!input.audioPath) throw Error("PULE_AUDIO_REQUIRED");
       hooks.validateAudio();
-      hooks.step("upload");
+      step("upload");
       await click(button("上传音频"));
       await click(button(/版权歌曲上传/u, dialogs));
       const choose = await one(button("选择音频文件", dialogs));
@@ -380,7 +393,7 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
       await click(button("保存", dialogs));
       const cover = button("翻唱此歌曲");
       let previousCovers: ElementHandle[] = [];
-      hooks.step("processing");
+      step("processing");
       try {
         await submit("processing", button(processing), async () => { previousCovers = await cover.elementHandles(); });
         const readyCover = await until(async () => {
@@ -411,8 +424,9 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
     }
 
     // Set instrumental mode or the configured voice, then verify the form retained each input.
-    hooks.step("form");
-    const instrumental = await one(visible(page.getByRole("switch", { name: "纯音乐", exact: true })));
+    step("form");
+    const instrumental = await one(visible(page.getByRole("switch", { name: "纯音乐", exact: true })),
+      "PULE_INSTRUMENTAL_CONTROL_UNAVAILABLE");
     if (await instrumental.isChecked() !== input.instrumental) {
       await hooks.guard();
       await instrumental.press("Space");
@@ -434,9 +448,11 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
     }
     const title = creationArea.getByRole("textbox", { name: "标题", exact: true })
       .or(creationArea.getByPlaceholder(/^输入歌曲标题(?:（必填）)?$/u));
-    await fill(title, input.title);
-    if (!input.instrumental) await fill(creationArea.getByPlaceholder("输入您自己的歌词", { exact: true }), input.lyrics);
-    await fill(creationArea.getByPlaceholder(/^例如：流行摇滚/u), input.style);
+    await fill(title, input.title, "PULE_FORM_VALUE_CHANGED", "PULE_TITLE_CONTROL_UNAVAILABLE");
+    if (!input.instrumental) await fill(creationArea.getByPlaceholder("输入您自己的歌词", { exact: true }), input.lyrics,
+      "PULE_FORM_VALUE_CHANGED", "PULE_LYRICS_CONTROL_UNAVAILABLE");
+    await fill(creationArea.getByPlaceholder(/^例如：流行摇滚/u), input.style,
+      "PULE_FORM_VALUE_CHANGED", "PULE_STYLE_CONTROL_UNAVAILABLE");
     if (!input.instrumental) {
       const gender = input.gender === "female" ? "女声" : input.gender === "male" ? "男声" : "不限";
       const genderButton = button(gender, creationArea);
@@ -446,10 +462,10 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
       // The current form represents unrestricted vocals by leaving both voice buttons off.
       const clearSelection = await until(async () => {
         const count = await genderButton.count();
-        if (count > 1) throw Error("PULE_CONTROL_UNAVAILABLE");
+        if (count > 1) throw Error("PULE_FORM_CONTROL_AMBIGUOUS");
         if (count === 1) return false;
         if (gender === "不限" && await toggles.count() === 2) return true;
-      }, time.form, "PULE_CONTROL_UNAVAILABLE");
+      }, time.form, "PULE_FORM_CONTROL_UNAVAILABLE");
       const matches = async () => clearSelection
         ? await toggles.count() === 2 && await selected.count() === 0
         : await selected.count() === 1 && await selected.and(genderButton).count() === 1;
@@ -465,14 +481,14 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
     const makeSong = await until(async () => {
       if (await makeAtPath.count() === 1) return makeAtPath;
       if (await makeInForm.count() === 1) return makeInForm;
-    }, time.form, "PULE_CONTROL_UNAVAILABLE");
+    }, time.form, "PULE_GENERATION_CONTROL_UNAVAILABLE");
 
     const emptyList = visible(results.getByText(/^(?:在左侧开始你的第一首歌|暂无(?:歌曲|音乐))$/u));
     const before = new Set<string>();
     let previousFirstTitle: string | undefined;
     let planBeforeSongIds: string[] | undefined;
     // Capture the first displayed title and existing song IDs immediately before submission.
-    hooks.step("generation");
+    step("generation");
     await hooks.beforeGeneration?.();
     await submit("generation", makeSong, async () => {
       const snapshot = await until(async () => {
@@ -600,7 +616,7 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
   if (takeB && input.alternateTitle && input.alternateTitle !== takeB[1].title) {
     const second = takeB[1];
     // Scroll the second song's menu to Rename, then confirm the same song shows the saved title.
-    hooks.step("rename");
+    step("rename");
     const rename = await openSongAction(second, renameAction, "PULE_RENAME_UNAVAILABLE");
     await rename.scrollIntoViewIfNeeded({ timeout: time.control });
     await click(rename, "PULE_RENAME_UNAVAILABLE");
@@ -664,7 +680,7 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
   let coverFailure: Error | undefined;
   const downloadOwners = new Map<string, string>();
   for (const [index, [version, song]] of takes.entries()) {
-    hooks.step("download");
+    step("download");
     await hooks.audioProgress?.("preparing", version);
     if (await downloadDialog.count()) throw Error("PULE_DOWNLOAD_CONFIRM_UNAVAILABLE");
     const selected = await openSongAction(song, wavAction, "PULE_DOWNLOAD_UNAVAILABLE");
@@ -679,7 +695,7 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
     await hooks.audioProgress?.("downloading", version);
     await receivePuleWave(page, {
       songId: song.id, preparedSongId, deadline, poll: time.poll,
-      guard: hooks.guard, receiving: () => hooks.step("receive"),
+      guard: hooks.guard, receiving: () => step("receive"),
       click: remaining => confirm.click({ timeout: Math.min(time.control, remaining) }).catch(error => {
         if (error instanceof Error && error.name === "TimeoutError")
           throw Error(performance.now() >= deadline ? "PULE_DOWNLOAD_TIMEOUT" : "PULE_DOWNLOAD_CONFIRM_UNAVAILABLE");
@@ -691,7 +707,7 @@ export async function runPuleBrowser(page: Page, input: PulePageInput, hooks: Pu
       throw error;
     });
     if (phase?.kind !== "download" || phase.includeCovers) {
-      hooks.step("cover");
+      step("cover");
       try {
         await hooks.generateCover(version, song.id, song.title);
       } catch (error) {
